@@ -66,12 +66,14 @@ export async function GET(req: NextRequest) {
       .eq('instrument', pos.instrument)
       .eq('status', 'open')
 
-    await db.rpc('update_portfolio_on_close', {
-      p_user_id: pos.user_id,
-      p_pnl:     pnl,
-      p_is_demo: pos.is_demo,
-      p_won:     pnl > 0,
-    }).catch(() => {})
+    try {
+      await db.rpc('update_portfolio_on_close', {
+        p_user_id: pos.user_id,
+        p_pnl:     pnl,
+        p_is_demo: pos.is_demo,
+        p_won:     pnl > 0,
+      })
+    } catch { /* RPC may not exist yet */ }
 
     await sendPositionAlert(pos.instrument, reason, pnlAed, pnlPct).catch(() => {})
 

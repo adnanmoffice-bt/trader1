@@ -1,0 +1,303 @@
+import { callAgent } from '@/lib/anthropic'
+import { computeIndicators, technicalScore } from '@/lib/indicators'
+import { createServiceSupabase } from '@/lib/supabase'
+import { sendSignalAlert } from '@/lib/telegram'
+import type {
+  AgentContext, AgentSignalOutput, AgentName,
+  Instrument, Direction, Signal, OHLCV, Sentiment
+} from '@/types'
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ORCHESTRATOR — coordinates all agents
+// ══════════════════════════════════════════════════════════════════════════════
+
+const INSTRUMENTS: Instrument[] = ['BTC/USD', 'ETH/USD', 'BRENT', 'XAU/USD']
+
+export async function runOrchestrator(): Promise<void> {
+  const db = createServiceSupabase()
+  await log(db, 'orchestrator', 'info', `Pipeline started — scanning ${INSTRUMENTS.join(', ')}`)
+
+  const { data: portfolio } = await db
+    .from('portfolio')
+    .select('capital, available_capital')
+    .eq('is_demo', false)
+    .single()
+
+  const { count: openCount } = await db
+    .from('positions')
+    .select('*', { count: 'exact', head: true })
+    .eq('is_demo', false)
+
+  for (const instrument of INSTRUMENTS) {
+    try {
+      // Fetch candles from price_history
+      const { data: candles } = await db
+        .from('price_history')
+        .select('*')
+        .eq('symbol', instrument)
+        .eq('interval', '1h')
+        .order('timestamp', { ascending: false })
+        .limit(200)
+
+      if (!candles || candles.length < 50) {
+        await log(db, 'orchestrator', 'warn', `${instrument}: insufficient candle data`)
+        continue
+      }
+
+      const ohlcv: OHLCV[] = candles.reverse().map(c => ({
+        timestamp: new Date(c.timestamp).getTime(),
+        open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume,
+      }))
+
+      const ind = computeIndicators(ohlcv)
+      const tech = technicalScore(ind)
+
+      // Run market analyst
+      const sentiment = await runMarketAnalyst(db, instrument)
+
+      const context: AgentContext = {
+        instrument,
+        current_price:      ind.current_price,
+        ohlcv_1h:           ohlcv.slice(-48),
+        ohlcv_4h:           ohlcv.slice(-48).filter((_, i) => i % 4 === 0),
+        rsi:                ind.rsi,
+        macd:               ind.macd,
+        bb:                 ind.bb,
+        ema_20:             ind.ema_20,
+        ema_50:             ind.ema_50,
+        ema_200:            ind.ema_200,
+        atr:                ind.atr,
+        volume_ratio:       ind.volume_ratio,
+        news_sentiment:     sentiment,
+        fear_greed_index:   50, // fetched separately
+        portfolio_capital:  portfolio?.available_capital ?? 200000,
+        open_positions_count: openCount ?? 0,
+        max_positions:      3,
+      }
+
+      // Run signal generator
+      const signalOut = await runSignalGenerator(context)
+
+      if (signalOut.confidence < 65 || signalOut.direction === 'hold') {
+        await log(db, 'orchestrator', 'info', `${instrument}: HOLD (conf ${signalOut.confidence}%)`)
+        continue
+      }
+
+      // Risk check
+      const approved = await runRiskManager(signalOut, context)
+      if (!approved) {
+        await log(db, 'orchestrator', 'warn', `${instrument}: rejected by risk manager`)
+        continue
+      }
+
+      // Save signal
+      const { data: saved } = await db.from('signals').insert({
+        instrument: signalOut.instrument,
+        direction:  signalOut.direction,
+        entry_price:   signalOut.entry_price,
+        stop_loss:     signalOut.stop_loss,
+        take_profit_1: signalOut.take_profit_1,
+        take_profit_2: signalOut.take_profit_2,
+        confidence:    signalOut.confidence,
+        risk_reward:   signalOut.risk_reward,
+        reasoning:     signalOut.reasoning,
+        ai_analysis:   signalOut.ai_analysis,
+        news_sentiment: sentiment,
+        technical_score: tech.score,
+        status: 'active',
+      }).select().single()
+
+      if (saved) {
+        await sendSignalAlert(saved as Signal)
+        await log(db, 'orchestrator', 'ok', `${instrument}: signal saved & sent — ${signalOut.direction.toUpperCase()} conf ${signalOut.confidence}%`)
+      }
+
+    } catch (err) {
+      await log(db, 'orchestrator', 'error', `${instrument} pipeline error: ${String(err)}`)
+    }
+  }
+
+  await log(db, 'orchestrator', 'ok', 'Pipeline complete')
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MARKET ANALYST — news + sentiment
+// ══════════════════════════════════════════════════════════════════════════════
+
+async function runMarketAnalyst(
+  db: ReturnType<typeof createServiceSupabase>,
+  instrument: Instrument
+): Promise<Sentiment> {
+  try {
+    // Fetch latest news from DB
+    const { data: news } = await db
+      .from('news')
+      .select('headline, sentiment, ai_summary')
+      .order('published_at', { ascending: false })
+      .limit(5)
+
+    const newsContext = (news ?? []).map(n => `${n.headline} [${n.sentiment}]`).join('\n')
+
+    const result = await callAgent<{ sentiment: Sentiment; reasoning: string }>({
+      system: `You are a financial market sentiment analyst.
+Analyze news headlines and return ONLY valid JSON: {"sentiment": "bullish"|"bearish"|"neutral", "reasoning": "one sentence"}`,
+      user: `Instrument: ${instrument}\n\nRecent news:\n${newsContext || 'No recent news available.'}`,
+      maxTokens: 200,
+      expectJson: true,
+    })
+
+    await log(db, 'market-analyst', 'ok', `${instrument}: ${result.sentiment} — ${result.reasoning}`)
+    return result.sentiment
+  } catch {
+    return 'neutral'
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SIGNAL GENERATOR — technical analysis → trade signal
+// ══════════════════════════════════════════════════════════════════════════════
+
+const SIGNAL_SYSTEM = `You are a professional quantitative trading signal generator.
+Analyze market data and return ONLY a JSON object with this exact structure:
+{
+  "direction": "long" | "short" | "hold",
+  "entry_price": number | null,
+  "stop_loss": number | null,
+  "take_profit_1": number | null,
+  "take_profit_2": number | null,
+  "confidence": integer 0-100,
+  "reasoning": "max 15 words explaining why",
+  "ai_analysis": "max 30 words with key driver"
+}
+
+STRICT RULES:
+- stop_loss must be within 3-5% of entry for crypto, 2-4% for commodities
+- take_profit_1 at minimum 1.5x stop distance (R:R >= 1.5)
+- take_profit_2 at minimum 2.5x stop distance
+- Return HOLD if confidence < 65
+- Never recommend more than 5% capital per trade
+- Only return numbers, no % symbols or $ signs in JSON`
+
+export async function runSignalGenerator(ctx: AgentContext): Promise<AgentSignalOutput> {
+  const ind = {
+    price:        ctx.current_price,
+    rsi:          ctx.rsi,
+    macd:         `value:${ctx.macd.value} signal:${ctx.macd.signal} hist:${ctx.macd.histogram}`,
+    bb:           `upper:${ctx.bb.upper} mid:${ctx.bb.middle} lower:${ctx.bb.lower} width:${ctx.bb.width} %B:${ctx.bb.percentB}`,
+    ema_20:       ctx.ema_20,
+    ema_50:       ctx.ema_50,
+    ema_200:      ctx.ema_200,
+    atr:          ctx.atr,
+    vol_ratio:    ctx.volume_ratio,
+    sentiment:    ctx.news_sentiment,
+    fear_greed:   ctx.fear_greed_index,
+    open_pos:     `${ctx.open_positions_count}/${ctx.max_positions}`,
+  }
+
+  const result = await callAgent<AgentSignalOutput>({
+    system:     SIGNAL_SYSTEM,
+    user:       `Instrument: ${ctx.instrument}\nIndicators: ${JSON.stringify(ind, null, 2)}`,
+    maxTokens:  512,
+    expectJson: true,
+  })
+
+  // Compute R:R
+  let rr: number | null = null
+  if (result.entry_price && result.stop_loss && result.take_profit_1) {
+    const risk   = Math.abs(result.entry_price - result.stop_loss)
+    const reward = Math.abs(result.take_profit_1 - result.entry_price)
+    if (risk > 0) rr = Math.round((reward / risk) * 100) / 100
+  }
+
+  return { ...result, instrument: ctx.instrument, risk_reward: rr }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// RISK MANAGER — validates signal before approval
+// ══════════════════════════════════════════════════════════════════════════════
+
+export async function runRiskManager(
+  signal: AgentSignalOutput,
+  ctx: AgentContext
+): Promise<boolean> {
+  const db = createServiceSupabase()
+
+  // Hard rules (no AI needed)
+  if ((signal.risk_reward ?? 0) < 1.5) {
+    await log(db, 'risk-manager', 'warn', `${signal.instrument}: R:R ${signal.risk_reward} < 1.5 — rejected`)
+    return false
+  }
+  if (ctx.open_positions_count >= ctx.max_positions) {
+    await log(db, 'risk-manager', 'warn', `${signal.instrument}: max positions (${ctx.max_positions}) reached — rejected`)
+    return false
+  }
+  if (!signal.stop_loss || !signal.entry_price) {
+    await log(db, 'risk-manager', 'warn', `${signal.instrument}: missing SL/entry — rejected`)
+    return false
+  }
+
+  const slPct = Math.abs(signal.entry_price - signal.stop_loss) / signal.entry_price * 100
+  if (slPct > 6) {
+    await log(db, 'risk-manager', 'warn', `${signal.instrument}: SL too wide (${slPct.toFixed(1)}%) — rejected`)
+    return false
+  }
+
+  await log(db, 'risk-manager', 'ok',
+    `${signal.instrument}: approved — ${signal.direction.toUpperCase()} conf:${signal.confidence}% R:R:${signal.risk_reward}`)
+  return true
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// TRADE REVIEWER — daily analysis of closed trades
+// ══════════════════════════════════════════════════════════════════════════════
+
+export async function runTradeReviewer(): Promise<string> {
+  const db = createServiceSupabase()
+
+  const yesterday = new Date()
+  yesterday.setDate(yesterday.getDate() - 1)
+  const yStr = yesterday.toISOString().split('T')[0]
+
+  const { data: trades } = await db
+    .from('trades')
+    .select('*')
+    .gte('closed_at', `${yStr}T00:00:00`)
+    .lt('closed_at',  `${yStr}T23:59:59`)
+    .eq('status', 'closed')
+
+  if (!trades?.length) {
+    await log(db, 'trade-reviewer', 'info', 'No closed trades to review yesterday')
+    return 'No trades to review'
+  }
+
+  const wins   = trades.filter(t => (t.pnl ?? 0) > 0).length
+  const losses = trades.filter(t => (t.pnl ?? 0) < 0).length
+  const netPnl = trades.reduce((s, t) => s + (t.pnl_aed ?? 0), 0)
+  const summary = trades.map(t =>
+    `${t.instrument} ${t.direction} entry:${t.entry_price} exit:${t.exit_price} pnl:${t.pnl_pct?.toFixed(2)}%`
+  ).join('\n')
+
+  const review = await callAgent({
+    system: `You are a trading coach reviewing yesterday's trades. Be concise, analytical, actionable. Max 100 words.`,
+    user:   `Date: ${yStr}\nWins:${wins} Losses:${losses} Net P&L: ${netPnl.toFixed(0)} AED\n\nTrades:\n${summary}`,
+    maxTokens: 300,
+  })
+
+  await log(db, 'trade-reviewer', 'ok', `Daily review: ${wins}W/${losses}L — ${review.slice(0, 80)}...`)
+  return review
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// HELPERS
+// ══════════════════════════════════════════════════════════════════════════════
+
+async function log(
+  db: ReturnType<typeof createServiceSupabase>,
+  agent: AgentName,
+  level: 'ok' | 'warn' | 'error' | 'info',
+  message: string,
+  metadata?: Record<string, unknown>
+) {
+  console.log(`[${agent}] ${level}: ${message}`)
+  await db.from('agent_logs').insert({ agent, level, message, metadata })
+}

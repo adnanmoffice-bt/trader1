@@ -1,0 +1,98 @@
+# APEX Trading Terminal — Cursor Rules
+
+## Project Overview
+APEX is an AI-powered trading terminal (Bloomberg-style) using Claude AI agents, Supabase Realtime, and Vercel.
+- **Repo**: https://github.com/adnanmoffice-bt/trader1
+- **Master Log**: Always read `APEX_PROJECT_LOG.md` before any major change.
+
+## Tech Stack
+- Next.js 15.1.0 + React 19 + TypeScript 5.6 (strict mode)
+- Tailwind CSS 3.4 with custom dark theme
+- Supabase (PostgreSQL + Realtime + RLS)
+- Anthropic Claude Sonnet 4 (`claude-sonnet-4-20250514`)
+- Zustand 5.0 for state management
+- Vercel for hosting + cron jobs
+- Telegram Bot for notifications
+
+## Path Aliases
+- `@/*` maps to project root (tsconfig paths)
+- Example: `import { useStore } from '@/lib/store'`
+
+## File Organization
+- Types: `types/index.ts` — ALL interfaces live here, never scatter types
+- Agents: `agents/index.ts` — ALL 5 agents in one file
+- Lib: `lib/` — utility modules (anthropic, indicators, price-fetcher, store, supabase, telegram)
+- API: `app/api/` — Next.js route handlers
+- Cron: `app/api/cron/` — Vercel cron endpoints (require `Bearer CRON_SECRET`)
+- Components: `components/` — React components
+- Schema: `supabase/schema.sql` — complete DB schema
+
+## Coding Rules
+
+### TypeScript
+- Strict mode — no `any` types unless absolutely necessary
+- All interfaces in `types/index.ts`
+- Use `import type` for type-only imports
+- Prefer `const` functions with explicit return types for exports
+
+### React / Next.js
+- `'use client'` directive required for client components
+- Server Components by default
+- API routes use `NextRequest`/`NextResponse`
+- Dashboard uses route groups: `app/(dashboard)/page.tsx`
+
+### Supabase
+- Browser client: `createBrowserSupabase()` or `getBrowserSupabase()` (singleton)
+- Server/API client: `createServiceSupabase()` — NEVER use anon key server-side
+- All DB writes go through service role client
+- RLS is enabled on ALL tables
+
+### AI Agents
+- All agents called via `callAgent<T>()` from `lib/anthropic.ts`
+- `expectJson: true` strips code fences and parses JSON
+- Signal confidence threshold: 65% minimum
+- Risk-reward minimum: 1.5x
+- Max open positions: 3
+- Max risk per trade: 5% of capital
+
+### Styling
+- Bloomberg terminal dark theme
+- Background: `#03030a` (void), `#07070f` (deep), `#0b0b16` (base)
+- Green: `#00ffa3` (profit/bullish)
+- Red: `#ff3366` (loss/bearish)
+- Amber: `#ffcc00` (neutral/warning)
+- Cyan: `#00ccff` (info)
+- Purple: `#9966ff` (AI/agent)
+- Fonts: Inter (sans), JetBrains Mono (mono)
+- Use `.mono` class for financial numbers
+
+### UI Language
+- Dashboard UI text is in Bosnian/Croatian (Prilike, Vijesti, Agenti, Pozicije, Kapital)
+- Technical labels and API responses stay in English
+
+### Currency & Numbers
+- Primary currency: AED (UAE Dirham)
+- AED/USD rate: 3.6725
+- Always show financial numbers with `toLocaleString('en')` or `.toFixed(2)`
+- Prefix prices with `$`, P&L with `AED`
+
+## Environment Variables
+- NEVER hardcode API keys
+- All keys documented in `.env.example`
+- 13 integrations total (see APEX_PROJECT_LOG.md section 7)
+
+## Database Tables (10)
+market_data, signals, trades, positions, portfolio, news, agent_logs, price_history, demo_sessions, demo_trades
+
+## Cron Jobs
+- `/api/cron/market-data` — every 1 min
+- `/api/cron/signals` — every 30 min
+- `/api/cron/positions` — every 2 min (TODO: create endpoint)
+- `/api/cron/demo` — every 15 min (TODO: create endpoint)
+
+## Before Making Changes
+1. Read `APEX_PROJECT_LOG.md` for full project context
+2. Check `types/index.ts` for existing interfaces
+3. Update the changelog section in `APEX_PROJECT_LOG.md` after significant changes
+4. Run `npm run build` to verify no TypeScript errors
+5. Never commit `.env.local` or any PEM files

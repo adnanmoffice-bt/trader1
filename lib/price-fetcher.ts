@@ -1,0 +1,264 @@
+import type { MarketData, OHLCV } from '@/types'
+
+const BINANCE_REST = 'https://api.binance.com/api/v3'
+const COINGECKO    = 'https://api.coingecko.com/api/v3'
+const FEAR_GREED   = 'https://api.alternative.me/fng'
+
+// ─── Symbol Maps ──────────────────────────────────────────────────────────────
+
+const BINANCE_SYMBOLS: Record<string, string> = {
+  'BTC/USD': 'BTCUSDT',
+  'ETH/USD': 'ETHUSDT',
+  'SOL/USD': 'SOLUSDT',
+  'BNB/USD': 'BNBUSDT',
+}
+
+const YAHOO_SYMBOLS: Record<string, string> = {
+  'BRENT':   'BZ=F',
+  'WTI':     'CL=F',
+  'XAU/USD': 'GC=F',
+  'XAG/USD': 'SI=F',
+  'SPY':     'SPY',
+  'QQQ':     'QQQ',
+  'EUR/USD': 'EURUSD=X',
+  'USD/JPY': 'JPY=X',
+}
+
+// ─── Binance ──────────────────────────────────────────────────────────────────
+
+export async function fetchBinanceTicker(symbol: string): Promise<MarketData | null> {
+  const binanceSym = BINANCE_SYMBOLS[symbol]
+  if (!binanceSym) return null
+
+  try {
+    const res = await fetch(`${BINANCE_REST}/ticker/24hr?symbol=${binanceSym}`, {
+      next: { revalidate: 30 },
+    })
+    if (!res.ok) return null
+    const d = await res.json()
+
+    return {
+      id:            crypto.randomUUID(),
+      symbol,
+      price:         parseFloat(d.lastPrice),
+      change_24h:    parseFloat(d.priceChange),
+      change_pct_24h:parseFloat(d.priceChangePercent),
+      volume_24h:    parseFloat(d.quoteVolume),
+      high_24h:      parseFloat(d.highPrice),
+      low_24h:       parseFloat(d.lowPrice),
+      open_24h:      parseFloat(d.openPrice),
+      market_cap:    null,
+      source:        'binance',
+      fetched_at:    new Date().toISOString(),
+    }
+  } catch {
+    return null
+  }
+}
+
+export async function fetchBinanceKlines(
+  symbol: string,
+  interval: '1m' | '5m' | '15m' | '1h' | '4h' | '1d',
+  limit = 200
+): Promise<OHLCV[]> {
+  const binanceSym = BINANCE_SYMBOLS[symbol]
+  if (!binanceSym) return []
+
+  try {
+    const res = await fetch(
+      `${BINANCE_REST}/klines?symbol=${binanceSym}&interval=${interval}&limit=${limit}`,
+      { next: { revalidate: 60 } }
+    )
+    if (!res.ok) return []
+    const data: number[][] = await res.json()
+
+    return data.map(k => ({
+      timestamp: k[0],
+      open:      parseFloat(String(k[1])),
+      high:      parseFloat(String(k[2])),
+      low:       parseFloat(String(k[3])),
+      close:     parseFloat(String(k[4])),
+      volume:    parseFloat(String(k[5])),
+    }))
+  } catch {
+    return []
+  }
+}
+
+/** Fetch historical klines with pagination for backtesting */
+export async function fetchBinanceKlinesRange(
+  symbol: string,
+  interval: string,
+  startMs: number,
+  endMs: number
+): Promise<OHLCV[]> {
+  const binanceSym = BINANCE_SYMBOLS[symbol]
+  if (!binanceSym) return []
+
+  const all: OHLCV[] = []
+  let current = startMs
+
+  while (current < endMs) {
+    try {
+      const url =
+        `${BINANCE_REST}/klines?symbol=${binanceSym}&interval=${interval}` +
+        `&startTime=${current}&endTime=${endMs}&limit=1000`
+      const res  = await fetch(url)
+      if (!res.ok) break
+      const data: number[][] = await res.json()
+      if (!data.length) break
+
+      all.push(...data.map(k => ({
+        timestamp: k[0],
+        open:      parseFloat(String(k[1])),
+        high:      parseFloat(String(k[2])),
+        low:       parseFloat(String(k[3])),
+        close:     parseFloat(String(k[4])),
+        volume:    parseFloat(String(k[5])),
+      })))
+
+      current = data[data.length - 1][6] + 1 // close_time + 1ms
+    } catch {
+      break
+    }
+  }
+
+  return all
+}
+
+// ─── CoinGecko ────────────────────────────────────────────────────────────────
+
+const CG_IDS: Record<string, string> = {
+  'BTC/USD': 'bitcoin',
+  'ETH/USD': 'ethereum',
+  'SOL/USD': 'solana',
+}
+
+export async function fetchCoinGeckoMarkets(): Promise<MarketData[]> {
+  const apiKey = process.env.COINGECKO_API_KEY || ''
+  const ids    = Object.values(CG_IDS).join(',')
+  const headers: Record<string, string> = apiKey ? { 'x-cg-demo-api-key': apiKey } : {}
+
+  try {
+    const res = await fetch(
+      `${COINGECKO}/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true&include_market_cap=true`,
+      { headers, next: { revalidate: 60 } }
+    )
+    if (!res.ok) return []
+    const data = await res.json()
+
+    return Object.entries(CG_IDS).map(([symbol, id]) => ({
+      id:             crypto.randomUUID(),
+      symbol,
+      price:          data[id]?.usd ?? 0,
+      change_24h:     0,
+      change_pct_24h: data[id]?.usd_24h_change ?? 0,
+      volume_24h:     data[id]?.usd_24h_vol ?? 0,
+      high_24h:       0,
+      low_24h:        0,
+      open_24h:       0,
+      market_cap:     data[id]?.usd_market_cap ?? null,
+      source:         'coingecko',
+      fetched_at:     new Date().toISOString(),
+    }))
+  } catch {
+    return []
+  }
+}
+
+// ─── Fear & Greed ─────────────────────────────────────────────────────────────
+
+export interface FearGreedData {
+  value: number
+  classification: string
+  timestamp: string
+}
+
+export async function fetchFearGreed(limit = 7): Promise<FearGreedData[]> {
+  try {
+    const res  = await fetch(`${FEAR_GREED}/?limit=${limit}`, { next: { revalidate: 3600 } })
+    if (!res.ok) return []
+    const data = await res.json()
+    return (data.data as Array<{ value: string; value_classification: string; timestamp: string }>)
+      .map(d => ({
+        value:          parseInt(d.value),
+        classification: d.value_classification,
+        timestamp:      new Date(parseInt(d.timestamp) * 1000).toISOString(),
+      }))
+  } catch {
+    return []
+  }
+}
+
+// ─── Polymarket ───────────────────────────────────────────────────────────────
+
+const POLY_GAMMA = 'https://gamma-api.polymarket.com'
+const POLY_CLOB  = 'https://clob.polymarket.com'
+
+export interface PolymarketSnapshot {
+  id:        string
+  question:  string
+  token_id:  string
+  yes_price: number
+  no_price:  number
+  volume:    number
+  end_date:  string
+}
+
+/** Fetch active financial/market prediction markets from Polymarket */
+export async function fetchPolymarketMarkets(tag = 'crypto'): Promise<PolymarketSnapshot[]> {
+  try {
+    const res = await fetch(
+      `${POLY_GAMMA}/markets?tag_slug=${tag}&active=true&limit=20&order=volume&ascending=false`,
+      { next: { revalidate: 300 } }
+    )
+    if (!res.ok) return []
+    const markets = await res.json()
+
+    return (markets as Array<{
+      id: string; question: string; clobTokenIds: string[];
+      volume: number; endDate: string
+    }>).map(m => ({
+      id:        m.id,
+      question:  m.question,
+      token_id:  m.clobTokenIds?.[0] ?? '',
+      yes_price: 0,  // fetched separately via CLOB
+      no_price:  0,
+      volume:    m.volume ?? 0,
+      end_date:  m.endDate,
+    }))
+  } catch {
+    return []
+  }
+}
+
+/** Get YES token price for a Polymarket market */
+export async function fetchPolymarketPrice(tokenId: string): Promise<number> {
+  try {
+    const res = await fetch(`${POLY_CLOB}/midpoint?token_id=${tokenId}`, {
+      next: { revalidate: 30 },
+    })
+    if (!res.ok) return 0
+    const d = await res.json()
+    return parseFloat(d.mid ?? '0')
+  } catch {
+    return 0
+  }
+}
+
+// ─── Aggregate Fetch (used by cron) ───────────────────────────────────────────
+
+export async function fetchAllMarketData(): Promise<MarketData[]> {
+  const results: MarketData[] = []
+
+  // Fetch crypto from Binance (fastest, most reliable)
+  const cryptoSymbols = Object.keys(BINANCE_SYMBOLS)
+  const cryptoData = await Promise.allSettled(
+    cryptoSymbols.map(sym => fetchBinanceTicker(sym))
+  )
+  cryptoData.forEach(r => {
+    if (r.status === 'fulfilled' && r.value) results.push(r.value)
+  })
+
+  return results
+}

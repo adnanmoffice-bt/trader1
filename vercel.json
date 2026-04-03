@@ -1,0 +1,8 @@
+{
+  "crons": [
+    { "path": "/api/cron/market-data", "schedule": "* * * * *" },
+    { "path": "/api/cron/signals",     "schedule": "*/30 * * * *" },
+    { "path": "/api/cron/positions",   "schedule": "*/2 * * * *" },
+    { "path": "/api/cron/demo",        "schedule": "*/15 * * * *" }
+  ]
+}

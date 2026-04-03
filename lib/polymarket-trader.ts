@@ -42,31 +42,49 @@ export async function fetchTopEvents(limit = 15): Promise<PolyEvent[]> {
     if (!res.ok) return []
     const events = await res.json()
 
-    return (events as Array<Record<string, unknown>>).map(e => ({
-      id:          String(e.id ?? ''),
-      slug:        String(e.slug ?? ''),
-      title:       String(e.title ?? ''),
-      description: String(e.description ?? ''),
-      end_date:    String(e.endDate ?? ''),
-      active:      Boolean(e.active),
-      closed:      Boolean(e.closed),
-      markets:     ((e.markets ?? []) as Array<Record<string, unknown>>).map(m => ({
-        id:           String(m.id ?? ''),
-        question:     String(m.question ?? ''),
-        condition_id: String(m.conditionId ?? ''),
-        slug:         String(m.slug ?? ''),
-        tokens:       (m.clobTokenIds as string[] ?? []).map((tid, i) => ({
-          token_id: tid,
-          outcome: i === 0 ? 'Yes' : 'No',
-        })),
-        yes_price:  0,
-        no_price:   0,
-        volume:     Number(m.volume ?? 0),
-        liquidity:  Number(m.liquidity ?? 0),
-        end_date:   String(m.endDate ?? ''),
-        active:     Boolean(m.active),
-      })),
-    }))
+    return (events as Array<Record<string, unknown>>).map(e => {
+      const rawMarkets = (e.markets ?? []) as Array<Record<string, unknown>>
+      return {
+        id:          String(e.id ?? ''),
+        slug:        String(e.slug ?? ''),
+        title:       String(e.title ?? ''),
+        description: String(e.description ?? ''),
+        end_date:    String(e.endDate ?? ''),
+        active:      Boolean(e.active),
+        closed:      Boolean(e.closed),
+        markets:     rawMarkets.filter(m => m.active && !m.closed).map(m => {
+          let tokenIds: string[] = []
+          try {
+            const raw = m.clobTokenIds
+            if (typeof raw === 'string') tokenIds = JSON.parse(raw)
+            else if (Array.isArray(raw)) tokenIds = raw as string[]
+          } catch { /* skip */ }
+
+          const prices = m.outcomePrices
+          let yesPrice = 0
+          try {
+            if (typeof prices === 'string') {
+              const parsed = JSON.parse(prices) as string[]
+              yesPrice = parseFloat(parsed[0] ?? '0')
+            }
+          } catch { /* skip */ }
+
+          return {
+            id:           String(m.id ?? ''),
+            question:     String(m.question ?? ''),
+            condition_id: String(m.conditionId ?? ''),
+            slug:         String(m.slug ?? ''),
+            tokens:       tokenIds.map((tid, i) => ({ token_id: tid, outcome: i === 0 ? 'Yes' : 'No' })),
+            yes_price:    yesPrice,
+            no_price:     Math.round((1 - yesPrice) * 100) / 100,
+            volume:       Number(m.volumeNum ?? m.volume ?? 0),
+            liquidity:    Number(m.liquidityNum ?? m.liquidity ?? 0),
+            end_date:     String(m.endDate ?? ''),
+            active:       Boolean(m.active),
+          }
+        }),
+      }
+    })
   } catch {
     return []
   }

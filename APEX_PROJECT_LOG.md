@@ -357,3 +357,4 @@ All computed from OHLCV candle data:
 | 2026-04-03 | Auto-execute: approved signals now auto-trade on Binance when configured |
 | 2026-04-03 | Dashboard: added Polymarket tab + Kill Switch button |
 | 2026-04-03 | Added polymarket cron to vercel.json (every 30min) |
+| 2026-04-03 | SESSION PAUSED — all code complete, waiting for API keys from user |

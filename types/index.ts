@@ -163,7 +163,7 @@ export interface AgentContext {
   ohlcv_4h: OHLCV[]
   rsi: number
   macd: { value: number; signal: number; histogram: number }
-  bb: { upper: number; middle: number; lower: number; width: number }
+  bb: { upper: number; middle: number; lower: number; width: number; percentB: number }
   ema_20: number
   ema_50: number
   ema_200: number

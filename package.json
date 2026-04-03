@@ -11,7 +11,7 @@
     "db:reset": "supabase db reset"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.30.0",
+    "@anthropic-ai/sdk": "^0.82.0",
     "@binance/spot": "^28.0.4",
     "@supabase/ssr": "^0.5.0",
     "@supabase/supabase-js": "^2.45.0",

@@ -229,7 +229,7 @@ function Dashboard() {
         <div className="flex items-center gap-5 text-xs">
           <div className="text-right">
             <div className="text-[9px] text-[#44446a] tracking-wider">KAPITAL</div>
-            <div className="font-bold mono text-[#e2e2f5]">AED {(portfolio?.capital ?? 200000).toLocaleString()}</div>
+            <div className="font-bold mono text-[#e2e2f5]">AED {(portfolio?.capital ?? 5000).toLocaleString()}</div>
           </div>
           <div className="text-right">
             <div className="text-[9px] text-[#44446a] tracking-wider">OPEN P&L</div>
@@ -307,7 +307,7 @@ function Dashboard() {
           <div>
             <div className="grid grid-cols-5 gap-2 mb-5">
               {[
-                { l: 'KAPITAL',    v: `AED ${(portfolio?.capital ?? 200000).toLocaleString()}`, cls: 'text-[#e2e2f5]' },
+                { l: 'KAPITAL',    v: `AED ${(portfolio?.capital ?? 5000).toLocaleString()}`, cls: 'text-[#e2e2f5]' },
                 { l: 'OPEN P&L',   v: `${totalPnl >= 0 ? '+' : ''}AED ${Math.abs(totalPnl).toLocaleString(undefined,{maximumFractionDigits:0})}`, cls: totalPnl >= 0 ? 'text-[#00ffa3]' : 'text-[#ff3366]' },
                 { l: 'WIN RATE',   v: `${portfolio?.win_rate?.toFixed(1) ?? '—'}%`, cls: 'text-[#00ffa3]' },
                 { l: 'POZICIJE',   v: `${openCount}`, cls: 'text-[#00ccff]' },

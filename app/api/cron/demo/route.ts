@@ -36,7 +36,7 @@ export async function GET(req: NextRequest) {
     const { data: newSession } = await db.from('demo_sessions').insert({
       start_date:      today.toISOString().split('T')[0],
       end_date:        endDate.toISOString().split('T')[0],
-      initial_capital: 200000,
+      initial_capital: 5000,
       status:          'running',
     }).select().single()
 

@@ -72,7 +72,7 @@ export async function runOrchestrator(): Promise<void> {
         volume_ratio:       ind.volume_ratio,
         news_sentiment:     sentiment,
         fear_greed_index:   50, // fetched separately
-        portfolio_capital:  portfolio?.available_capital ?? 200000,
+        portfolio_capital:  portfolio?.available_capital ?? 5000,
         open_positions_count: openCount ?? 0,
         max_positions:      3,
       }
@@ -116,7 +116,7 @@ export async function runOrchestrator(): Promise<void> {
         // AUTO-EXECUTE on Binance if configured
         if (binance.isConfigured() && signalOut.entry_price && signalOut.stop_loss) {
           try {
-            const capitalUsd = (portfolio?.available_capital ?? 200000) / binance.USD_AED
+            const capitalUsd = (portfolio?.available_capital ?? 5000) / binance.USD_AED
             const tradeSize = capitalUsd * binance.MAX_RISK_PCT
             const userId = 'auto-trader'
 

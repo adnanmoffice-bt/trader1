@@ -143,8 +143,11 @@ function Dashboard() {
   const portfolio = useStore(s => s.portfolio)
   const positions = useStore(s => s.positions)
   const fearGreedIndex = useStore(s => s.fearGreedIndex)
-  const [activeTab, setActiveTab] = useState<'opportunities' | 'portfolio' | 'agents' | 'news'>('opportunities')
+  const [activeTab, setActiveTab] = useState<'opportunities' | 'portfolio' | 'agents' | 'polymarket' | 'news'>('opportunities')
   const [clock, setClock] = useState('')
+  const [polyBets, setPolyBets] = useState<Array<Record<string, unknown>>>([])
+  const [polyMarkets, setPolyMarkets] = useState<Array<Record<string, unknown>>>([])
+  const [killLoading, setKillLoading] = useState(false)
 
   useEffect(() => {
     const t = setInterval(() => {
@@ -184,6 +187,8 @@ function Dashboard() {
       .then(r => r.json())
       .then(d => { if (d.data) d.data.forEach((log: import('@/types').AgentLog) => store.addAgentLog(log)) })
       .catch(() => {})
+    fetch('/api/polymarket/bets').then(r => r.json()).then(d => { if (d.data) setPolyBets(d.data) }).catch(() => {})
+    fetch('/api/polymarket/markets').then(r => r.json()).then(d => { if (d.data) setPolyMarkets(d.data) }).catch(() => {})
   }, [])
 
   const totalPnl = positions.reduce((s, p) => s + (p.unrealized_pnl ?? 0), 0)
@@ -192,9 +197,23 @@ function Dashboard() {
   const tabs = [
     { id: 'opportunities', label: '📈 Prilike' },
     { id: 'portfolio',     label: '💼 Portfolio' },
+    { id: 'polymarket',    label: '🎯 Polymarket' },
     { id: 'agents',        label: '🤖 Agenti' },
     { id: 'news',          label: '📰 Vijesti' },
   ]
+
+  const handleKillSwitch = async () => {
+    if (!confirm('KILL SWITCH: Zatvori SVE pozicije i otkaži ordere?')) return
+    setKillLoading(true)
+    try {
+      await fetch('/api/kill-switch', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${process.env.NEXT_PUBLIC_CRON_SECRET ?? 'change_this_to_a_random_string_min_32_chars'}` },
+      })
+      alert('Kill switch aktiviran. Sve pozicije zatvorene.')
+    } catch { alert('Greska pri aktiviranju kill switch-a') }
+    setKillLoading(false)
+  }
 
   return (
     <div className="flex flex-col h-screen bg-[#03030a]">
@@ -228,6 +247,13 @@ function Dashboard() {
             <div className="text-[9px] text-[#44446a] tracking-wider">ABU DHABI</div>
             <div className="font-bold mono text-[#00ccff]">{clock}</div>
           </div>
+          <button
+            onClick={handleKillSwitch}
+            disabled={killLoading}
+            className="px-3 py-1.5 text-[9px] font-black tracking-wider bg-[rgba(255,51,102,0.15)] text-[#ff3366] border border-[rgba(255,51,102,0.3)] rounded hover:bg-[rgba(255,51,102,0.3)] transition-all disabled:opacity-50"
+          >
+            {killLoading ? '...' : 'KILL SWITCH'}
+          </button>
         </div>
       </header>
 
@@ -370,6 +396,112 @@ function Dashboard() {
                 agentLogs.map(log => <LogItem key={log.id} log={log} />)
               )}
             </div>
+          </div>
+        )}
+
+        {/* ── POLYMARKET ── */}
+        {activeTab === 'polymarket' && (
+          <div>
+            {/* Active Bets */}
+            <div className="flex items-center gap-2 mb-3">
+              <div className="w-1.5 h-1.5 rounded-full bg-[#9966ff] shadow-[0_0_6px_#9966ff]" />
+              <span className="text-[10px] font-bold tracking-widest text-[#44446a] uppercase">Aktivni Betovi</span>
+              <span className="text-[10px] text-[#44446a]">{polyBets.length} otvorenih</span>
+            </div>
+
+            {polyBets.length === 0 ? (
+              <div className="bg-[#0f0f1e] border border-white/[0.07] rounded-xl p-8 text-center text-[#44446a] mb-5">
+                <div className="text-2xl mb-3">🎯</div>
+                <div className="text-sm mb-1">Nema aktivnih betova</div>
+                <div className="text-xs">AI Polymarket Scanner automatski skenira i betuje svakih 30min</div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-5">
+                {polyBets.map((bet, i) => {
+                  const side = String(bet.side)
+                  const entryPrice = Number(bet.entry_price) || 0
+                  const currentPrice = Number(bet.current_price) || entryPrice
+                  const pnl = (currentPrice - entryPrice) * Number(bet.amount_usd || 0)
+                  return (
+                    <div key={i} className={cn(
+                      'bg-[#0f0f1e] border border-white/[0.07] rounded-xl overflow-hidden',
+                      side === 'YES' ? 'border-t-2 border-t-[#00ffa3]' : 'border-t-2 border-t-[#ff3366]'
+                    )}>
+                      <div className="p-3">
+                        <div className="flex items-start justify-between mb-2">
+                          <div className="text-[11px] text-[#e2e2f5] font-semibold leading-tight pr-2">
+                            {String(bet.question).slice(0, 80)}{String(bet.question).length > 80 ? '...' : ''}
+                          </div>
+                          <span className={cn(
+                            'text-[9px] font-black px-2 py-0.5 rounded tracking-wider flex-shrink-0',
+                            side === 'YES' ? 'bg-[rgba(0,255,163,0.18)] text-[#00ffa3]' : 'bg-[rgba(255,51,102,0.18)] text-[#ff3366]'
+                          )}>{side}</span>
+                        </div>
+                        <div className="grid grid-cols-4 gap-2">
+                          <div className="bg-[#07070f] rounded p-2">
+                            <div className="text-[8px] text-[#44446a]">ULAZ</div>
+                            <div className="text-[11px] font-bold mono text-[#e2e2f5]">{(entryPrice * 100).toFixed(0)}%</div>
+                          </div>
+                          <div className="bg-[#07070f] rounded p-2">
+                            <div className="text-[8px] text-[#44446a]">AI PROB</div>
+                            <div className="text-[11px] font-bold mono text-[#9966ff]">{((Number(bet.ai_probability) || 0) * 100).toFixed(0)}%</div>
+                          </div>
+                          <div className="bg-[#07070f] rounded p-2">
+                            <div className="text-[8px] text-[#44446a]">ULOG</div>
+                            <div className="text-[11px] font-bold mono text-[#e2e2f5]">${Number(bet.amount_usd).toFixed(0)}</div>
+                          </div>
+                          <div className="bg-[#07070f] rounded p-2">
+                            <div className="text-[8px] text-[#44446a]">P&L</div>
+                            <div className={cn('text-[11px] font-bold mono', pnl >= 0 ? 'text-[#00ffa3]' : 'text-[#ff3366]')}>
+                              {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="mt-2 text-[9px] text-[#7878aa]">{String(bet.reasoning)}</div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+            {/* Trending Markets */}
+            <div className="flex items-center gap-2 mb-3">
+              <div className="w-1.5 h-1.5 rounded-full bg-[#00ccff] shadow-[0_0_6px_#00ccff]" />
+              <span className="text-[10px] font-bold tracking-widest text-[#44446a] uppercase">Trending Markets</span>
+            </div>
+
+            {polyMarkets.length === 0 ? (
+              <div className="bg-[#0f0f1e] border border-white/[0.07] rounded-xl p-8 text-center text-[#44446a]">
+                <div className="text-sm">Ucitavam Polymarket data...</div>
+              </div>
+            ) : (
+              <div className="bg-[#07070f] border border-white/[0.06] rounded-xl overflow-hidden">
+                {polyMarkets.map((m, i) => {
+                  const yesP = Number(m.yes_price) || 0
+                  return (
+                    <div key={i} className="flex items-center justify-between px-4 py-3 border-b border-white/[0.05] hover:bg-[#0f0f1e] transition-colors">
+                      <div className="flex-1 pr-4">
+                        <div className="text-[11px] text-[#e2e2f5] font-medium">{String(m.question).slice(0, 90)}</div>
+                        <div className="text-[9px] text-[#44446a] mt-0.5">Vol: ${Number(m.volume).toLocaleString(undefined, {maximumFractionDigits: 0})}</div>
+                      </div>
+                      <div className="flex gap-2 flex-shrink-0">
+                        <div className="text-center">
+                          <div className="text-[8px] text-[#44446a]">YES</div>
+                          <div className={cn('text-sm font-black mono', yesP > 0.6 ? 'text-[#00ffa3]' : yesP < 0.4 ? 'text-[#ff3366]' : 'text-[#ffcc00]')}>
+                            {(yesP * 100).toFixed(0)}%
+                          </div>
+                        </div>
+                        <div className="text-center">
+                          <div className="text-[8px] text-[#44446a]">NO</div>
+                          <div className="text-sm font-black mono text-[#7878aa]">{((1 - yesP) * 100).toFixed(0)}%</div>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
           </div>
         )}
 

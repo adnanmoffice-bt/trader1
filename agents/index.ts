@@ -2,6 +2,8 @@ import { callAgent } from '@/lib/anthropic'
 import { computeIndicators, technicalScore } from '@/lib/indicators'
 import { createServiceSupabase } from '@/lib/supabase'
 import { sendSignalAlert } from '@/lib/telegram'
+import * as binance from '@/lib/binance-trader'
+import * as poly from '@/lib/polymarket-trader'
 import type {
   AgentContext, AgentSignalOutput, AgentName,
   Instrument, Direction, Signal, OHLCV, Sentiment
@@ -110,6 +112,31 @@ export async function runOrchestrator(): Promise<void> {
       if (saved) {
         await sendSignalAlert(saved as Signal)
         await log(db, 'orchestrator', 'ok', `${instrument}: signal saved & sent — ${signalOut.direction.toUpperCase()} conf ${signalOut.confidence}%`)
+
+        // AUTO-EXECUTE on Binance if configured
+        if (binance.isConfigured() && signalOut.entry_price && signalOut.stop_loss) {
+          try {
+            const capitalUsd = (portfolio?.available_capital ?? 200000) / binance.USD_AED
+            const tradeSize = capitalUsd * binance.MAX_RISK_PCT
+            const userId = 'auto-trader'
+
+            if (signalOut.direction === 'long') {
+              const result = await binance.executeBuy(instrument, tradeSize, userId, saved.id)
+              if (result) {
+                await log(db, 'orchestrator', 'ok',
+                  `AUTO-EXEC: BUY ${instrument} $${tradeSize.toFixed(0)} @ $${result.avgPrice.toFixed(2)}`)
+                if (signalOut.stop_loss && signalOut.take_profit_1) {
+                  await binance.setStopLossAndTakeProfit(
+                    instrument, result.executedQty,
+                    signalOut.stop_loss, signalOut.take_profit_1
+                  )
+                }
+              }
+            }
+          } catch (execErr) {
+            await log(db, 'orchestrator', 'error', `AUTO-EXEC failed: ${String(execErr)}`)
+          }
+        }
       }
 
     } catch (err) {
@@ -285,6 +312,96 @@ export async function runTradeReviewer(): Promise<string> {
 
   await log(db, 'trade-reviewer', 'ok', `Daily review: ${wins}W/${losses}L — ${review.slice(0, 80)}...`)
   return review
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// POLYMARKET SCANNER — AI-powered prediction market betting
+// ══════════════════════════════════════════════════════════════════════════════
+
+const POLY_SYSTEM = `You are a prediction market analyst. You will be given a question from a prediction market and its current YES price (probability).
+
+Analyze the question and return ONLY valid JSON:
+{
+  "ai_probability": number between 0.0 and 1.0 (your estimated TRUE probability),
+  "confidence": integer 0-100 (how confident you are in your estimate),
+  "reasoning": "max 20 words explaining your probability estimate"
+}
+
+RULES:
+- Be calibrated: if you say 0.7, that event should happen ~70% of the time
+- Consider current date (April 2026), recent events, and base rates
+- For crypto price predictions, consider current prices and market conditions
+- If you genuinely don't know, return probability close to the market price
+- Only deviate significantly from market if you have strong reasoning`
+
+export async function runPolymarketScanner(): Promise<{ scanned: number; bets: number }> {
+  const db = createServiceSupabase()
+  await log(db, 'polymarket-scanner', 'info', 'Scanning prediction markets...')
+
+  const events = await poly.fetchTopEvents(10)
+  const allMarkets = events.flatMap(e => e.markets).filter(m => m.active)
+
+  if (!allMarkets.length) {
+    await log(db, 'polymarket-scanner', 'warn', 'No active markets found')
+    return { scanned: 0, bets: 0 }
+  }
+
+  const withPrices = await poly.fetchMarketPrices(allMarkets)
+  const tradeable  = withPrices.filter(m => m.yes_price > 0.05 && m.yes_price < 0.95 && m.volume > 10000)
+
+  await log(db, 'polymarket-scanner', 'info', `Found ${tradeable.length} tradeable markets (of ${allMarkets.length} total)`)
+
+  const activeBets = await poly.getActiveBets()
+  if (activeBets.length >= poly.MAX_ACTIVE_BETS) {
+    await log(db, 'polymarket-scanner', 'info', `Max active bets (${poly.MAX_ACTIVE_BETS}) reached — skipping`)
+    return { scanned: tradeable.length, bets: 0 }
+  }
+
+  const existingMarketIds = new Set(activeBets.map(b => b.market_id))
+  let betsPlaced = 0
+
+  for (const market of tradeable.slice(0, 8)) {
+    if (existingMarketIds.has(market.id)) continue
+    if (betsPlaced >= 3) break
+
+    try {
+      const analysis = await callAgent<{ ai_probability: number; confidence: number; reasoning: string }>({
+        system: POLY_SYSTEM,
+        user: `Question: "${market.question}"\nCurrent YES price: ${market.yes_price} (${(market.yes_price * 100).toFixed(0)}%)\nVolume: $${market.volume.toLocaleString()}\nEnd date: ${market.end_date}`,
+        maxTokens: 200,
+        expectJson: true,
+      })
+
+      const edge = Math.abs(analysis.ai_probability - market.yes_price)
+
+      await log(db, 'polymarket-scanner', 'info',
+        `"${market.question.slice(0, 50)}..." Market:${(market.yes_price * 100).toFixed(0)}% AI:${(analysis.ai_probability * 100).toFixed(0)}% Edge:${(edge * 100).toFixed(1)}%`)
+
+      // Only bet if edge > 15% and confidence > 70
+      if (edge < 0.15 || analysis.confidence < 70) continue
+
+      const side: 'YES' | 'NO' = analysis.ai_probability > market.yes_price ? 'YES' : 'NO'
+      const betAmount = Math.min(poly.MAX_BET_USD, 10 + edge * 40)
+
+      const result = await poly.placeBet({
+        market_id:      market.id,
+        question:       market.question,
+        side,
+        market_price:   market.yes_price,
+        ai_probability: analysis.ai_probability,
+        edge,
+        amount_usd:     Math.round(betAmount * 100) / 100,
+        reasoning:      analysis.reasoning,
+      })
+
+      if (result.success) betsPlaced++
+    } catch (err) {
+      await log(db, 'polymarket-scanner', 'error', `Analysis failed for "${market.question.slice(0, 40)}": ${String(err)}`)
+    }
+  }
+
+  await log(db, 'polymarket-scanner', 'ok', `Scan complete: ${tradeable.length} markets scanned, ${betsPlaced} bets placed`)
+  return { scanned: tradeable.length, bets: betsPlaced }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

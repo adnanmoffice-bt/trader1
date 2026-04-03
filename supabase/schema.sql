@@ -259,6 +259,31 @@ ALTER TABLE signals       REPLICA IDENTITY FULL;
 ALTER TABLE positions     REPLICA IDENTITY FULL;
 ALTER TABLE demo_trades   REPLICA IDENTITY FULL;
 
+-- ─── Polymarket Bets ─────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS polymarket_bets (
+  id              UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  market_id       VARCHAR(100) NOT NULL,
+  question        TEXT NOT NULL,
+  side            VARCHAR(5) NOT NULL CHECK (side IN ('YES','NO')),
+  entry_price     DECIMAL(6,4) NOT NULL,
+  current_price   DECIMAL(6,4),
+  amount_usd      DECIMAL(10,2) NOT NULL,
+  pnl_usd         DECIMAL(10,2),
+  ai_probability  DECIMAL(6,4),
+  edge            DECIMAL(6,4),
+  reasoning       TEXT,
+  status          VARCHAR(20) DEFAULT 'open' CHECK (status IN ('open','won','lost','sold')),
+  created_at      TIMESTAMPTZ DEFAULT NOW(),
+  resolved_at     TIMESTAMPTZ
+);
+
+CREATE INDEX idx_poly_bets_status ON polymarket_bets(status);
+ALTER TABLE polymarket_bets ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "public_read_poly_bets" ON polymarket_bets FOR SELECT USING (true);
+CREATE POLICY "service_write_poly_bets" ON polymarket_bets FOR ALL USING (auth.role() = 'service_role');
+ALTER PUBLICATION supabase_realtime ADD TABLE polymarket_bets;
+
 -- ─── Portfolio Update RPC ─────────────────────────────────────────────────────
 
 CREATE OR REPLACE FUNCTION update_portfolio_on_close(

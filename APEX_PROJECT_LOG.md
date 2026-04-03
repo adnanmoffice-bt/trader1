@@ -346,3 +346,14 @@ All computed from OHLCV candle data:
 | 2026-04-03 | BTC/USD & ETH/USD: HOLD (55% conf) — AI correctly conservative in Extreme Fear market |
 | 2026-04-03 | Dashboard now shows agent activity logs in Agenti tab |
 | 2026-04-03 | Seeded 5 market news items for Market Analyst context |
+| 2026-04-03 | Created lib/binance-trader.ts — auto buy/sell/SL/TP execution engine |
+| 2026-04-03 | Created lib/polymarket-trader.ts — prediction market betting engine |
+| 2026-04-03 | Created lib/risk-controls.ts — daily loss limit, position limits, trade size checks |
+| 2026-04-03 | Created Polymarket AI Agent — Claude analyzes prediction markets |
+| 2026-04-03 | Created /api/cron/polymarket — auto-scan and bet on prediction markets |
+| 2026-04-03 | Created /api/kill-switch — emergency stop all positions |
+| 2026-04-03 | Created /api/polymarket/bets + /markets — Polymarket data APIs |
+| 2026-04-03 | Added polymarket_bets table to schema.sql |
+| 2026-04-03 | Auto-execute: approved signals now auto-trade on Binance when configured |
+| 2026-04-03 | Dashboard: added Polymarket tab + Kill Switch button |
+| 2026-04-03 | Added polymarket cron to vercel.json (every 30min) |

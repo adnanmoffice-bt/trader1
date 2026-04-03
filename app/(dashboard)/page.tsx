@@ -137,7 +137,12 @@ function LogItem({ log }: { log: any }) {
 
 // ── Main Dashboard ────────────────────────────────────────────────────────────
 function Dashboard() {
-  const { prices, signals, agentLogs, portfolio, positions, fearGreedIndex } = useStore()
+  const prices = useStore(s => s.prices)
+  const signals = useStore(s => s.signals)
+  const agentLogs = useStore(s => s.agentLogs)
+  const portfolio = useStore(s => s.portfolio)
+  const positions = useStore(s => s.positions)
+  const fearGreedIndex = useStore(s => s.fearGreedIndex)
   const [activeTab, setActiveTab] = useState<'opportunities' | 'portfolio' | 'agents' | 'news'>('opportunities')
   const [clock, setClock] = useState('')
 
@@ -152,8 +157,33 @@ function Dashboard() {
   // Fetch initial data
   useEffect(() => {
     const store = useStore.getState()
-    fetch('/api/prices').then(r => r.json()).then(d => { if (d.data) store.setPrices(d.data) })
-    fetch('/api/signals').then(r => r.json()).then(d => { if (d.data) store.setSignals(d.data) })
+    fetch('/api/prices')
+      .then(r => r.json())
+      .then(d => {
+        if (d.data && Array.isArray(d.data)) {
+          const parsed = d.data.map((item: Record<string, unknown>) => ({
+            ...item,
+            price:          Number(item.price) || 0,
+            change_24h:     Number(item.change_24h) || 0,
+            change_pct_24h: Number(item.change_pct_24h) || 0,
+            volume_24h:     Number(item.volume_24h) || 0,
+            high_24h:       Number(item.high_24h) || 0,
+            low_24h:        Number(item.low_24h) || 0,
+            open_24h:       Number(item.open_24h) || 0,
+            market_cap:     item.market_cap ? Number(item.market_cap) : null,
+          }))
+          store.setPrices(parsed)
+        }
+      })
+      .catch(err => console.error('[APEX] Price fetch failed:', err))
+    fetch('/api/signals')
+      .then(r => r.json())
+      .then(d => { if (d.data) store.setSignals(d.data) })
+      .catch(err => console.error('[APEX] Signal fetch failed:', err))
+    fetch('/api/agent-logs')
+      .then(r => r.json())
+      .then(d => { if (d.data) d.data.forEach((log: import('@/types').AgentLog) => store.addAgentLog(log)) })
+      .catch(() => {})
   }, [])
 
   const totalPnl = positions.reduce((s, p) => s + (p.unrealized_pnl ?? 0), 0)

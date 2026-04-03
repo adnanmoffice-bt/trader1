@@ -259,6 +259,26 @@ ALTER TABLE signals       REPLICA IDENTITY FULL;
 ALTER TABLE positions     REPLICA IDENTITY FULL;
 ALTER TABLE demo_trades   REPLICA IDENTITY FULL;
 
+-- ─── Portfolio Update RPC ─────────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION update_portfolio_on_close(
+  p_user_id UUID,
+  p_pnl     DECIMAL,
+  p_is_demo BOOLEAN,
+  p_won     BOOLEAN
+) RETURNS VOID AS $$
+BEGIN
+  UPDATE portfolio
+  SET
+    realized_pnl     = realized_pnl + p_pnl,
+    available_capital = available_capital + p_pnl,
+    win_count        = win_count + CASE WHEN p_won THEN 1 ELSE 0 END,
+    loss_count       = loss_count + CASE WHEN p_won THEN 0 ELSE 1 END,
+    updated_at       = NOW()
+  WHERE user_id = p_user_id AND is_demo = p_is_demo;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
 -- ─── Seed: Default portfolio for demo user ────────────────────────────────────
 -- Run after creating a user in Auth:
 -- INSERT INTO portfolio (user_id, capital, available_capital, is_demo)

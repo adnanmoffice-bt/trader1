@@ -328,3 +328,21 @@ All computed from OHLCV candle data:
 | 2026-04-03 | Project created — full codebase with 27 files |
 | 2026-04-03 | Master log created (this file) |
 | 2026-04-03 | Git initialized and pushed to GitHub trader1 |
+| 2026-04-03 | Supabase project connected — Project ID: thuamsmvqdngemdkrftk |
+| 2026-04-03 | Database schema applied — all 10 tables + portfolio_summary view confirmed |
+| 2026-04-03 | .env.local configured — Anthropic + Supabase keys set |
+| 2026-04-03 | Fixed: market_data upsert (removed id: undefined → destructure) |
+| 2026-04-03 | Fixed: Zustand selectors for React 19 compatibility (store destructure → individual selectors) |
+| 2026-04-03 | Fixed: Supabase DECIMAL→string conversion (added Number() parsing in dashboard) |
+| 2026-04-03 | Fixed: Turbopack incompatibility (removed experimental.typedRoutes from next.config) |
+| 2026-04-03 | Fixed: Missing autoprefixer dependency (npm install autoprefixer) |
+| 2026-04-03 | Live prices working — BTC $67,161 ETH $2,071 on dashboard |
+| 2026-04-03 | Created /api/seed/price-history — bulk seed 200 candles from Binance |
+| 2026-04-03 | Created /api/cron/positions — position monitoring with SL/TP checks |
+| 2026-04-03 | Created /api/cron/demo — demo trading simulation endpoint |
+| 2026-04-03 | Created /api/agent-logs — agent log fetch endpoint |
+| 2026-04-03 | Added update_portfolio_on_close RPC function to schema.sql |
+| 2026-04-03 | AI Signal Generator tested — Market Analyst + Signal Generator working |
+| 2026-04-03 | BTC/USD & ETH/USD: HOLD (55% conf) — AI correctly conservative in Extreme Fear market |
+| 2026-04-03 | Dashboard now shows agent activity logs in Agenti tab |
+| 2026-04-03 | Seeded 5 market news items for Market Analyst context |

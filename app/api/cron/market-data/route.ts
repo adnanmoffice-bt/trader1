@@ -26,7 +26,7 @@ export async function GET(req: NextRequest) {
   // 2. Upsert into market_data table
   if (prices.length) {
     const { error } = await db.from('market_data').upsert(
-      prices.map(p => ({ ...p, id: undefined })),
+      prices.map(({ id: _id, ...rest }) => rest),
       { onConflict: 'symbol' }
     )
     if (error) errors.push(`market_data upsert: ${error.message}`)

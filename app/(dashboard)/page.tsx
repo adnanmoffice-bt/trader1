@@ -527,16 +527,16 @@ function Terminal() {
       </div>
 
       {/* ═══ MAIN GRID ═══ */}
-      <div className="flex-1 grid grid-cols-[1fr_320px] grid-rows-[1fr_260px] gap-px bg-[#1a1a2e]/50 overflow-hidden min-h-0">
+      <div className="flex-1 flex flex-col xl:grid xl:grid-cols-[1fr_340px] xl:grid-rows-[1fr_280px] gap-px bg-[#1a1a2e]/50 overflow-auto xl:overflow-hidden min-h-0">
 
-        {/* CHART PANEL (top-left) */}
-        <div className="bg-[#07070f] overflow-hidden">
+        {/* CHART PANEL */}
+        <div className="bg-[#07070f] overflow-hidden min-h-[300px] xl:min-h-0">
           <CandlestickChart candles={candles} symbol={selectedSym} />
         </div>
 
-        {/* RIGHT SIDEBAR (top-right): Market Data + Signals */}
-        <div className="grid grid-rows-[auto_1fr] gap-px bg-[#1a1a2e]/50 overflow-hidden">
-          <Panel title="Market Data" icon="📊" badge={Object.keys(prices).length} className="max-h-[220px]">
+        {/* RIGHT SIDEBAR: Market Data + Signals */}
+        <div className="grid grid-rows-[auto_1fr] gap-px bg-[#1a1a2e]/50 overflow-hidden min-h-[300px] xl:min-h-0">
+          <Panel title="Market Data" icon="📊" badge={Object.keys(prices).length} className="max-h-[240px]">
             <MarketTable prices={prices} selected={selectedSym} onSelect={setSelectedSym} />
           </Panel>
           <Panel title="AI Signali" icon="🎯" badge={signals.length}>
@@ -545,7 +545,7 @@ function Terminal() {
         </div>
 
         {/* BOTTOM-LEFT: Demo + Polymarket */}
-        <div className="grid grid-cols-2 gap-px bg-[#1a1a2e]/50 overflow-hidden">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-px bg-[#1a1a2e]/50 overflow-hidden min-h-[200px] xl:min-h-0">
           <Panel title="Simulacija" icon="🧪" badge={`${demoOpenCount} open`}>
             <DemoPanel demoData={demoData} />
           </Panel>
@@ -555,7 +555,7 @@ function Terminal() {
         </div>
 
         {/* BOTTOM-RIGHT: Agent Logs */}
-        <Panel title="Agent Aktivnost" icon="🤖" badge={agentLogs.length}>
+        <Panel title="Agent Aktivnost" icon="🤖" badge={agentLogs.length} className="min-h-[200px] xl:min-h-0">
           <AgentLog logs={agentLogs as unknown as Array<Record<string, unknown>>} />
         </Panel>
       </div>

@@ -2,6 +2,7 @@ import { callAgent } from '@/lib/anthropic'
 import { computeIndicators, technicalScore, detectBBSqueeze, detectEMACross, kellyFraction } from '@/lib/indicators'
 import { createServiceSupabase } from '@/lib/supabase'
 import { sendSignalAlert } from '@/lib/telegram'
+import { checkSafety } from '@/lib/safety'
 import * as binance from '@/lib/binance-trader'
 import * as poly from '@/lib/polymarket-trader'
 import type {
@@ -17,7 +18,15 @@ const INSTRUMENTS: Instrument[] = ['BTC/USD', 'ETH/USD', 'BRENT', 'XAU/USD']
 
 export async function runOrchestrator(): Promise<void> {
   const db = createServiceSupabase()
-  await log(db, 'orchestrator', 'info', `Pipeline started — scanning ${INSTRUMENTS.join(', ')}`)
+
+  // Safety check before any trading
+  const safety = await checkSafety()
+  if (!safety.safe) {
+    await log(db, 'orchestrator', 'warn', `Pipeline BLOCKED by safety: ${safety.reason}`)
+    return
+  }
+
+  await log(db, 'orchestrator', 'info', `Pipeline started — scanning ${INSTRUMENTS.join(', ')} | DD:${(safety.drawdownPct * 100).toFixed(1)}% DayPnL:${safety.todayPnl.toFixed(0)} AED Pos:${safety.openPositions}/${safety.maxPositions}`)
 
   const { data: portfolio } = await db
     .from('portfolio')

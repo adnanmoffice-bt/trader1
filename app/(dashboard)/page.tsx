@@ -594,6 +594,7 @@ function Terminal() {
           <span className="flex items-center gap-1 text-[8px] font-bold text-[#00ffa3] tracking-[0.15em] px-1.5 py-0.5 border border-[rgba(0,255,163,0.2)] rounded bg-[rgba(0,255,163,0.05)]">
             <span className="w-1.5 h-1.5 rounded-full bg-[#00ffa3] animate-pulse" />LIVE
           </span>
+          <a href="/investor" className="text-[8px] text-[#44446a] hover:text-[#00ccff] px-1.5 py-0.5 rounded hover:bg-[#0f0f1e] transition-colors">INVESTOR VIEW</a>
         </div>
 
         {/* Ticker strip */}

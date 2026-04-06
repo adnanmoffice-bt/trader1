@@ -77,6 +77,7 @@ export default function WarRoomPage() {
     }).catch(() => setLoadingMsgs(false))
   }, [selectedMeeting, msgCache])
 
+  const meeting = meetings.find(m => m.id === selectedMeeting)
   const allDisplayMsgs = msgCache[selectedMeeting ?? ''] ?? []
   const speaks = useMemo(() => allDisplayMsgs.filter(m => m.role === 'speak' || m.role === 'decision' || m.role === 'alert'), [allDisplayMsgs])
   const decisionMsg = useMemo(() => allDisplayMsgs.find(m => m.role === 'decision'), [allDisplayMsgs])

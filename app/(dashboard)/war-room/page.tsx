@@ -1,65 +1,65 @@
 'use client'
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
 
-/* ─── Agent Metadata ─── */
+/* ═══════════════════════════════════════════════════════════════════════════════
+   AGENT CONFIG
+   ═══════════════════════════════════════════════════════════════════════════════ */
 
-const AGENTS: Record<string, { icon: string; name: string; color: string; title: string }> = {
-  'orchestrator':       { icon: '🧠', name: 'Orchestrator',  color: 'var(--amber)',  title: 'Chairman' },
-  'macro-agent':        { icon: '🌍', name: 'Macro',         color: 'var(--cyan)',   title: 'Macro Analyst' },
-  'correlation-agent':  { icon: '🔗', name: 'Correlation',   color: 'var(--blue)',   title: 'Cross-Asset' },
-  'bull-agent':         { icon: '🐂', name: 'Bull',          color: 'var(--green)',  title: 'Bull Advocate' },
-  'bear-agent':         { icon: '🐻', name: 'Bear',          color: 'var(--red)',    title: 'Bear Advocate' },
-  'scalper-agent':      { icon: '⚡', name: 'Scalper',       color: 'var(--cyan)',   title: 'Scalp Trader' },
-  'trend-agent':        { icon: '📈', name: 'Trend',         color: 'var(--blue)',   title: 'Trend Follower' },
-  'market-analyst':     { icon: '📰', name: 'Analyst',       color: 'var(--purple)', title: 'Sentiment' },
-  'signal-generator':   { icon: '🎯', name: 'Signal',        color: 'var(--green)',  title: 'Signal Gen' },
-  'risk-manager':       { icon: '🛡', name: 'Risk',          color: 'var(--red)',    title: 'Risk Mgr' },
-  'trade-reviewer':     { icon: '📊', name: 'Reviewer',      color: 'var(--amber)',  title: 'Trade Review' },
-  'master-agent':       { icon: '👑', name: 'Master',        color: 'var(--amber)',  title: 'Final Call' },
+const AGENTS: Record<string, { icon: string; name: string; color: string; title: string; ring: number }> = {
+  'orchestrator':       { icon: '🧠', name: 'Orchestrator',  color: '#ffcc00', title: 'Predsjedavajući',    ring: 0 },
+  'macro-agent':        { icon: '🌍', name: 'Macro',         color: '#00ccff', title: 'Makro Analitičar',   ring: 1 },
+  'correlation-agent':  { icon: '🔗', name: 'Korelacija',    color: '#6fa8ff', title: 'Cross-Asset',        ring: 1 },
+  'bull-agent':         { icon: '🐂', name: 'Bull',          color: '#00ffa3', title: 'Bullish Advokat',    ring: 1 },
+  'bear-agent':         { icon: '🐻', name: 'Bear',          color: '#ff3366', title: 'Bearish Advokat',    ring: 1 },
+  'scalper-agent':      { icon: '⚡', name: 'Scalper',       color: '#ff9900', title: 'Scalp Trader',       ring: 1 },
+  'trend-agent':        { icon: '📈', name: 'Trend',         color: '#6fa8ff', title: 'Trend Follower',     ring: 1 },
+  'market-analyst':     { icon: '📰', name: 'Analyst',       color: '#9966ff', title: 'Sentiment Analyst',  ring: 1 },
+  'signal-generator':   { icon: '🎯', name: 'Signal',        color: '#00ffa3', title: 'Signal Generator',   ring: 1 },
+  'risk-manager':       { icon: '🛡', name: 'Risk',          color: '#ff3366', title: 'Risk Manager',       ring: 1 },
+  'trade-reviewer':     { icon: '📊', name: 'Reviewer',      color: '#ffcc00', title: 'Trade Reviewer',     ring: 1 },
+  'master-agent':       { icon: '👑', name: 'Master',        color: '#ffcc00', title: 'Master Agent',       ring: 1 },
 }
 
-/* ─── Seat Positions Around the Oval Table (% of container) ─── */
-
-const SEATS = [
-  { id: 'macro-agent',       top: 5,  left: 22 },
-  { id: 'correlation-agent', top: 2,  left: 50 },
-  { id: 'bull-agent',        top: 5,  left: 78 },
-  { id: 'bear-agent',        top: 28, left: 93 },
-  { id: 'market-analyst',    top: 52, left: 96 },
-  { id: 'risk-manager',      top: 74, left: 93 },
-  { id: 'master-agent',      top: 95, left: 78 },
-  { id: 'orchestrator',      top: 98, left: 50 },
-  { id: 'trade-reviewer',    top: 95, left: 22 },
-  { id: 'signal-generator',  top: 74, left: 7 },
-  { id: 'trend-agent',       top: 52, left: 4 },
-  { id: 'scalper-agent',     top: 28, left: 7 },
+const SEAT_ANGLES: { id: string; angle: number }[] = [
+  { id: 'macro-agent',       angle: -90 },
+  { id: 'correlation-agent', angle: -60 },
+  { id: 'bull-agent',        angle: -30 },
+  { id: 'bear-agent',        angle: 0 },
+  { id: 'scalper-agent',     angle: 30 },
+  { id: 'trend-agent',       angle: 60 },
+  { id: 'market-analyst',    angle: 90 },
+  { id: 'signal-generator',  angle: 120 },
+  { id: 'risk-manager',      angle: 150 },
+  { id: 'trade-reviewer',    angle: 180 },
+  { id: 'master-agent',      angle: -120 },
 ]
 
-const ROLE_BADGE: Record<string, { bg: string; label: string }> = {
-  open:     { bg: 'var(--bg-2)', label: 'OPEN' },
-  speak:    { bg: 'var(--bg-2)', label: 'SPEAK' },
-  question: { bg: 'var(--blue)', label: 'ASK' },
-  decision: { bg: 'var(--amber)', label: 'DECISION' },
-  alert:    { bg: 'var(--red)', label: 'ALERT' },
-  close:    { bg: 'var(--bg-3)', label: 'CLOSE' },
-}
-
-/* ─── Types ─── */
+/* ═══════════════════════════════════════════════════════════════════════════════
+   TYPES + HELPERS
+   ═══════════════════════════════════════════════════════════════════════════════ */
 
 interface Msg { id: string; meeting_id: string; agent: string; role: string; message: string; instrument: string; created_at: string; data?: Record<string, unknown> }
 interface Meeting { id: string; instrument: string; messageCount: number; startedAt: string; decision: string; messages: Msg[] }
 
-/* ─── Helpers ─── */
-
 function getStance(message: string): 'bull' | 'bear' | 'neutral' {
   const l = message.toLowerCase()
-  const bu = ['long', 'bullish', 'buy', 'upside', 'bounce', 'rally', 'recovery', 'accumulation'].filter(w => l.includes(w)).length
-  const be = ['short', 'bearish', 'sell', 'downside', 'breakdown', 'drop', 'correction', 'decline'].filter(w => l.includes(w)).length
+  const bu = ['long', 'bullish', 'buy', 'upside', 'bounce', 'rally', 'recovery', 'accumulation', 'approve', 'execute', 'support'].filter(w => l.includes(w)).length
+  const be = ['short', 'bearish', 'sell', 'downside', 'breakdown', 'drop', 'correction', 'decline', 'reject', 'caution', 'against'].filter(w => l.includes(w)).length
   return bu > be ? 'bull' : be > bu ? 'bear' : 'neutral'
+}
+
+function getConfidence(message: string): number | null {
+  const m = message.match(/(\d{2,3})%?\s*(?:confiden|sigurn)/i) ?? message.match(/(?:confiden|sigurn)\w*\s*(?:of\s+)?(\d{2,3})/i)
+  if (m) return Math.min(parseInt(m[1]), 100)
+  return null
 }
 
 function fmtTime(d: string) {
   return d ? new Date(d).toLocaleTimeString('en', { timeZone: 'Asia/Dubai', hour: '2-digit', minute: '2-digit' }) : '—'
+}
+
+function fmtDate(d: string) {
+  return d ? new Date(d).toLocaleDateString('en', { timeZone: 'Asia/Dubai', day: '2-digit', month: 'short' }) : ''
 }
 
 function fmtTimeSec(d: string) {
@@ -76,7 +76,14 @@ function meetingStatus(m: Meeting): 'executed' | 'rejected' | 'pending' {
   return 'pending'
 }
 
-/* ─── Component ─── */
+function extractPrice(msg: Msg): string | null {
+  const m = msg.message.match(/\$[\d,]+\.?\d*/g)
+  return m?.[0] ?? null
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   COMPONENT
+   ═══════════════════════════════════════════════════════════════════════════════ */
 
 export default function WarRoomPage() {
   const [meetings, setMeetings] = useState<Meeting[]>([])
@@ -85,11 +92,10 @@ export default function WarRoomPage() {
   const [loading, setLoading] = useState(true)
   const [activeStep, setActiveStep] = useState(0)
   const [isPlaying, setIsPlaying] = useState(false)
-  const [viewMode, setViewMode] = useState<'boardroom' | 'transcript'>('boardroom')
-  const [expandedMsg, setExpandedMsg] = useState(false)
+  const chatRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    fetch('/api/war-room?limit=10').then(r => r.json()).then(d => {
+    fetch('/api/war-room?limit=20').then(r => r.json()).then(d => {
       setMeetings(d.meetings ?? [])
       setAllMsgs(d.data ?? [])
       if (d.meetings?.length) setSelectedMeeting(d.meetings[0].id)
@@ -99,30 +105,44 @@ export default function WarRoomPage() {
 
   const currentMeeting = meetings.find(m => m.id === selectedMeeting)
   const displayMsgs = currentMeeting?.messages ?? allMsgs.filter(m => m.meeting_id === selectedMeeting)
-
-  const speakMsgs = useMemo(
-    () => displayMsgs.filter(m => m.role !== 'open' && m.role !== 'close'),
-    [displayMsgs]
-  )
-
+  const speakMsgs = useMemo(() => displayMsgs.filter(m => m.role === 'speak' || m.role === 'decision'), [displayMsgs])
+  const visibleMsgs = useMemo(() => speakMsgs.slice(0, activeStep + 1), [speakMsgs, activeStep])
   const activeMsg = speakMsgs[activeStep]
   const activeAgentId = activeMsg?.agent
 
   const agentStances = useMemo(() => {
-    const s: Record<string, 'bull' | 'bear' | 'neutral'> = {}
-    for (const msg of speakMsgs) {
-      if (msg.agent && msg.role === 'speak') s[msg.agent] = getStance(msg.message)
+    const s: Record<string, { stance: 'bull' | 'bear' | 'neutral'; conf: number | null }> = {}
+    for (const msg of visibleMsgs) {
+      if (msg.agent && msg.role === 'speak') {
+        s[msg.agent] = { stance: getStance(msg.message), conf: getConfidence(msg.message) }
+      }
     }
     return s
-  }, [speakMsgs])
+  }, [visibleMsgs])
 
-  const decisionMsg = useMemo(
-    () => displayMsgs.find(m => m.role === 'decision'),
-    [displayMsgs]
-  )
+  const decisionMsg = useMemo(() => displayMsgs.find(m => m.role === 'decision'), [displayMsgs])
+  const openMsg = useMemo(() => displayMsgs.find(m => m.role === 'open'), [displayMsgs])
+  const closeMsg = useMemo(() => displayMsgs.find(m => m.role === 'close'), [displayMsgs])
 
-  useEffect(() => { setActiveStep(0); setIsPlaying(false); setExpandedMsg(false) }, [selectedMeeting])
-  useEffect(() => { setExpandedMsg(false) }, [activeStep])
+  const voteSummary = useMemo(() => {
+    let f = 0, a = 0
+    for (const m of visibleMsgs) {
+      if (m.role !== 'speak') continue
+      const st = getStance(m.message)
+      if (st === 'bull') f++
+      else if (st === 'bear') a++
+    }
+    return { votesFor: f, votesAgainst: a }
+  }, [visibleMsgs])
+
+  const decisionVotesFor = Number(decisionMsg?.data?.votesFor ?? voteSummary.votesFor)
+  const decisionVotesAgainst = Number(decisionMsg?.data?.votesAgainst ?? voteSummary.votesAgainst)
+
+  useEffect(() => { setActiveStep(0); setIsPlaying(false) }, [selectedMeeting])
+
+  useEffect(() => {
+    if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight
+  }, [activeStep])
 
   useEffect(() => {
     if (!isPlaying) return
@@ -131,447 +151,545 @@ export default function WarRoomPage() {
         if (s >= speakMsgs.length - 1) { setIsPlaying(false); return s }
         return s + 1
       })
-    }, 5000)
+    }, 3500)
     return () => clearInterval(timer)
   }, [isPlaying, speakMsgs.length])
 
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
-      if (e.key === 'ArrowRight') setActiveStep(s => Math.min(s + 1, Math.max(speakMsgs.length - 1, 0)))
-      else if (e.key === 'ArrowLeft') setActiveStep(s => Math.max(s - 1, 0))
-      else if (e.key === ' ') { e.preventDefault(); setIsPlaying(p => !p) }
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
+  const onKey = useCallback((e: KeyboardEvent) => {
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
+    if (e.key === 'ArrowRight') setActiveStep(s => Math.min(s + 1, Math.max(speakMsgs.length - 1, 0)))
+    else if (e.key === 'ArrowLeft') setActiveStep(s => Math.max(s - 1, 0))
+    else if (e.key === ' ') { e.preventDefault(); setIsPlaying(p => !p) }
   }, [speakMsgs.length])
-
-  const votesFor = Number(decisionMsg?.data?.votesFor ?? 0)
-  const votesAgainst = Number(decisionMsg?.data?.votesAgainst ?? 0)
-  const totalVotes = votesFor + votesAgainst
-  const forPct = totalVotes > 0 ? (votesFor / totalVotes) * 100 : 50
+  useEffect(() => { window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey) }, [onKey])
 
   return (
     <>
       <style>{`
-        @keyframes seatPulse {
+        @keyframes glowPulse {
           0%, 100% { box-shadow: 0 0 0 0 var(--pulse-clr, transparent); }
-          50% { box-shadow: 0 0 20px 8px var(--pulse-clr, transparent); }
+          50% { box-shadow: 0 0 24px 6px var(--pulse-clr, transparent); }
         }
-        @keyframes tableGlow {
-          0%, 100% { box-shadow: 0 0 40px rgba(255,204,0,0.02), inset 0 0 60px rgba(0,0,0,0.5); }
-          50% { box-shadow: 0 0 80px rgba(255,204,0,0.06), inset 0 0 40px rgba(0,0,0,0.3); }
+        @keyframes speakGlow {
+          0%, 100% { opacity: 0.3; }
+          50% { opacity: 1; }
         }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-        .seat-pulse { animation: seatPulse 2s ease-in-out infinite; }
-        .table-glow { animation: tableGlow 5s ease-in-out infinite; }
-        .msg-fade { animation: fadeIn 0.4s ease-out; }
+        @keyframes fadeSlideIn {
+          from { opacity: 0; transform: translateY(8px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes ringRotate {
+          from { transform: translate(-50%,-50%) rotate(0deg); }
+          to { transform: translate(-50%,-50%) rotate(360deg); }
+        }
+        @keyframes tablePulse {
+          0%, 100% { box-shadow: inset 0 0 80px rgba(0,0,0,0.6), 0 0 50px rgba(255,204,0,0.015); }
+          50% { box-shadow: inset 0 0 50px rgba(0,0,0,0.4), 0 0 80px rgba(255,204,0,0.04); }
+        }
+        .speak-glow { animation: speakGlow 1.5s ease-in-out infinite; }
+        .chat-msg { animation: fadeSlideIn 0.35s ease-out; }
+        .table-pulse { animation: tablePulse 6s ease-in-out infinite; }
+        .seat-active { animation: glowPulse 2s ease-in-out infinite; }
+        .scroll-thin::-webkit-scrollbar { width: 4px; }
+        .scroll-thin::-webkit-scrollbar-track { background: transparent; }
+        .scroll-thin::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 2px; }
       `}</style>
 
-      <div className="h-full flex">
-        {/* ─── LEFT SIDEBAR: Meeting List ─── */}
-        <div className="w-52 flex-shrink-0 overflow-y-auto" style={{ background: 'var(--bg-1)', borderRight: '1px solid var(--border)' }}>
-          <div className="px-2 py-2">
-            <div className="text-[9px] font-bold tracking-widest mb-2" style={{ color: 'var(--text-3)' }}>
-              WAR ROOM SESSIONS
+      <div className="h-full flex" style={{ background: '#050510' }}>
+        {/* ═══ LEFT SIDEBAR — Sessions ═══ */}
+        <div className="w-56 flex-shrink-0 overflow-y-auto scroll-thin" style={{
+          background: 'linear-gradient(180deg, #0a0a18 0%, #060612 100%)',
+          borderRight: '1px solid rgba(255,255,255,0.06)',
+        }}>
+          <div className="px-3 py-3">
+            <div className="text-[9px] font-bold tracking-[0.2em] mb-3" style={{ color: 'rgba(255,204,0,0.5)' }}>
+              SESIJE
             </div>
-            {loading && <div className="text-[10px] p-2" style={{ color: 'var(--text-3)' }}>Loading...</div>}
+            {loading && <div className="text-[10px] p-2" style={{ color: 'rgba(255,255,255,0.3)' }}>Učitavanje...</div>}
             {!loading && meetings.length === 0 && (
-              <div className="text-[10px] p-2" style={{ color: 'var(--text-3)' }}>
-                No meetings yet. Run the signals cron to start a War Room session.
+              <div className="text-[10px] p-2 leading-relaxed" style={{ color: 'rgba(255,255,255,0.25)' }}>
+                Nema sesija. Pokreni cron da startaš War Room.
               </div>
             )}
             {meetings.map(m => {
               const status = meetingStatus(m)
               const isActive = selectedMeeting === m.id
+              const statusClr = status === 'executed' ? '#00ffa3' : status === 'rejected' ? '#ff3366' : 'rgba(255,255,255,0.25)'
               return (
-                <button key={m.id} onClick={() => setSelectedMeeting(m.id)} className="w-full text-left px-2 py-2 rounded mb-0.5 transition-all" style={{
-                  background: isActive ? 'var(--bg-2)' : 'transparent',
-                  borderLeft: isActive ? '2px solid var(--amber)' : '2px solid transparent',
+                <button key={m.id} onClick={() => setSelectedMeeting(m.id)} className="w-full text-left px-3 py-2.5 rounded-lg mb-1 transition-all" style={{
+                  background: isActive ? 'rgba(255,204,0,0.06)' : 'transparent',
+                  border: isActive ? '1px solid rgba(255,204,0,0.15)' : '1px solid transparent',
                 }}>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5">
-                      <div style={{
-                        width: 7, height: 7, borderRadius: '50%',
-                        background: status === 'executed' ? 'var(--green)' : status === 'rejected' ? 'var(--red)' : 'var(--text-3)',
-                        boxShadow: status === 'executed' ? '0 0 6px var(--green)' : status === 'rejected' ? '0 0 6px var(--red)' : 'none',
-                      }} />
-                      <span className="text-[11px] font-bold" style={{ color: 'var(--text-0)' }}>{m.instrument}</span>
-                    </div>
-                    <span className="text-[8px]" style={{ color: 'var(--text-3)' }}>{m.messageCount} msgs</span>
+                  <div className="flex items-center gap-2">
+                    <div style={{
+                      width: 8, height: 8, borderRadius: '50%', background: statusClr, flexShrink: 0,
+                      boxShadow: status !== 'pending' ? `0 0 8px ${statusClr}` : 'none',
+                    }} />
+                    <span className="text-[12px] font-bold" style={{ color: isActive ? '#fff' : 'rgba(255,255,255,0.7)' }}>
+                      {m.instrument}
+                    </span>
+                    <span className="text-[8px] ml-auto" style={{ color: 'rgba(255,255,255,0.25)' }}>
+                      {m.messageCount} msg
+                    </span>
                   </div>
-                  <div className="text-[9px] mt-0.5" style={{ color: 'var(--text-2)' }}>{fmtTime(m.startedAt)}</div>
-                  <div className="text-[8px] truncate mt-0.5" style={{ color: 'var(--text-3)' }}>{m.decision}</div>
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className="text-[9px]" style={{ color: 'rgba(255,255,255,0.3)' }}>
+                      {fmtDate(m.startedAt)} {fmtTime(m.startedAt)}
+                    </span>
+                  </div>
+                  {m.decision && (
+                    <div className="text-[8px] mt-1 truncate" style={{ color: 'rgba(255,255,255,0.2)' }}>
+                      {m.decision.slice(0, 60)}
+                    </div>
+                  )}
                 </button>
               )
             })}
           </div>
         </div>
 
-        {/* ─── MAIN AREA ─── */}
-        <div className="flex-1 flex flex-col overflow-hidden" style={{ background: 'var(--bg-0)' }}>
-          {/* Header Bar */}
-          <div className="flex items-center justify-between px-4 py-1.5 flex-shrink-0" style={{ background: 'var(--bg-1)', borderBottom: '1px solid var(--border)' }}>
+        {/* ═══ CENTER — Boardroom ═══ */}
+        <div className="flex-1 flex flex-col overflow-hidden" style={{
+          background: 'radial-gradient(ellipse at 50% 45%, #0d0d1a 0%, #050510 70%)',
+        }}>
+          {/* Header */}
+          <div className="flex items-center justify-between px-5 py-2 flex-shrink-0" style={{
+            borderBottom: '1px solid rgba(255,255,255,0.06)',
+            background: 'rgba(10,10,24,0.8)',
+          }}>
             <div className="flex items-center gap-3">
-              <span className="text-[11px] font-bold tracking-wide" style={{ color: 'var(--amber)' }}>⚔ WAR ROOM</span>
+              <span className="text-[11px] font-bold tracking-[0.15em]" style={{ color: '#ffcc00' }}>WAR ROOM</span>
               {currentMeeting && (
-                <span className="text-[11px] font-bold" style={{ color: 'var(--text-0)' }}>{currentMeeting.instrument}</span>
-              )}
-              {currentMeeting && (
-                <span className="text-[8px]" style={{ color: 'var(--text-3)' }}>{fmtTime(currentMeeting.startedAt)} Dubai</span>
+                <>
+                  <div style={{ width: 1, height: 14, background: 'rgba(255,255,255,0.1)' }} />
+                  <span className="text-[13px] font-bold" style={{ color: '#fff' }}>{currentMeeting.instrument}</span>
+                  <span className="text-[9px]" style={{ color: 'rgba(255,255,255,0.3)' }}>
+                    {fmtDate(currentMeeting.startedAt)} {fmtTime(currentMeeting.startedAt)} Dubai
+                  </span>
+                </>
               )}
             </div>
-            <div className="flex items-center gap-1">
-              {(['boardroom', 'transcript'] as const).map(mode => (
-                <button key={mode} onClick={() => setViewMode(mode)} className="text-[9px] font-bold px-2.5 py-1 rounded transition-all" style={{
-                  background: viewMode === mode ? 'var(--bg-3)' : 'transparent',
-                  color: viewMode === mode ? 'var(--amber)' : 'var(--text-3)',
-                  border: viewMode === mode ? '1px solid var(--border)' : '1px solid transparent',
-                }}>
-                  {mode === 'boardroom' ? '🏛 BOARDROOM' : '📋 TRANSCRIPT'}
-                </button>
-              ))}
-            </div>
+            {currentMeeting && (
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] font-bold" style={{ color: '#00ffa3' }}>{voteSummary.votesFor} ZA</span>
+                  <div style={{ width: 40, height: 3, borderRadius: 2, background: 'rgba(255,51,102,0.3)', overflow: 'hidden' }}>
+                    <div style={{
+                      width: `${(voteSummary.votesFor + voteSummary.votesAgainst) > 0 ? (voteSummary.votesFor / (voteSummary.votesFor + voteSummary.votesAgainst)) * 100 : 50}%`,
+                      height: '100%', background: '#00ffa3', borderRadius: 2,
+                    }} />
+                  </div>
+                  <span className="text-[9px] font-bold" style={{ color: '#ff3366' }}>{voteSummary.votesAgainst} PROTIV</span>
+                </div>
+              </div>
+            )}
           </div>
 
-          {viewMode === 'boardroom' ? (
-            /* ═══ BOARDROOM VIEW ═══ */
-            <div className="flex-1 flex flex-col overflow-hidden">
-              {/* Table Area */}
-              <div className="flex-1 relative overflow-hidden" style={{
-                background: 'radial-gradient(ellipse at 50% 50%, rgba(255,204,0,0.012) 0%, transparent 55%)',
-                minHeight: 300,
+          {/* Boardroom + Chat split */}
+          <div className="flex-1 flex overflow-hidden">
+            {/* ─── Boardroom Visualization ─── */}
+            <div className="flex-1 relative overflow-hidden" style={{ minWidth: 0 }}>
+              {/* Oval Table */}
+              <div className="absolute table-pulse" style={{
+                top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+                width: '52%', height: '55%', borderRadius: '50%',
+                background: 'radial-gradient(ellipse at 50% 40%, #151520 0%, #0c0c16 50%, #08080f 100%)',
+                border: '1px solid rgba(255,204,0,0.08)',
               }}>
-                {/* The Oval Table */}
-                <div className="absolute table-glow" style={{
-                  top: '20%', left: '22%', width: '56%', height: '60%',
-                  borderRadius: '50%',
-                  background: 'radial-gradient(ellipse at 50% 42%, rgba(30,26,22,0.95) 0%, rgba(18,16,13,0.97) 45%, rgba(10,8,6,1) 100%)',
-                  border: '1.5px solid rgba(255,204,0,0.1)',
-                }}>
-                  {/* Inner decorative ring */}
-                  <div className="absolute" style={{
-                    inset: '10%', borderRadius: '50%',
-                    border: '1px solid rgba(255,204,0,0.04)',
-                  }} />
-
-                  {/* Center Content */}
-                  <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-6">
-                    {currentMeeting ? (
-                      <>
-                        <div className="text-[7px] tracking-[0.25em] font-bold mb-1" style={{ color: 'var(--text-3)' }}>
-                          SESSION ACTIVE
-                        </div>
-                        <div className="text-xl font-bold" style={{ color: 'var(--text-0)', letterSpacing: '0.05em' }}>
-                          {currentMeeting.instrument}
-                        </div>
-
-                        {decisionMsg?.data ? (
-                          <>
-                            <div className="flex items-center gap-5 mt-3">
-                              <div className="text-center">
-                                <div className="text-2xl font-bold" style={{ color: 'var(--green)' }}>{votesFor}</div>
-                                <div className="text-[6px] font-bold tracking-[0.2em]" style={{ color: 'var(--green)', opacity: 0.7 }}>FOR</div>
-                              </div>
-                              <div style={{ width: 70, height: 5, borderRadius: 3, background: 'rgba(255,51,102,0.3)', overflow: 'hidden' }}>
-                                <div style={{
-                                  width: `${forPct}%`, height: '100%',
-                                  background: 'var(--green)', borderRadius: 3,
-                                  transition: 'width 0.6s ease',
-                                }} />
-                              </div>
-                              <div className="text-center">
-                                <div className="text-2xl font-bold" style={{ color: 'var(--red)' }}>{votesAgainst}</div>
-                                <div className="text-[6px] font-bold tracking-[0.2em]" style={{ color: 'var(--red)', opacity: 0.7 }}>AGAINST</div>
-                              </div>
-                            </div>
-                            <div className="mt-3 text-[9px] font-bold px-4 py-1.5 rounded-full" style={{
-                              background: decisionMsg.data.execute ? 'rgba(0,255,163,0.1)' : 'rgba(255,51,102,0.1)',
-                              color: decisionMsg.data.execute ? 'var(--green)' : 'var(--red)',
-                              border: `1px solid ${decisionMsg.data.execute ? 'rgba(0,255,163,0.25)' : 'rgba(255,51,102,0.25)'}`,
-                              letterSpacing: '0.12em',
-                            }}>
-                              {decisionMsg.data.execute ? '✓ TRADE APPROVED' : '✕ TRADE REJECTED'}
-                            </div>
-                          </>
-                        ) : speakMsgs.length > 0 ? (
-                          <div className="mt-2 text-[9px]" style={{ color: 'var(--text-3)' }}>
-                            {speakMsgs.length} interventions &bull; Deliberating...
-                          </div>
-                        ) : null}
-                      </>
-                    ) : (
-                      <>
-                        <div className="text-4xl mb-2 opacity-40">⚔</div>
-                        <div className="text-[12px] font-bold mb-1" style={{ color: 'var(--text-2)' }}>War Room</div>
-                        <div className="text-[9px]" style={{ color: 'var(--text-3)' }}>
-                          {meetings.length === 0 ? 'Awaiting next session...' : 'Select a meeting'}
-                        </div>
-                      </>
-                    )}
-                  </div>
-                </div>
-
-                {/* ─── Agent Seats ─── */}
-                {SEATS.map(seat => {
-                  const agent = AGENTS[seat.id]
-                  if (!agent) return null
-                  const isActive = seat.id === activeAgentId
-                  const stance = agentStances[seat.id]
-                  const isOrch = seat.id === 'orchestrator'
-                  const size = isOrch ? 50 : 42
-
-                  return (
-                    <div key={seat.id} className="absolute z-10" style={{
-                      top: `${seat.top}%`, left: `${seat.left}%`,
-                      transform: 'translate(-50%, -50%)',
-                    }}>
-                      <div
-                        className="flex flex-col items-center cursor-pointer group"
-                        onClick={() => {
-                          const idx = speakMsgs.findIndex(m => m.agent === seat.id)
-                          if (idx >= 0) { setActiveStep(idx); setIsPlaying(false) }
-                        }}
-                      >
-                        {/* Seat Circle */}
-                        <div className="relative">
-                          <div
-                            className={isActive ? 'seat-pulse' : ''}
-                            style={{
-                              width: size, height: size, borderRadius: '50%',
-                              background: isActive ? 'var(--bg-2)' : 'var(--bg-1)',
-                              border: `2px solid ${isActive ? agent.color : 'var(--border)'}`,
-                              display: 'flex', alignItems: 'center', justifyContent: 'center',
-                              fontSize: isOrch ? 24 : 18,
-                              transition: 'all 0.4s ease',
-                              '--pulse-clr': `${agent.color}50`,
-                              filter: isActive ? `drop-shadow(0 0 8px ${agent.color})` : 'none',
-                            } as React.CSSProperties}
-                          >
-                            {agent.icon}
-                          </div>
-                          {/* Stance indicator dot */}
-                          {stance && stance !== 'neutral' && (
-                            <div className="absolute -bottom-0.5 -right-0.5" style={{
-                              width: 10, height: 10, borderRadius: '50%',
-                              background: stance === 'bull' ? 'var(--green)' : 'var(--red)',
-                              border: '2px solid var(--bg-0)',
-                              boxShadow: `0 0 4px ${stance === 'bull' ? 'var(--green)' : 'var(--red)'}`,
-                            }} />
-                          )}
-                        </div>
-
-                        {/* Name */}
-                        <span className="text-[8px] font-bold mt-0.5 whitespace-nowrap" style={{
-                          color: isActive ? agent.color : 'var(--text-3)',
-                          transition: 'color 0.3s ease',
-                          textShadow: isActive ? `0 0 10px ${agent.color}` : 'none',
-                        }}>
-                          {agent.name}
-                        </span>
-
-                        {/* Chairman label for Orchestrator */}
-                        {isOrch && (
-                          <span className="text-[6px] tracking-[0.15em] font-bold" style={{ color: 'var(--amber)', opacity: 0.45 }}>
-                            CHAIRMAN
-                          </span>
-                        )}
-
-                        {/* Title tooltip on hover */}
-                        <div className="absolute opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none text-[7px] font-bold px-2 py-0.5 rounded whitespace-nowrap" style={{
-                          background: 'var(--bg-3)',
-                          color: agent.color,
-                          border: '1px solid var(--border)',
-                          bottom: '100%', marginBottom: 4,
-                          zIndex: 20,
-                        }}>
-                          {agent.title}
-                        </div>
+                {/* Inner ring */}
+                <div className="absolute" style={{
+                  inset: '12%', borderRadius: '50%',
+                  border: '1px solid rgba(255,204,0,0.03)',
+                }} />
+                {/* Center info */}
+                <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-8">
+                  {currentMeeting ? (
+                    <>
+                      <div className="text-[7px] tracking-[0.3em] font-bold mb-1" style={{ color: 'rgba(255,204,0,0.35)' }}>
+                        {activeMsg ? 'GOVORI' : 'SESIJA'}
                       </div>
-                    </div>
-                  )
-                })}
-              </div>
-
-              {/* ─── Active Speaker Message Panel ─── */}
-              {activeMsg && (
-                <div className="mx-3 mb-1 flex-shrink-0 rounded-lg overflow-hidden msg-fade" key={activeStep} style={{
-                  background: 'var(--bg-1)',
-                  border: '1px solid var(--border)',
-                  borderLeftWidth: 3,
-                  borderLeftColor: AGENTS[activeMsg.agent]?.color ?? 'var(--border)',
-                }}>
-                  <div className="px-3 py-2">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-base">{AGENTS[activeMsg.agent]?.icon}</span>
-                      <span className="text-[10px] font-bold" style={{ color: AGENTS[activeMsg.agent]?.color }}>
-                        {AGENTS[activeMsg.agent]?.name ?? activeMsg.agent}
-                      </span>
-                      <span className="text-[7px] font-bold px-1.5 py-0.5 rounded" style={{
-                        background: ROLE_BADGE[activeMsg.role]?.bg ?? 'var(--bg-2)',
-                        color: activeMsg.role === 'decision' ? '#000' : 'var(--text-2)',
-                      }}>
-                        {ROLE_BADGE[activeMsg.role]?.label ?? 'SPEAK'}
-                      </span>
-                      <span className="text-[8px]" style={{ color: 'var(--text-3)' }}>{fmtTimeSec(activeMsg.created_at)}</span>
-                      <button onClick={() => { setExpandedMsg(p => !p); if (!expandedMsg) setIsPlaying(false) }} className="ml-auto text-[8px] hover:opacity-80" style={{ color: 'var(--text-3)' }}>
-                        {expandedMsg ? '▲ less' : '▼ more'}
-                      </button>
-                    </div>
-                    <div className="text-[10px] leading-relaxed" style={{
-                      color: activeMsg.role === 'decision' ? 'var(--text-0)' : 'var(--text-1)',
-                      display: expandedMsg ? undefined : '-webkit-box',
-                      WebkitLineClamp: expandedMsg ? undefined : 3,
-                      WebkitBoxOrient: expandedMsg ? undefined : 'vertical' as const,
-                      overflow: expandedMsg ? undefined : 'hidden',
-                    }}>
-                      {activeMsg.message}
-                    </div>
-                    {activeMsg.role === 'decision' && activeMsg.data && (
-                      <div className="flex items-center gap-3 mt-1.5 text-[9px]">
-                        <span className="font-bold" style={{ color: 'var(--green)' }}>FOR: {String(activeMsg.data.votesFor ?? '?')}</span>
-                        <span className="font-bold" style={{ color: 'var(--red)' }}>AGAINST: {String(activeMsg.data.votesAgainst ?? '?')}</span>
-                        <span className="font-bold" style={{ color: activeMsg.data.execute ? 'var(--green)' : 'var(--red)' }}>
-                          {activeMsg.data.execute ? '✓ EXECUTED' : '✕ REJECTED'}
-                        </span>
+                      {activeMsg && (
+                        <div className="text-lg mb-1" style={{ color: AGENTS[activeMsg.agent]?.color ?? '#fff' }}>
+                          {AGENTS[activeMsg.agent]?.icon}
+                        </div>
+                      )}
+                      <div className="text-[18px] font-bold" style={{ color: '#fff', letterSpacing: '0.04em' }}>
+                        {currentMeeting.instrument}
                       </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* ─── Playback Controls ─── */}
-              <div className="flex items-center justify-center gap-2 px-4 py-1.5 flex-shrink-0" style={{
-                borderTop: '1px solid var(--border)', background: 'var(--bg-1)',
-              }}>
-                <button
-                  onClick={() => setActiveStep(s => Math.max(0, s - 1))}
-                  disabled={speakMsgs.length === 0}
-                  className="text-[9px] font-bold px-2.5 py-1 rounded hover:opacity-80 disabled:opacity-30"
-                  style={{ background: 'var(--bg-2)', color: 'var(--text-2)' }}
-                >◀</button>
-
-                {/* Progress Dots */}
-                <div className="flex items-center gap-[3px] mx-1">
-                  {speakMsgs.slice(0, 30).map((m, i) => (
-                    <div key={i} onClick={() => setActiveStep(i)} className="cursor-pointer rounded-full transition-all" style={{
-                      width: i === activeStep ? 10 : 4,
-                      height: 4,
-                      borderRadius: 2,
-                      background: i === activeStep
-                        ? (AGENTS[m.agent]?.color ?? 'var(--amber)')
-                        : i < activeStep ? 'var(--text-3)' : 'var(--bg-3)',
-                    }} />
-                  ))}
-                  {speakMsgs.length > 30 && (
-                    <span className="text-[7px] ml-1" style={{ color: 'var(--text-3)' }}>+{speakMsgs.length - 30}</span>
+                      {openMsg && extractPrice(openMsg) && (
+                        <div className="text-[11px] font-mono mt-0.5" style={{ color: 'rgba(255,255,255,0.4)' }}>
+                          @ {extractPrice(openMsg)}
+                        </div>
+                      )}
+                      {/* Live vote bar */}
+                      <div className="flex items-center gap-3 mt-3">
+                        <span className="text-[20px] font-bold" style={{ color: '#00ffa3' }}>{voteSummary.votesFor}</span>
+                        <div style={{ width: 60, height: 4, borderRadius: 2, background: 'rgba(255,51,102,0.25)', overflow: 'hidden' }}>
+                          <div style={{
+                            width: `${(voteSummary.votesFor + voteSummary.votesAgainst) > 0 ? (voteSummary.votesFor / (voteSummary.votesFor + voteSummary.votesAgainst)) * 100 : 50}%`,
+                            height: '100%', background: '#00ffa3', borderRadius: 2, transition: 'width 0.5s ease',
+                          }} />
+                        </div>
+                        <span className="text-[20px] font-bold" style={{ color: '#ff3366' }}>{voteSummary.votesAgainst}</span>
+                      </div>
+                      {/* Final decision badge */}
+                      {activeStep >= speakMsgs.length - 1 && decisionMsg && (
+                        <div className="mt-3 text-[9px] font-bold px-4 py-1.5 rounded-full" style={{
+                          background: decisionMsg.data?.execute ? 'rgba(0,255,163,0.1)' : 'rgba(255,51,102,0.1)',
+                          color: decisionMsg.data?.execute ? '#00ffa3' : '#ff3366',
+                          border: `1px solid ${decisionMsg.data?.execute ? 'rgba(0,255,163,0.25)' : 'rgba(255,51,102,0.25)'}`,
+                          letterSpacing: '0.15em',
+                        }}>
+                          {decisionMsg.data?.execute ? '✓ ODOBRENO' : '✕ ODBIJENO'}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <div className="text-[36px] mb-2 opacity-20">⚔</div>
+                      <div className="text-[11px] font-bold" style={{ color: 'rgba(255,255,255,0.3)' }}>
+                        {meetings.length === 0 ? 'Čeka se sesija...' : 'Izaberi sesiju'}
+                      </div>
+                    </>
                   )}
                 </div>
+              </div>
 
-                <button
-                  onClick={() => setActiveStep(s => Math.min(speakMsgs.length - 1, s + 1))}
-                  disabled={speakMsgs.length === 0}
-                  className="text-[9px] font-bold px-2.5 py-1 rounded hover:opacity-80 disabled:opacity-30"
-                  style={{ background: 'var(--bg-2)', color: 'var(--text-2)' }}
-                >▶</button>
+              {/* Orchestrator at bottom center */}
+              <SeatNode
+                agent={AGENTS['orchestrator']!}
+                agentId="orchestrator"
+                isActive={activeAgentId === 'orchestrator'}
+                stanceInfo={agentStances['orchestrator']}
+                style={{ position: 'absolute', bottom: '3%', left: '50%', transform: 'translate(-50%, 0)' }}
+                isOrchestrator
+                onClick={() => { const idx = speakMsgs.findIndex(m => m.agent === 'orchestrator'); if (idx >= 0) { setActiveStep(idx); setIsPlaying(false) } }}
+              />
 
-                <div className="w-px h-4 mx-1" style={{ background: 'var(--border)' }} />
+              {/* Agent seats in elliptical ring */}
+              {SEAT_ANGLES.map(({ id, angle }) => {
+                const agent = AGENTS[id]
+                if (!agent) return null
+                const rad = (angle * Math.PI) / 180
+                const rx = 44, ry = 40
+                const cx = 50, cy = 46
+                const x = cx + rx * Math.cos(rad)
+                const y = cy + ry * Math.sin(rad)
 
-                <span className="text-[8px] font-mono min-w-[36px] text-center" style={{ color: 'var(--text-3)' }}>
-                  {speakMsgs.length > 0 ? `${activeStep + 1}/${speakMsgs.length}` : '—'}
-                </span>
+                return (
+                  <SeatNode
+                    key={id}
+                    agent={agent}
+                    agentId={id}
+                    isActive={activeAgentId === id}
+                    stanceInfo={agentStances[id]}
+                    style={{ position: 'absolute', top: `${y}%`, left: `${x}%`, transform: 'translate(-50%, -50%)' }}
+                    onClick={() => { const idx = speakMsgs.findIndex(m => m.agent === id); if (idx >= 0) { setActiveStep(idx); setIsPlaying(false) } }}
+                  />
+                )
+              })}
 
-                <div className="w-px h-4 mx-1" style={{ background: 'var(--border)' }} />
+              {/* Connection line from active agent to center */}
+              {activeMsg && activeAgentId !== 'orchestrator' && (() => {
+                const seat = SEAT_ANGLES.find(s => s.id === activeAgentId)
+                if (!seat) return null
+                const rad = (seat.angle * Math.PI) / 180
+                const x = 50 + 44 * Math.cos(rad)
+                const y = 46 + 40 * Math.sin(rad)
+                return (
+                  <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 0 }}>
+                    <line x1={`${x}%`} y1={`${y}%`} x2="50%" y2="50%"
+                      stroke={AGENTS[activeAgentId]?.color ?? '#fff'} strokeWidth="1" strokeDasharray="4 4" opacity="0.2" />
+                  </svg>
+                )
+              })()}
+            </div>
 
+            {/* ═══ RIGHT PANEL — Chat Box ═══ */}
+            <div className="w-[380px] flex-shrink-0 flex flex-col" style={{
+              borderLeft: '1px solid rgba(255,255,255,0.06)',
+              background: 'linear-gradient(180deg, #0a0a18 0%, #08080f 100%)',
+            }}>
+              {/* Chat header */}
+              <div className="px-4 py-2.5 flex items-center justify-between flex-shrink-0" style={{
+                borderBottom: '1px solid rgba(255,255,255,0.06)',
+              }}>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-bold tracking-[0.15em]" style={{ color: 'rgba(255,255,255,0.5)' }}>
+                    DISKUSIJA
+                  </span>
+                  <span className="text-[8px] font-mono px-1.5 py-0.5 rounded" style={{
+                    background: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.3)',
+                  }}>
+                    {activeStep + 1}/{speakMsgs.length}
+                  </span>
+                </div>
                 <button
                   onClick={() => setIsPlaying(p => !p)}
-                  disabled={speakMsgs.length === 0}
-                  className="text-[9px] font-bold px-3 py-1 rounded hover:opacity-80 disabled:opacity-30"
+                  className="text-[8px] font-bold px-3 py-1 rounded-full transition-all"
                   style={{
                     background: isPlaying ? 'rgba(255,51,102,0.12)' : 'rgba(0,255,163,0.12)',
-                    color: isPlaying ? 'var(--red)' : 'var(--green)',
-                    border: `1px solid ${isPlaying ? 'rgba(255,51,102,0.25)' : 'rgba(0,255,163,0.25)'}`,
+                    color: isPlaying ? '#ff3366' : '#00ffa3',
+                    border: `1px solid ${isPlaying ? 'rgba(255,51,102,0.2)' : 'rgba(0,255,163,0.2)'}`,
                   }}
                 >
-                  {isPlaying ? '⏸ PAUSE' : '▶ PLAY'}
+                  {isPlaying ? '⏸ PAUZA' : '▶ POKRENI'}
                 </button>
-
-                <span className="text-[7px] ml-2 hidden sm:inline" style={{ color: 'var(--text-3)' }}>
-                  ← → Space
-                </span>
               </div>
-            </div>
-          ) : (
-            /* ═══ TRANSCRIPT VIEW ═══ */
-            <div className="flex-1 overflow-y-auto px-4 py-3 space-y-1">
-              {displayMsgs.length === 0 && (
-                <div className="flex items-center justify-center h-full">
-                  <div className="text-center" style={{ color: 'var(--text-3)' }}>
-                    <div className="text-3xl mb-2">🏛</div>
-                    <div className="text-[13px] font-bold mb-1">Agent War Room</div>
-                    <div className="text-[11px]">
-                      {meetings.length === 0
-                        ? 'No meetings yet. The War Room activates every 30 minutes when the cron runs.'
-                        : 'Select a meeting from the left panel.'}
-                    </div>
+
+              {/* Opening context */}
+              {openMsg && (
+                <div className="px-4 py-2 flex-shrink-0" style={{
+                  borderBottom: '1px solid rgba(255,255,255,0.04)',
+                  background: 'rgba(255,204,0,0.03)',
+                }}>
+                  <div className="text-[8px] font-bold tracking-[0.1em] mb-1" style={{ color: 'rgba(255,204,0,0.5)' }}>
+                    KONTEKST SESIJE
+                  </div>
+                  <div className="text-[10px] leading-relaxed" style={{ color: 'rgba(255,255,255,0.5)' }}>
+                    {openMsg.message}
                   </div>
                 </div>
               )}
 
-              {displayMsgs.map((msg, i) => {
-                const agent = AGENTS[msg.agent] ?? { icon: '⚡', name: msg.agent, color: 'var(--text-2)', title: '' }
-                const role = ROLE_BADGE[msg.role] ?? ROLE_BADGE.speak
-                const t = fmtTimeSec(msg.created_at)
-                const isDecision = msg.role === 'decision'
-
-                if (msg.role === 'open' || msg.role === 'close') {
-                  return (
-                    <div key={i} className="text-center py-2">
-                      <span className="text-[10px] px-3 py-1 rounded-full" style={{
-                        background: 'var(--bg-2)',
-                        color: msg.role === 'open' ? 'var(--text-2)' : 'var(--text-3)',
-                      }}>
-                        {msg.role === 'open' && agent.icon} {msg.message}
-                      </span>
+              {/* Chat messages */}
+              <div ref={chatRef} className="flex-1 overflow-y-auto scroll-thin px-3 py-2 space-y-1">
+                {visibleMsgs.length === 0 && (
+                  <div className="flex items-center justify-center h-full">
+                    <div className="text-center" style={{ color: 'rgba(255,255,255,0.15)' }}>
+                      <div className="text-2xl mb-2">💬</div>
+                      <div className="text-[10px]">Pritisni ▶ za replay diskusije</div>
                     </div>
-                  )
-                }
+                  </div>
+                )}
 
-                return (
-                  <div key={i} className="flex gap-2 py-1.5 rounded px-2 transition-colors" style={{
-                    background: isDecision ? 'var(--bg-2)' : 'transparent',
-                    borderLeft: isDecision ? '3px solid var(--amber)' : '3px solid transparent',
-                  }}>
-                    <div className="flex-shrink-0 w-7 text-center text-lg pt-0.5">{agent.icon}</div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-0.5">
+                {visibleMsgs.map((msg, i) => {
+                  const agent = AGENTS[msg.agent] ?? { icon: '⚡', name: msg.agent, color: '#666', title: '', ring: 1 }
+                  const stance = getStance(msg.message)
+                  const conf = getConfidence(msg.message)
+                  const isDecision = msg.role === 'decision'
+                  const isLast = i === visibleMsgs.length - 1
+
+                  return (
+                    <div key={msg.id ?? i} className={`chat-msg rounded-lg px-3 py-2 ${isLast ? '' : ''}`} style={{
+                      background: isDecision ? 'rgba(255,204,0,0.06)' : isLast ? 'rgba(255,255,255,0.03)' : 'transparent',
+                      border: isDecision ? '1px solid rgba(255,204,0,0.15)' : '1px solid transparent',
+                    }}>
+                      {/* Agent header */}
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-sm">{agent.icon}</span>
                         <span className="text-[10px] font-bold" style={{ color: agent.color }}>{agent.name}</span>
-                        <span className="text-[7px] font-bold px-1.5 py-0.5 rounded" style={{
-                          background: role.bg, color: isDecision ? '#000' : 'var(--text-2)',
-                        }}>{role.label}</span>
-                        <span className="text-[8px]" style={{ color: 'var(--text-3)' }}>{t}</span>
+                        {/* Stance badge */}
+                        {!isDecision && stance !== 'neutral' && (
+                          <span className="text-[7px] font-bold px-1.5 py-0.5 rounded-full" style={{
+                            background: stance === 'bull' ? 'rgba(0,255,163,0.1)' : 'rgba(255,51,102,0.1)',
+                            color: stance === 'bull' ? '#00ffa3' : '#ff3366',
+                            border: `1px solid ${stance === 'bull' ? 'rgba(0,255,163,0.2)' : 'rgba(255,51,102,0.2)'}`,
+                          }}>
+                            {stance === 'bull' ? '▲ BULL' : '▼ BEAR'}
+                          </span>
+                        )}
+                        {/* Confidence badge */}
+                        {conf && (
+                          <span className="text-[7px] font-bold font-mono px-1.5 py-0.5 rounded-full" style={{
+                            background: conf >= 70 ? 'rgba(0,255,163,0.08)' : conf >= 50 ? 'rgba(255,204,0,0.08)' : 'rgba(255,51,102,0.08)',
+                            color: conf >= 70 ? '#00ffa3' : conf >= 50 ? '#ffcc00' : '#ff3366',
+                          }}>
+                            {conf}%
+                          </span>
+                        )}
+                        {isDecision && (
+                          <span className="text-[7px] font-bold px-1.5 py-0.5 rounded-full" style={{
+                            background: 'rgba(255,204,0,0.15)', color: '#ffcc00',
+                          }}>
+                            ODLUKA
+                          </span>
+                        )}
+                        <span className="text-[7px] ml-auto" style={{ color: 'rgba(255,255,255,0.15)' }}>
+                          {fmtTimeSec(msg.created_at)}
+                        </span>
                       </div>
-                      <div className="text-[11px] leading-relaxed" style={{ color: isDecision ? 'var(--text-0)' : 'var(--text-1)' }}>
+
+                      {/* Message body */}
+                      <div className="text-[10px] leading-[1.6]" style={{
+                        color: isDecision ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.6)',
+                      }}>
                         {msg.message}
                       </div>
+
+                      {/* Decision metadata */}
                       {isDecision && msg.data && (
-                        <div className="flex items-center gap-3 mt-1.5 text-[10px]">
-                          <span className="font-bold" style={{ color: 'var(--green)' }}>FOR: {String(msg.data.votesFor ?? '?')}</span>
-                          <span className="font-bold" style={{ color: 'var(--red)' }}>AGAINST: {String(msg.data.votesAgainst ?? '?')}</span>
-                          <span style={{ color: 'var(--text-3)' }}>| {String(msg.data.agentCount ?? 12)} agents</span>
-                          <span className="font-bold" style={{ color: msg.data.execute ? 'var(--green)' : 'var(--red)' }}>
-                            {msg.data.execute ? 'TRADE EXECUTED' : 'TRADE REJECTED'}
+                        <div className="flex items-center gap-3 mt-2 pt-2" style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                          <div className="flex items-center gap-1">
+                            <span className="text-[10px] font-bold" style={{ color: '#00ffa3' }}>{String(msg.data.votesFor ?? decisionVotesFor)}</span>
+                            <span className="text-[7px]" style={{ color: 'rgba(255,255,255,0.25)' }}>ZA</span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <span className="text-[10px] font-bold" style={{ color: '#ff3366' }}>{String(msg.data.votesAgainst ?? decisionVotesAgainst)}</span>
+                            <span className="text-[7px]" style={{ color: 'rgba(255,255,255,0.25)' }}>PROTIV</span>
+                          </div>
+                          <span className="text-[8px] font-bold px-2 py-0.5 rounded-full" style={{
+                            background: msg.data.execute ? 'rgba(0,255,163,0.15)' : 'rgba(255,51,102,0.15)',
+                            color: msg.data.execute ? '#00ffa3' : '#ff3366',
+                          }}>
+                            {msg.data.execute ? '✓ ODOBRENO' : '✕ ODBIJENO'}
                           </span>
                         </div>
                       )}
                     </div>
+                  )
+                })}
+
+                {/* Close message */}
+                {activeStep >= speakMsgs.length - 1 && closeMsg && (
+                  <div className="chat-msg text-center py-3">
+                    <div className="inline-block text-[9px] px-4 py-1.5 rounded-full" style={{
+                      background: 'rgba(255,255,255,0.03)',
+                      color: 'rgba(255,255,255,0.3)',
+                      border: '1px solid rgba(255,255,255,0.06)',
+                    }}>
+                      {closeMsg.message}
+                    </div>
                   </div>
-                )
-              })}
+                )}
+              </div>
+
+              {/* Playback controls */}
+              <div className="flex items-center gap-2 px-3 py-2 flex-shrink-0" style={{
+                borderTop: '1px solid rgba(255,255,255,0.06)',
+                background: 'rgba(10,10,24,0.8)',
+              }}>
+                <button onClick={() => setActiveStep(0)} className="text-[8px] px-2 py-1 rounded" style={{
+                  background: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.4)',
+                }}>⏮</button>
+                <button onClick={() => setActiveStep(s => Math.max(0, s - 1))} className="text-[8px] px-2 py-1 rounded" style={{
+                  background: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.4)',
+                }}>◀</button>
+
+                {/* Mini progress bar */}
+                <div className="flex-1 h-1 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.06)' }}
+                  onClick={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect()
+                    const pct = (e.clientX - rect.left) / rect.width
+                    setActiveStep(Math.round(pct * (speakMsgs.length - 1)))
+                  }}
+                >
+                  <div style={{
+                    width: speakMsgs.length > 0 ? `${((activeStep + 1) / speakMsgs.length) * 100}%` : '0%',
+                    height: '100%', borderRadius: 4, transition: 'width 0.3s ease',
+                    background: activeMsg ? (AGENTS[activeMsg.agent]?.color ?? '#ffcc00') : '#ffcc00',
+                  }} />
+                </div>
+
+                <button onClick={() => setActiveStep(s => Math.min(speakMsgs.length - 1, s + 1))} className="text-[8px] px-2 py-1 rounded" style={{
+                  background: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.4)',
+                }}>▶</button>
+                <button onClick={() => setActiveStep(speakMsgs.length - 1)} className="text-[8px] px-2 py-1 rounded" style={{
+                  background: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.4)',
+                }}>⏭</button>
+
+                <span className="text-[7px] font-mono" style={{ color: 'rgba(255,255,255,0.2)' }}>
+                  ←→ Space
+                </span>
+              </div>
             </div>
-          )}
+          </div>
         </div>
       </div>
     </>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   SEAT NODE — Individual agent around the table
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+function SeatNode({ agent, agentId, isActive, stanceInfo, style, isOrchestrator, onClick }: {
+  agent: typeof AGENTS[string]
+  agentId: string
+  isActive: boolean
+  stanceInfo?: { stance: 'bull' | 'bear' | 'neutral'; conf: number | null }
+  style: React.CSSProperties
+  isOrchestrator?: boolean
+  onClick: () => void
+}) {
+  const size = isOrchestrator ? 52 : 40
+  const stance = stanceInfo?.stance
+  const conf = stanceInfo?.conf
+
+  return (
+    <div style={{ ...style, zIndex: isActive ? 20 : 10 }}>
+      <div className="flex flex-col items-center cursor-pointer group" onClick={onClick}>
+        {/* Confidence arc — shown if agent has spoken */}
+        {conf && !isOrchestrator && (
+          <div className="absolute -top-1 text-[7px] font-bold font-mono px-1 py-0.5 rounded" style={{
+            color: conf >= 70 ? '#00ffa3' : conf >= 50 ? '#ffcc00' : '#ff3366',
+            background: 'rgba(0,0,0,0.6)',
+          }}>
+            {conf}%
+          </div>
+        )}
+
+        {/* Main circle */}
+        <div className="relative">
+          <div className={isActive ? 'seat-active' : ''} style={{
+            width: size, height: size, borderRadius: '50%',
+            background: isActive ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.03)',
+            border: `2px solid ${isActive ? agent.color : 'rgba(255,255,255,0.08)'}`,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: isOrchestrator ? 22 : 16,
+            transition: 'all 0.4s ease',
+            '--pulse-clr': `${agent.color}40`,
+            filter: isActive ? `drop-shadow(0 0 12px ${agent.color})` : 'none',
+          } as React.CSSProperties}>
+            {agent.icon}
+          </div>
+
+          {/* Speaking indicator */}
+          {isActive && (
+            <div className="absolute -top-1 -right-1 speak-glow" style={{
+              width: 10, height: 10, borderRadius: '50%',
+              background: agent.color, border: '2px solid #050510',
+            }} />
+          )}
+
+          {/* Stance dot */}
+          {stance && stance !== 'neutral' && !isActive && (
+            <div className="absolute -bottom-0.5 -right-0.5" style={{
+              width: 10, height: 10, borderRadius: '50%',
+              background: stance === 'bull' ? '#00ffa3' : '#ff3366',
+              border: '2px solid #050510',
+              boxShadow: `0 0 6px ${stance === 'bull' ? '#00ffa3' : '#ff3366'}`,
+            }} />
+          )}
+        </div>
+
+        {/* Name + title */}
+        <span className="text-[8px] font-bold mt-1 whitespace-nowrap" style={{
+          color: isActive ? agent.color : 'rgba(255,255,255,0.35)',
+          textShadow: isActive ? `0 0 10px ${agent.color}` : 'none',
+          transition: 'all 0.3s ease',
+        }}>
+          {agent.name}
+        </span>
+
+        {isOrchestrator && (
+          <span className="text-[6px] tracking-[0.15em] font-bold" style={{ color: 'rgba(255,204,0,0.3)' }}>
+            PREDSJEDAVAJUĆI
+          </span>
+        )}
+
+        {/* Hover tooltip */}
+        <div className="absolute opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none text-[7px] font-bold px-2 py-1 rounded whitespace-nowrap" style={{
+          background: 'rgba(20,20,35,0.95)',
+          color: agent.color,
+          border: `1px solid ${agent.color}30`,
+          bottom: '100%', marginBottom: 6,
+          boxShadow: `0 4px 12px rgba(0,0,0,0.4)`,
+        }}>
+          {agent.title}
+        </div>
+      </div>
+    </div>
   )
 }

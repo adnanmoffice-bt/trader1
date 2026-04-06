@@ -53,23 +53,31 @@ function meetingStatus(m: Meeting): 'executed' | 'rejected' | 'pending' {
 
 export default function WarRoomPage() {
   const [meetings, setMeetings] = useState<Meeting[]>([])
-  const [allMsgs, setAllMsgs] = useState<Msg[]>([])
   const [selectedMeeting, setSelectedMeeting] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [loadingMsgs, setLoadingMsgs] = useState(false)
+  const [msgCache, setMsgCache] = useState<Record<string, Msg[]>>({})
   const [step, setStep] = useState(0)
   const [playing, setPlaying] = useState(false)
 
   useEffect(() => {
     fetch('/api/war-room?limit=20').then(r => r.json()).then(d => {
       setMeetings(d.meetings ?? [])
-      setAllMsgs(d.data ?? [])
       if (d.meetings?.length) setSelectedMeeting(d.meetings[0].id)
       setLoading(false)
     }).catch(() => setLoading(false))
   }, [])
 
-  const meeting = meetings.find(m => m.id === selectedMeeting)
-  const allDisplayMsgs = meeting?.messages ?? allMsgs.filter(m => m.meeting_id === selectedMeeting)
+  useEffect(() => {
+    if (!selectedMeeting || msgCache[selectedMeeting]) return
+    setLoadingMsgs(true)
+    fetch(`/api/war-room?meeting=${selectedMeeting}`).then(r => r.json()).then(d => {
+      setMsgCache(prev => ({ ...prev, [selectedMeeting]: d.data ?? [] }))
+      setLoadingMsgs(false)
+    }).catch(() => setLoadingMsgs(false))
+  }, [selectedMeeting, msgCache])
+
+  const allDisplayMsgs = msgCache[selectedMeeting ?? ''] ?? []
   const speaks = useMemo(() => allDisplayMsgs.filter(m => m.role === 'speak' || m.role === 'decision' || m.role === 'alert'), [allDisplayMsgs])
   const decisionMsg = useMemo(() => allDisplayMsgs.find(m => m.role === 'decision'), [allDisplayMsgs])
   const activeMsg = speaks[step]
@@ -146,7 +154,7 @@ export default function WarRoomPage() {
                   <div className="flex items-center gap-1.5">
                     <div style={{ width: 7, height: 7, borderRadius: '50%', background: sc, flexShrink: 0, boxShadow: st !== 'pending' ? `0 0 6px ${sc}` : 'none' }} />
                     <span className="text-[11px] font-bold" style={{ color: on ? '#fff' : 'rgba(255,255,255,.6)' }}>{m.instrument}</span>
-                    <span className="text-[8px] ml-auto" style={{ color: 'rgba(255,255,255,.2)' }}>{m.messageCount}</span>
+                    <span className="text-[8px] ml-auto" style={{ color: 'rgba(255,255,255,.2)' }}>{msgCache[m.id]?.length ?? m.messageCount}</span>
                   </div>
                   <div className="text-[8px] mt-0.5 pl-4" style={{ color: 'rgba(255,255,255,.25)' }}>
                     {fmtDate(m.startedAt)} {fmtTime(m.startedAt)}
@@ -219,12 +227,19 @@ export default function WarRoomPage() {
 
               {/* Active Message */}
               <div className="flex-1 overflow-y-auto scr px-5 py-4">
-                {speaks.length === 0 ? (
+                {loadingMsgs ? (
+                  <div className="flex items-center justify-center h-full text-center">
+                    <div>
+                      <div className="text-2xl mb-2 animate-pulse">⏳</div>
+                      <div className="text-[11px]" style={{ color: 'rgba(255,255,255,.3)' }}>Učitavam diskusiju...</div>
+                    </div>
+                  </div>
+              ) : speaks.length === 0 ? (
                   <div className="flex items-center justify-center h-full text-center">
                     <div>
                       <div className="text-3xl mb-2 opacity-20">⚔</div>
                       <div className="text-[11px]" style={{ color: 'rgba(255,255,255,.2)' }}>
-                        {meetings.length === 0 ? 'Nema sesija. Pokreni cron.' : 'Izaberi sesiju sa lijeve strane.'}
+                        {!selectedMeeting ? 'Izaberi sesiju sa lijeve strane.' : meetings.length === 0 ? 'Nema sesija. Pokreni cron.' : 'Ova sesija nema diskusiju. Probaj drugu.'}
                       </div>
                     </div>
                   </div>

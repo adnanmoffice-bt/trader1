@@ -385,6 +385,36 @@ function narratize(agent: string, level: string, message: string): { headline: s
   }
 }
 
+function AgentStatusBar({ logs }: { logs: Array<Record<string, unknown>> }) {
+  const agents = ['orchestrator', 'market-analyst', 'risk-manager', 'polymarket-scanner', 'trade-reviewer'] as const
+  return (
+    <div className="flex gap-px border-b border-[#1a1a2e] bg-[#0a0a16]">
+      {agents.map(id => {
+        const meta = AGENT_META[id]
+        if (!meta) return null
+        const lastLog = logs.find(l => String(l.agent) === id)
+        const lastTime = lastLog?.created_at
+          ? new Date(String(lastLog.created_at)).toLocaleTimeString('en', { timeZone: 'Asia/Dubai', hour: '2-digit', minute: '2-digit' })
+          : '—'
+        const lastLevel = String(lastLog?.level ?? '')
+        const isActive = lastLog && (Date.now() - new Date(String(lastLog.created_at)).getTime()) < 3600_000
+        return (
+          <div key={id} className="flex-1 px-2 py-1.5 border-r border-[#1a1a2e] last:border-r-0 hover:bg-[#0f0f1e] transition-colors">
+            <div className="flex items-center gap-1.5 mb-0.5">
+              <span className="text-[10px]">{meta.icon}</span>
+              <span className="text-[8px] font-bold tracking-wider" style={{ color: meta.color }}>{meta.name.split(' ')[0]}</span>
+              <span className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0',
+                isActive ? (lastLevel === 'error' ? 'bg-[#ff3366]' : 'bg-[#00ffa3] animate-pulse') : 'bg-[#44446a]'
+              )} />
+            </div>
+            <div className="text-[8px] text-[#44446a] mono">{lastTime}</div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 function LiveBlog({ logs }: { logs: Array<Record<string, unknown>> }) {
   const typeStyles = {
     action:   { bg: 'bg-[rgba(0,204,255,0.04)]', border: 'border-l-[#00ccff]', label: 'ACTION', labelBg: 'bg-[rgba(0,204,255,0.12)] text-[#00ccff]' },
@@ -395,6 +425,7 @@ function LiveBlog({ logs }: { logs: Array<Record<string, unknown>> }) {
 
   return (
     <div>
+      <AgentStatusBar logs={logs} />
       {logs.slice(0, 40).map((log, i) => {
         const agent = String(log.agent ?? '')
         const level = String(log.level ?? 'info')

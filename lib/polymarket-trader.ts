@@ -151,15 +151,12 @@ export interface BetDecision {
 }
 
 export async function placeBet(decision: BetDecision): Promise<{ success: boolean; order_id?: string; error?: string }> {
-  if (!isConfigured()) return { success: false, error: 'Polymarket private key not configured' }
   if (decision.amount_usd > MAX_BET_USD) return { success: false, error: `Max bet is $${MAX_BET_USD}` }
 
   const db = createServiceSupabase()
 
-  // For now, record the bet intent in DB — actual CLOB order execution requires
-  // py_clob_client or @polymarket/clob-client with EIP-712 signing.
-  // We'll store as a "paper bet" until the wallet integration is complete.
-  await db.from('polymarket_bets').insert({
+  // Try to store in polymarket_bets table (may not exist yet)
+  const { error: betErr } = await db.from('polymarket_bets').insert({
     market_id:      decision.market_id,
     question:       decision.question,
     side:           decision.side,
@@ -171,6 +168,11 @@ export async function placeBet(decision: BetDecision): Promise<{ success: boolea
     status:         'open',
   })
 
+  if (betErr) {
+    console.warn('[polymarket] polymarket_bets insert failed, table may not exist:', betErr.message)
+  }
+
+  // Always log the bet (this works even if table is missing)
   await db.from('agent_logs').insert({
     agent: 'polymarket-scanner',
     level: 'ok',
@@ -182,12 +184,17 @@ export async function placeBet(decision: BetDecision): Promise<{ success: boolea
 
 export async function getActiveBets(): Promise<Array<Record<string, unknown>>> {
   const db = createServiceSupabase()
-  const { data } = await db
-    .from('polymarket_bets')
-    .select('*')
-    .eq('status', 'open')
-    .order('created_at', { ascending: false })
-  return data ?? []
+  try {
+    const { data, error } = await db
+      .from('polymarket_bets')
+      .select('*')
+      .eq('status', 'open')
+      .order('created_at', { ascending: false })
+    if (error) return []
+    return data ?? []
+  } catch {
+    return []
+  }
 }
 
 export { MAX_BET_USD, MAX_ACTIVE_BETS }

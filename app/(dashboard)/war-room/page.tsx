@@ -30,21 +30,30 @@ interface Meeting { id: string; instrument: string; messageCount: number; starte
 
 export default function WarRoomPage() {
   const [meetings, setMeetings] = useState<Meeting[]>([])
-  const [allMsgs, setAllMsgs] = useState<Msg[]>([])
   const [selectedMeeting, setSelectedMeeting] = useState<string | null>(null)
+  const [displayMsgs, setDisplayMsgs] = useState<Msg[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadingMsgs, setLoadingMsgs] = useState(false)
 
   useEffect(() => {
-    fetch('/api/war-room?limit=10').then(r => r.json()).then(d => {
+    fetch('/api/war-room?limit=50').then(r => r.json()).then(d => {
       setMeetings(d.meetings ?? [])
-      setAllMsgs(d.data ?? [])
-      if (d.meetings?.length) setSelectedMeeting(d.meetings[0].id)
+      if (d.meetings?.length) {
+        setSelectedMeeting(d.meetings[0].id)
+        loadMeetingMessages(d.meetings[0].id)
+      }
       setLoading(false)
     }).catch(() => setLoading(false))
   }, [])
 
-  const currentMeeting = meetings.find(m => m.id === selectedMeeting)
-  const displayMsgs = currentMeeting?.messages ?? allMsgs.filter(m => m.meeting_id === selectedMeeting)
+  function loadMeetingMessages(meetingId: string) {
+    setLoadingMsgs(true)
+    setSelectedMeeting(meetingId)
+    fetch(`/api/war-room?meeting=${meetingId}`).then(r => r.json()).then(d => {
+      setDisplayMsgs(d.data ?? [])
+      setLoadingMsgs(false)
+    }).catch(() => setLoadingMsgs(false))
+  }
 
   return (
     <div className="h-full flex">
@@ -57,7 +66,7 @@ export default function WarRoomPage() {
           )}
           {loading && <div className="text-[10px] p-2" style={{ color: 'var(--text-3)' }}>Loading...</div>}
           {meetings.map(m => (
-            <button key={m.id} onClick={() => setSelectedMeeting(m.id)} className="w-full text-left px-2 py-2 rounded mb-0.5 transition-colors" style={{
+            <button key={m.id} onClick={() => loadMeetingMessages(m.id)} className="w-full text-left px-2 py-2 rounded mb-0.5 transition-colors" style={{
               background: selectedMeeting === m.id ? 'var(--bg-2)' : 'transparent',
               borderLeft: selectedMeeting === m.id ? '2px solid var(--amber)' : '2px solid transparent',
             }}>
@@ -65,7 +74,7 @@ export default function WarRoomPage() {
                 <span className="text-[11px] font-bold" style={{ color: 'var(--text-0)' }}>{m.instrument}</span>
                 <span className="text-[9px]" style={{ color: 'var(--text-3)' }}>{m.messageCount} msgs</span>
               </div>
-              <div className="text-[9px]" style={{ color: 'var(--text-2)' }}>{m.startedAt ? new Date(m.startedAt).toLocaleTimeString('en', { timeZone: 'Asia/Dubai', hour: '2-digit', minute: '2-digit' }) : '—'}</div>
+              <div className="text-[9px]" style={{ color: 'var(--text-2)' }}>{m.startedAt ? new Date(m.startedAt).toLocaleDateString('en', { month: 'short', day: 'numeric', year: 'numeric' }) + ' ' + new Date(m.startedAt).toLocaleTimeString('en', { timeZone: 'Asia/Dubai', hour: '2-digit', minute: '2-digit' }) : '—'}</div>
               <div className="text-[9px] truncate mt-0.5" style={{ color: 'var(--text-3)' }}>{m.decision}</div>
             </button>
           ))}
@@ -78,7 +87,7 @@ export default function WarRoomPage() {
         <div className="flex items-center justify-between px-4 py-2 flex-shrink-0" style={{ background: 'var(--bg-1)', borderBottom: '1px solid var(--border)' }}>
           <div className="flex items-center gap-2">
             <span className="text-[11px] font-bold" style={{ color: 'var(--amber)' }}>WAR ROOM</span>
-            {currentMeeting && <span className="text-[10px] font-bold" style={{ color: 'var(--text-0)' }}>{currentMeeting.instrument}</span>}
+            {selectedMeeting && <span className="text-[10px] font-bold" style={{ color: 'var(--text-0)' }}>{meetings.find(m => m.id === selectedMeeting)?.instrument}</span>}
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             {Object.entries(AGENTS).map(([id, a]) => (
@@ -91,7 +100,12 @@ export default function WarRoomPage() {
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto px-4 py-3 space-y-1">
-          {displayMsgs.length === 0 && (
+          {loadingMsgs && (
+            <div className="flex items-center justify-center h-full">
+              <div className="text-[11px]" style={{ color: 'var(--text-3)' }}>Loading debate...</div>
+            </div>
+          )}
+          {!loadingMsgs && displayMsgs.length === 0 && (
             <div className="flex items-center justify-center h-full">
               <div className="text-center" style={{ color: 'var(--text-3)' }}>
                 <div className="text-3xl mb-2">🏛</div>

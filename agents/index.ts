@@ -1,5 +1,5 @@
 import { callAgent } from '@/lib/anthropic'
-import { computeIndicators, technicalScore } from '@/lib/indicators'
+import { computeIndicators, technicalScore, detectBBSqueeze, detectEMACross, kellyFraction } from '@/lib/indicators'
 import { createServiceSupabase } from '@/lib/supabase'
 import { sendSignalAlert } from '@/lib/telegram'
 import * as binance from '@/lib/binance-trader'
@@ -76,7 +76,24 @@ async function processInstrument(
   const ind = computeIndicators(ohlcv)
   const tech = technicalScore(ind)
 
-  // Run market analyst + signal generator in parallel
+  // ── STEP 1: Backtested strategy detection (BB Squeeze + EMA Cross) ────────
+  const bbSignal = detectBBSqueeze(ohlcv)
+  const emaCross = detectEMACross(ohlcv)
+
+  const hasStrategySignal = bbSignal.triggered || emaCross.triggered
+  const strategyDir = bbSignal.triggered ? bbSignal.direction : emaCross.triggered ? emaCross.direction : null
+  const strategyName = bbSignal.triggered ? 'BB_SQUEEZE' : emaCross.triggered ? 'EMA_CROSS' : 'NONE'
+
+  if (!hasStrategySignal) {
+    await log(db, 'orchestrator', 'info',
+      `${instrument}: No signal — BB squeeze: no, EMA cross: no | RSI:${ind.rsi.toFixed(0)} BB%B:${(ind.bb.percentB * 100).toFixed(0)}%`)
+    return `no trigger (RSI:${ind.rsi.toFixed(0)})`
+  }
+
+  await log(db, 'orchestrator', 'info',
+    `${instrument}: ${strategyName} detected → ${strategyDir?.toUpperCase()} | RSI:${ind.rsi.toFixed(0)} ATR:${ind.atr.toFixed(2)} Vol:${ind.volume_ratio.toFixed(1)}x`)
+
+  // ── STEP 2: Claude AI confirmation (acts as smart filter) ─────────────────
   const [sentiment, signalOut] = await Promise.all([
     runMarketAnalyst(db, instrument),
     runSignalGenerator({
@@ -100,12 +117,48 @@ async function processInstrument(
     }),
   ])
 
-  if (signalOut.confidence < 65 || signalOut.direction === 'hold') {
-    await log(db, 'orchestrator', 'info', `${instrument}: HOLD (conf ${signalOut.confidence}%)`)
-    return `HOLD conf:${signalOut.confidence}%`
+  // AI must agree with strategy direction OR have high confidence
+  const aiAgrees = signalOut.direction === strategyDir
+  const aiConfident = signalOut.confidence >= 65
+
+  if (!aiAgrees && !aiConfident) {
+    await log(db, 'orchestrator', 'warn',
+      `${instrument}: ${strategyName} says ${strategyDir} but AI says ${signalOut.direction} (conf ${signalOut.confidence}%) — SKIP (AI disagrees)`)
+    return `AI disagrees (${signalOut.direction} vs ${strategyDir})`
   }
 
-  const approved = await runRiskManager(signalOut, {
+  // Use strategy direction, boosted by AI agreement
+  const finalDir = strategyDir as Direction
+  const finalConf = aiAgrees ? Math.min(signalOut.confidence + 15, 100) : signalOut.confidence
+
+  // ── STEP 3: Calculate levels using ATR (backtested optimal: 2.5x SL, 2:1 R:R) ──
+  const slMult = strategyName === 'BB_SQUEEZE' ? 2.5 : 2.5
+  const tpMult = strategyName === 'BB_SQUEEZE' ? 4.0 : 5.0  // BB: 1.6:1 RR, EMA: 2:1 RR
+  const slDist = ind.atr * slMult
+  const tpDist = ind.atr * tpMult
+
+  const entry = ind.current_price
+  const sl = finalDir === 'long' ? entry - slDist : entry + slDist
+  const tp1 = finalDir === 'long' ? entry + tpDist : entry - tpDist
+  const tp2 = finalDir === 'long' ? entry + tpDist * 1.5 : entry - tpDist * 1.5
+  const rr = Math.round((tpDist / slDist) * 100) / 100
+
+  const enhancedSignal: AgentSignalOutput = {
+    ...signalOut,
+    instrument,
+    direction: finalDir,
+    entry_price: entry,
+    stop_loss: sl,
+    take_profit_1: tp1,
+    take_profit_2: tp2,
+    confidence: finalConf,
+    risk_reward: rr,
+    reasoning: `${strategyName} trigger${aiAgrees ? ' + AI confirms' : ''} | ${signalOut.reasoning}`,
+    ai_analysis: signalOut.ai_analysis,
+  }
+
+  // ── STEP 4: Risk manager validation ───────────────────────────────────────
+  const approved = await runRiskManager(enhancedSignal, {
     instrument,
     current_price: ind.current_price,
     ohlcv_1h: ohlcv.slice(-48),
@@ -124,16 +177,16 @@ async function processInstrument(
   }
 
   const { data: saved } = await db.from('signals').insert({
-    instrument: signalOut.instrument,
-    direction:  signalOut.direction,
-    entry_price:   signalOut.entry_price,
-    stop_loss:     signalOut.stop_loss,
-    take_profit_1: signalOut.take_profit_1,
-    take_profit_2: signalOut.take_profit_2,
-    confidence:    signalOut.confidence,
-    risk_reward:   signalOut.risk_reward,
-    reasoning:     signalOut.reasoning,
-    ai_analysis:   signalOut.ai_analysis,
+    instrument: enhancedSignal.instrument,
+    direction:  enhancedSignal.direction,
+    entry_price:   enhancedSignal.entry_price,
+    stop_loss:     enhancedSignal.stop_loss,
+    take_profit_1: enhancedSignal.take_profit_1,
+    take_profit_2: enhancedSignal.take_profit_2,
+    confidence:    enhancedSignal.confidence,
+    risk_reward:   enhancedSignal.risk_reward,
+    reasoning:     enhancedSignal.reasoning,
+    ai_analysis:   enhancedSignal.ai_analysis,
     news_sentiment: sentiment,
     technical_score: tech.score,
     status: 'active',
@@ -142,23 +195,23 @@ async function processInstrument(
   if (saved) {
     await sendSignalAlert(saved as Signal).catch(() => {})
     await log(db, 'orchestrator', 'ok',
-      `${instrument}: signal saved — ${signalOut.direction.toUpperCase()} conf ${signalOut.confidence}%`)
+      `${instrument}: ${strategyName} SIGNAL → ${enhancedSignal.direction.toUpperCase()} @ ${fmt$(entry)} | SL:${fmt$(sl)} TP:${fmt$(tp1)} | R:R ${rr}x conf:${finalConf}%${aiAgrees ? ' (AI+Strategy aligned)' : ''}`)
 
-    if (binance.isConfigured() && signalOut.entry_price && signalOut.stop_loss) {
+    if (binance.isConfigured() && enhancedSignal.entry_price && enhancedSignal.stop_loss) {
       try {
         const capitalUsd = (portfolio?.available_capital ?? 5000) / binance.USD_AED
         const tradeSize = capitalUsd * binance.MAX_RISK_PCT
         const userId = 'auto-trader'
 
-        if (signalOut.direction === 'long') {
+            if (enhancedSignal.direction === 'long') {
           const result = await binance.executeBuy(instrument, tradeSize, userId, saved.id)
           if (result) {
             await log(db, 'orchestrator', 'ok',
               `AUTO-EXEC: BUY ${instrument} $${tradeSize.toFixed(0)} @ $${result.avgPrice.toFixed(2)}`)
-            if (signalOut.stop_loss && signalOut.take_profit_1) {
-              await binance.setStopLossAndTakeProfit(
-                instrument, result.executedQty,
-                signalOut.stop_loss, signalOut.take_profit_1
+                if (enhancedSignal.stop_loss && enhancedSignal.take_profit_1) {
+                  await binance.setStopLossAndTakeProfit(
+                    instrument, result.executedQty,
+                    enhancedSignal.stop_loss, enhancedSignal.take_profit_1
               )
             }
           }
@@ -169,7 +222,7 @@ async function processInstrument(
     }
   }
 
-  return `${signalOut.direction.toUpperCase()} conf:${signalOut.confidence}%`
+  return `${strategyName} ${enhancedSignal.direction.toUpperCase()} conf:${finalConf}%`
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, msg: string): Promise<T> {
@@ -439,6 +492,10 @@ export async function runPolymarketScanner(): Promise<{ scanned: number; bets: n
 // ══════════════════════════════════════════════════════════════════════════════
 // HELPERS
 // ══════════════════════════════════════════════════════════════════════════════
+
+function fmt$(n: number): string {
+  return n >= 1000 ? `$${n.toLocaleString('en', { maximumFractionDigits: 0 })}` : `$${n.toFixed(2)}`
+}
 
 async function log(
   db: ReturnType<typeof createServiceSupabase>,

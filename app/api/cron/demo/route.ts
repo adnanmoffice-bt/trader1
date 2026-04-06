@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceSupabase } from '@/lib/supabase'
 import { fetchBinanceTicker } from '@/lib/price-fetcher'
-import { computeIndicators, technicalScore } from '@/lib/indicators'
+import { computeIndicators, technicalScore, detectBBSqueeze, detectEMACross } from '@/lib/indicators'
 import type { OHLCV } from '@/types'
 
 export const runtime = 'nodejs'
@@ -125,9 +125,20 @@ export async function GET(req: NextRequest) {
     const ind = computeIndicators(ohlcv)
     const { score, bias } = technicalScore(ind)
 
-    if (score < MIN_SCORE || bias === 'neutral') continue
+    // Use backtested strategies: BB Squeeze (Sharpe 1.89) + EMA Cross (Sharpe 1.75)
+    const bbSig = detectBBSqueeze(ohlcv)
+    const emaSig = detectEMACross(ohlcv)
+    const hasSignal = bbSig.triggered || emaSig.triggered
+    const signalDir = bbSig.triggered ? bbSig.direction : emaSig.triggered ? emaSig.direction : bias
+    const stratName = bbSig.triggered ? 'BB_SQUEEZE' : emaSig.triggered ? 'EMA_CROSS' : 'TECH_SCORE'
 
-    // Also check for recent AI signal alignment
+    // Require either a backtested strategy signal OR strong tech score
+    if (!hasSignal && (score < MIN_SCORE || bias === 'neutral')) continue
+
+    const effectiveDir = signalDir ?? bias
+    if (effectiveDir === 'neutral' || !effectiveDir) continue
+
+    // Check AI signal alignment
     const { data: recentSignal } = await db
       .from('signals')
       .select('direction, confidence')
@@ -137,19 +148,19 @@ export async function GET(req: NextRequest) {
       .limit(1)
       .single()
 
-    // Boost confidence if AI agrees with technical score
-    const aiAligned = recentSignal && recentSignal.direction === bias
-    const effectiveScore = aiAligned ? Math.min(score + 10, 100) : score
+    const aiAligned = recentSignal && recentSignal.direction === effectiveDir
+    const effectiveScore = hasSignal ? (aiAligned ? 90 : 75) : (aiAligned ? Math.min(score + 10, 100) : score)
 
-    // Calculate ATR-based levels with wider stops
-    const atr = ind.atr
-    const slMultiplier = 2.5   // wider stop = less noise stopouts
-    const slDist = atr * slMultiplier
-    const tpDist = slDist * MIN_RR
+    // ATR-based levels from backtest: 2.5x SL, 4-5x TP
+    const atrVal = ind.atr
+    const slMult = stratName === 'BB_SQUEEZE' ? 2.5 : 2.5
+    const tpMult = stratName === 'BB_SQUEEZE' ? 4.0 : 5.0
+    const slDist = atrVal * slMult
+    const tpDist = atrVal * tpMult
 
     const entry = price
-    const sl = bias === 'long' ? entry - slDist : entry + slDist
-    const tp = bias === 'long' ? entry + tpDist : entry - tpDist
+    const sl = effectiveDir === 'long' ? entry - slDist : entry + slDist
+    const tp = effectiveDir === 'long' ? entry + tpDist : entry - tpDist
 
     // Calculate current capital
     const { data: closedTrades } = await db
@@ -171,17 +182,17 @@ export async function GET(req: NextRequest) {
     await db.from('demo_trades').insert({
       session_id:    session.id,
       instrument:    sym,
-      direction:     bias,
+      direction:     effectiveDir,
       entry_price:   entry,
       stop_loss:     sl,
       take_profit:   tp,
       quantity:      qty,
       confidence:    effectiveScore,
-      signal_reason: `Tech:${score} ${aiAligned ? '+AI' : ''} ${bias} RSI:${ind.rsi.toFixed(0)} MACD:${ind.macd.histogram > 0 ? '+' : '-'} BB:${(ind.bb.percentB * 100).toFixed(0)}%`,
+      signal_reason: `${stratName} ${effectiveDir} ${aiAligned ? '+AI' : ''} RSI:${ind.rsi.toFixed(0)} ATR:${atrVal.toFixed(2)} BB:${(ind.bb.percentB * 100).toFixed(0)}%`,
       entry_time:    new Date().toISOString(),
     })
 
-    actions.push(`${sym}: OPEN ${bias.toUpperCase()} @ $${entry.toFixed(2)} SL:$${sl.toFixed(2)} TP:$${tp.toFixed(2)} conf:${effectiveScore}`)
+    actions.push(`${sym}: ${stratName} OPEN ${effectiveDir.toUpperCase()} @ $${entry.toFixed(2)} SL:$${sl.toFixed(2)} TP:$${tp.toFixed(2)} conf:${effectiveScore}`)
   }
 
   // Update session stats

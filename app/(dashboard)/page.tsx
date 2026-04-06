@@ -143,11 +143,12 @@ function Dashboard() {
   const portfolio = useStore(s => s.portfolio)
   const positions = useStore(s => s.positions)
   const fearGreedIndex = useStore(s => s.fearGreedIndex)
-  const [activeTab, setActiveTab] = useState<'opportunities' | 'portfolio' | 'agents' | 'polymarket' | 'news'>('opportunities')
+  const [activeTab, setActiveTab] = useState<'opportunities' | 'portfolio' | 'demo' | 'agents' | 'polymarket' | 'news'>('opportunities')
   const [clock, setClock] = useState('')
   const [polyBets, setPolyBets] = useState<Array<Record<string, unknown>>>([])
   const [polyMarkets, setPolyMarkets] = useState<Array<Record<string, unknown>>>([])
   const [killLoading, setKillLoading] = useState(false)
+  const [demoData, setDemoData] = useState<{ session: Record<string, unknown> | null; trades: Array<Record<string, unknown>> }>({ session: null, trades: [] })
 
   useEffect(() => {
     const t = setInterval(() => {
@@ -189,6 +190,9 @@ function Dashboard() {
       .catch(() => {})
     fetch('/api/polymarket/bets').then(r => r.json()).then(d => { if (d.data) setPolyBets(d.data) }).catch(() => {})
     fetch('/api/polymarket/markets').then(r => r.json()).then(d => { if (d.data) setPolyMarkets(d.data) }).catch(() => {})
+    fetch('/api/demo').then(r => r.json()).then(d => {
+      if (d.success) setDemoData({ session: d.data, trades: d.trades ?? [] })
+    }).catch(() => {})
   }, [])
 
   const totalPnl = positions.reduce((s, p) => s + (p.unrealized_pnl ?? 0), 0)
@@ -196,6 +200,7 @@ function Dashboard() {
 
   const tabs = [
     { id: 'opportunities', label: '📈 Prilike' },
+    { id: 'demo',          label: '🧪 Simulacija' },
     { id: 'portfolio',     label: '💼 Portfolio' },
     { id: 'polymarket',    label: '🎯 Polymarket' },
     { id: 'agents',        label: '🤖 Agenti' },
@@ -358,6 +363,165 @@ function Dashboard() {
                 </table>
               )}
             </div>
+          </div>
+        )}
+
+        {/* ── SIMULACIJA (DEMO) ── */}
+        {activeTab === 'demo' && (
+          <div>
+            {/* Session Stats */}
+            {demoData.session ? (
+              <>
+                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2 mb-5">
+                  {[
+                    { l: 'KAPITAL', v: `AED ${Number(demoData.session.initial_capital || 0).toLocaleString()}`, cls: 'text-[#e2e2f5]' },
+                    { l: 'TRENUTNO', v: `AED ${Number(demoData.session.final_capital || demoData.session.initial_capital || 0).toLocaleString()}`, cls: Number(demoData.session.total_pnl || 0) >= 0 ? 'text-[#00ffa3]' : 'text-[#ff3366]' },
+                    { l: 'P&L', v: `${Number(demoData.session.total_pnl || 0) >= 0 ? '+' : ''}AED ${Math.abs(Number(demoData.session.total_pnl || 0)).toLocaleString()}`, cls: Number(demoData.session.total_pnl || 0) >= 0 ? 'text-[#00ffa3]' : 'text-[#ff3366]' },
+                    { l: 'P&L %', v: `${Number(demoData.session.total_pnl_pct || 0) >= 0 ? '+' : ''}${Number(demoData.session.total_pnl_pct || 0).toFixed(2)}%`, cls: Number(demoData.session.total_pnl_pct || 0) >= 0 ? 'text-[#00ffa3]' : 'text-[#ff3366]' },
+                    { l: 'TRADES', v: `${demoData.session.total_trades ?? 0}`, cls: 'text-[#00ccff]' },
+                    { l: 'WIN/LOSS', v: `${demoData.session.win_count ?? 0}W / ${demoData.session.loss_count ?? 0}L`, cls: 'text-[#e2e2f5]' },
+                    { l: 'MAX DD', v: demoData.session.max_drawdown ? `${(Number(demoData.session.max_drawdown) * 100).toFixed(1)}%` : '—', cls: 'text-[#ffcc00]' },
+                  ].map(stat => (
+                    <div key={stat.l} className="bg-[#0f0f1e] border border-white/[0.07] rounded-xl p-3">
+                      <div className="text-[9px] text-[#44446a] tracking-wider mb-2">{stat.l}</div>
+                      <div className={`text-base font-black mono ${stat.cls}`}>{stat.v}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="text-[9px] text-[#44446a]">
+                    Sesija: {String(demoData.session.start_date)} — {String(demoData.session.end_date)} | Skenira svakih 15min | 4 instrumenta (BTC, ETH, SOL, BNB)
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="bg-[#0f0f1e] border border-white/[0.07] rounded-xl p-8 text-center text-[#44446a] mb-5">
+                <div className="text-2xl mb-3">🧪</div>
+                <div className="text-sm">Nema aktivne demo sesije. Cron ce kreirati novu.</div>
+              </div>
+            )}
+
+            {/* Open Trades */}
+            {(() => {
+              const openTrades = demoData.trades.filter(t => !t.exit_time)
+              const closedTrades = demoData.trades.filter(t => t.exit_time)
+              return (
+                <>
+                  <div className="flex items-center gap-2 mb-3 mt-5">
+                    <div className="w-1.5 h-1.5 rounded-full bg-[#00ffa3] shadow-[0_0_6px_#00ffa3]" />
+                    <span className="text-[10px] font-bold tracking-widest text-[#44446a] uppercase">Otvorene Pozicije</span>
+                    <span className="text-[10px] text-[#44446a]">{openTrades.length} aktivnih</span>
+                  </div>
+
+                  {openTrades.length === 0 ? (
+                    <div className="bg-[#0f0f1e] border border-white/[0.07] rounded-xl p-6 text-center text-[#44446a] text-sm mb-5">
+                      Nema otvorenih demo pozicija — bot ceka signal (score &gt; 55)
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-5">
+                      {openTrades.map((t, i) => {
+                        const dir = String(t.direction)
+                        const entry = Number(t.entry_price)
+                        const cur = Number(t.current_price || entry)
+                        const qty = Number(t.quantity)
+                        const livePnl = Number(t.live_pnl_aed || 0)
+                        const livePct = Number(t.live_pnl_pct || 0)
+                        const isUp = livePnl >= 0
+                        return (
+                          <div key={i} className={cn(
+                            'bg-[#0f0f1e] border border-white/[0.07] rounded-xl overflow-hidden',
+                            dir === 'long' ? 'border-l-2 border-l-[#00ffa3]' : 'border-l-2 border-l-[#ff3366]'
+                          )}>
+                            <div className="flex items-center justify-between p-3 bg-[#111122]">
+                              <div className="flex items-center gap-2">
+                                <span className="font-bold text-[#e2e2f5] text-sm">{String(t.instrument)}</span>
+                                <span className={cn('text-[9px] font-black px-2 py-0.5 rounded',
+                                  dir === 'long' ? 'bg-[rgba(0,255,163,0.18)] text-[#00ffa3]' : 'bg-[rgba(255,51,102,0.18)] text-[#ff3366]'
+                                )}>{dir.toUpperCase()}</span>
+                              </div>
+                              <div className={cn('font-black mono text-sm', isUp ? 'text-[#00ffa3]' : 'text-[#ff3366]')}>
+                                {isUp ? '+' : ''}{livePnl.toFixed(0)} AED ({livePct.toFixed(2)}%)
+                              </div>
+                            </div>
+                            <div className="grid grid-cols-4 gap-2 p-3">
+                              {[
+                                { l: 'ENTRY', v: fmtPrice(entry), cls: 'text-[#e2e2f5]' },
+                                { l: 'CURRENT', v: fmtPrice(cur), cls: isUp ? 'text-[#00ffa3]' : 'text-[#ff3366]' },
+                                { l: 'STOP', v: fmtPrice(Number(t.stop_loss)), cls: 'text-[#ff3366]' },
+                                { l: 'TARGET', v: fmtPrice(Number(t.take_profit)), cls: 'text-[#00ffa3]' },
+                              ].map(({ l, v, cls }) => (
+                                <div key={l} className="bg-[#07070f] rounded-md p-2">
+                                  <div className="text-[8px] text-[#44446a]">{l}</div>
+                                  <div className={cn('text-[11px] font-bold mono', cls)}>{v}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="px-3 pb-2 text-[9px] text-[#7878aa]">{String(t.signal_reason)} | Conf: {String(t.confidence)}%</div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+
+                  {/* Trade History */}
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-1.5 h-1.5 rounded-full bg-[#9966ff] shadow-[0_0_6px_#9966ff]" />
+                    <span className="text-[10px] font-bold tracking-widest text-[#44446a] uppercase">Historija Trejdova</span>
+                    <span className="text-[10px] text-[#44446a]">{closedTrades.length} zatvorenih</span>
+                  </div>
+
+                  {closedTrades.length === 0 ? (
+                    <div className="bg-[#0f0f1e] border border-white/[0.07] rounded-xl p-6 text-center text-[#44446a] text-sm">
+                      Nema zatvorenih trejdova u ovoj sesiji
+                    </div>
+                  ) : (
+                    <div className="bg-[#07070f] border border-white/[0.06] rounded-xl overflow-hidden">
+                      <table className="w-full">
+                        <thead>
+                          <tr>
+                            {['Instrument', 'Smjer', 'Ulaz', 'Izlaz', 'Razlog', 'P&L', '%', 'Conf', 'Vrijeme'].map(h => (
+                              <th key={h} className="text-left text-[9px] text-[#44446a] tracking-wider font-semibold px-3 py-2 border-b border-white/[0.06]">{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {closedTrades.map((t, i) => {
+                            const pnl = Number(t.pnl_aed || 0)
+                            const isWin = pnl > 0
+                            return (
+                              <tr key={i} className="hover:bg-[#0f0f1e] transition-colors border-b border-white/[0.03]">
+                                <td className="px-3 py-2 font-bold text-[#e2e2f5] text-xs">{String(t.instrument)}</td>
+                                <td className={cn('px-3 py-2 font-bold text-xs', String(t.direction) === 'long' ? 'text-[#00ffa3]' : 'text-[#ff3366]')}>
+                                  {String(t.direction).toUpperCase()}
+                                </td>
+                                <td className="px-3 py-2 mono text-xs text-[#7878aa]">{fmtPrice(Number(t.entry_price))}</td>
+                                <td className="px-3 py-2 mono text-xs text-[#7878aa]">{fmtPrice(Number(t.exit_price))}</td>
+                                <td className="px-3 py-2">
+                                  <span className={cn('text-[9px] font-bold px-2 py-0.5 rounded',
+                                    String(t.exit_reason) === 'take_profit' ? 'bg-[rgba(0,255,163,0.1)] text-[#00ffa3]' : 'bg-[rgba(255,51,102,0.1)] text-[#ff3366]'
+                                  )}>{String(t.exit_reason) === 'take_profit' ? 'TP HIT' : 'SL HIT'}</span>
+                                </td>
+                                <td className={cn('px-3 py-2 mono text-xs font-bold', isWin ? 'text-[#00ffa3]' : 'text-[#ff3366]')}>
+                                  {isWin ? '+' : ''}{pnl.toFixed(0)} AED
+                                </td>
+                                <td className={cn('px-3 py-2 mono text-xs', isWin ? 'text-[#00ffa3]' : 'text-[#ff3366]')}>
+                                  {Number(t.pnl_pct || 0).toFixed(2)}%
+                                </td>
+                                <td className="px-3 py-2 text-[10px] text-[#7878aa]">{String(t.confidence)}%</td>
+                                <td className="px-3 py-2 text-[9px] text-[#44446a] mono">
+                                  {new Date(String(t.entry_time)).toLocaleDateString('en', { month: 'short', day: 'numeric' })}
+                                </td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </>
+              )
+            })()}
           </div>
         )}
 

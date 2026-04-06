@@ -11,7 +11,10 @@ const BINANCE_SYMBOLS: Record<string, string> = {
   'ETH/USD': 'ETHUSDT',
   'SOL/USD': 'SOLUSDT',
   'BNB/USD': 'BNBUSDT',
-  'XAU/USD': 'PAXGUSDT',  // PAX Gold tracks real gold price
+  'DOGE/USD': 'DOGEUSDT',
+  'AVAX/USD': 'AVAXUSDT',
+  'LINK/USD': 'LINKUSDT',
+  'XAU/USD': 'PAXGUSDT',
 }
 
 const YAHOO_SYMBOLS: Record<string, string> = {
@@ -22,6 +25,7 @@ const YAHOO_SYMBOLS: Record<string, string> = {
   'SPY':     'SPY',
   'QQQ':     'QQQ',
   'EUR/USD': 'EURUSD=X',
+  'GBP/USD': 'GBPUSD=X',
   'USD/JPY': 'JPY=X',
 }
 

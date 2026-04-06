@@ -3,10 +3,17 @@ import { useEffect, useState } from 'react'
 
 const AGENTS: Record<string, { icon: string; name: string; color: string }> = {
   'orchestrator':       { icon: '🧠', name: 'Orchestrator',    color: 'var(--amber)' },
-  'market-analyst':     { icon: '📰', name: 'Market Analyst',  color: 'var(--blue)' },
-  'signal-generator':   { icon: '🎯', name: 'Signal Gen',      color: 'var(--green)' },
-  'risk-manager':       { icon: '🛡', name: 'Risk Manager',    color: 'var(--red)' },
-  'trade-reviewer':     { icon: '📊', name: 'Trade Reviewer',  color: 'var(--purple)' },
+  'macro-agent':        { icon: '🌍', name: 'Macro',           color: 'var(--cyan)' },
+  'correlation-agent':  { icon: '🔗', name: 'Correlation',     color: 'var(--blue)' },
+  'bull-agent':         { icon: '🐂', name: 'Bull',            color: 'var(--green)' },
+  'bear-agent':         { icon: '🐻', name: 'Bear',            color: 'var(--red)' },
+  'scalper-agent':      { icon: '⚡', name: 'Scalper',         color: 'var(--cyan)' },
+  'trend-agent':        { icon: '📈', name: 'Trend',           color: 'var(--blue)' },
+  'market-analyst':     { icon: '📰', name: 'Analyst',         color: 'var(--purple)' },
+  'signal-generator':   { icon: '🎯', name: 'Signal',          color: 'var(--green)' },
+  'risk-manager':       { icon: '🛡', name: 'Risk',            color: 'var(--red)' },
+  'trade-reviewer':     { icon: '📊', name: 'Reviewer',        color: 'var(--amber)' },
+  'master-agent':       { icon: '👑', name: 'Master',          color: 'var(--amber)' },
 }
 
 const ROLE_BADGE: Record<string, { bg: string; label: string }> = {
@@ -73,9 +80,9 @@ export default function WarRoomPage() {
             <span className="text-[11px] font-bold" style={{ color: 'var(--amber)' }}>WAR ROOM</span>
             {currentMeeting && <span className="text-[10px] font-bold" style={{ color: 'var(--text-0)' }}>{currentMeeting.instrument}</span>}
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 flex-wrap">
             {Object.entries(AGENTS).map(([id, a]) => (
-              <span key={id} className="flex items-center gap-1 text-[9px]" style={{ color: a.color }}>
+              <span key={id} className="flex items-center gap-0.5 text-[8px]" style={{ color: a.color }}>
                 <span>{a.icon}</span><span className="font-bold">{a.name}</span>
               </span>
             ))}
@@ -141,6 +148,16 @@ export default function WarRoomPage() {
                   <div className="text-[11px] leading-relaxed" style={{ color: isDecision ? 'var(--text-0)' : 'var(--text-1)' }}>
                     {msg.message}
                   </div>
+                  {isDecision && msg.data && (
+                    <div className="flex items-center gap-3 mt-1.5 text-[10px]">
+                      <span className="font-bold" style={{ color: 'var(--green)' }}>FOR: {String((msg.data as any)?.votesFor ?? '?')}</span>
+                      <span className="font-bold" style={{ color: 'var(--red)' }}>AGAINST: {String((msg.data as any)?.votesAgainst ?? '?')}</span>
+                      <span style={{ color: 'var(--text-3)' }}>| {String((msg.data as any)?.agentCount ?? 12)} agents</span>
+                      <span className="font-bold" style={{ color: (msg.data as any)?.execute ? 'var(--green)' : 'var(--red)' }}>
+                        {(msg.data as any)?.execute ? 'TRADE EXECUTED' : 'TRADE REJECTED'}
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
             )

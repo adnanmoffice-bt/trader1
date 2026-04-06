@@ -61,7 +61,11 @@ async function getConfig(userId?: string): Promise<WhatsAppConfig | null> {
   const apiToken = process.env.GREEN_API_TOKEN
   if (!instanceId || !apiToken) return null
 
-  return { apiUrl: process.env.GREEN_API_URL || 'https://7107.api.greenapi.com', instanceId, apiToken }
+  return {
+    apiUrl: process.env.GREEN_API_URL || 'https://7107.api.greenapi.com',
+    instanceId, apiToken,
+    groupId: process.env.GREEN_API_GROUP_ID,
+  }
 }
 
 async function greenApiCall(config: WhatsAppConfig, method: string, body?: Record<string, unknown>) {

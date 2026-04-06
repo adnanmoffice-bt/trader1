@@ -330,6 +330,45 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 -- VALUES ('YOUR_USER_UUID', 200000, 200000, true),
 --        ('YOUR_USER_UUID', 200000, 200000, false);
 
+-- ─── User Settings ──────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS user_settings (
+  id                    UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  user_id               UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL UNIQUE,
+  trading_mode          VARCHAR(10) DEFAULT 'demo' CHECK (trading_mode IN ('demo', 'live')),
+  -- Legacy Binance fields (kept for backwards compat)
+  binance_api_key       TEXT,
+  binance_secret_key    TEXT,
+  -- Multi-exchange: primary exchange selection
+  primary_exchange      VARCHAR(20) DEFAULT 'binance',
+  -- Exchange credentials (JSON: { "bybit": { "apiKey": "...", "secretKey": "..." }, ... })
+  exchange_credentials  JSONB DEFAULT '{}'::jsonb,
+  -- Notifications
+  telegram_bot_token    TEXT,
+  telegram_chat_id      TEXT,
+  whatsapp_instance_id  TEXT,
+  whatsapp_api_token    TEXT,
+  whatsapp_group_id     TEXT,
+  whatsapp_enabled      BOOLEAN DEFAULT false,
+  notifications_enabled BOOLEAN DEFAULT true,
+  -- Risk controls
+  max_drawdown_pct      DECIMAL(5,2) DEFAULT 15.00,
+  daily_loss_limit_pct  DECIMAL(5,2) DEFAULT 3.00,
+  max_positions         INTEGER DEFAULT 3,
+  risk_per_trade_pct    DECIMAL(5,2) DEFAULT 2.00,
+  min_risk_reward       DECIMAL(5,2) DEFAULT 1.50,
+  max_sl_pct            DECIMAL(5,2) DEFAULT 6.00,
+  initial_capital       DECIMAL(18,2) DEFAULT 5000.00,
+  currency              VARCHAR(5) DEFAULT 'AED',
+  auto_trade_enabled    BOOLEAN DEFAULT false,
+  created_at            TIMESTAMPTZ DEFAULT NOW(),
+  updated_at            TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE user_settings ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "user_own_settings" ON user_settings FOR ALL USING (auth.uid() = user_id);
+CREATE POLICY "service_write_settings" ON user_settings FOR ALL USING (auth.role() = 'service_role');
+
 -- ─── Useful Views ─────────────────────────────────────────────────────────────
 
 CREATE OR REPLACE VIEW portfolio_summary AS

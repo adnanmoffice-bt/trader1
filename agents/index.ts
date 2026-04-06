@@ -4,7 +4,7 @@ import { createServiceSupabase } from '@/lib/supabase'
 import { sendSignalAlert } from '@/lib/telegram'
 import { checkSafety } from '@/lib/safety'
 import { getTradeStats, riskBasedPositionSize, checkDailyLossLimit } from '@/lib/risk-controls'
-import * as binance from '@/lib/binance-trader'
+import * as exchange from '@/lib/exchanges'
 import * as poly from '@/lib/polymarket-trader'
 import type {
   AgentContext, AgentSignalOutput, AgentName,
@@ -228,26 +228,27 @@ async function processInstrument(
     await log(db, 'orchestrator', 'ok',
       `${instrument}: ${strategyName} SIGNAL → ${enhancedSignal.direction.toUpperCase()} @ ${fmt$(entry)} | SL:${fmt$(sl)} TP:${fmt$(tp1)} | R:R ${rr}x conf:${finalConf}%${aiAgrees ? ' (AI+Strategy aligned)' : ''}`)
 
-    if (binance.isConfigured() && enhancedSignal.entry_price && enhancedSignal.stop_loss) {
+    if (exchange.isConfigured() && enhancedSignal.entry_price && enhancedSignal.stop_loss) {
       try {
-        const capitalUsd = (portfolio?.available_capital ?? 5000) / binance.USD_AED
+        const primaryEx = exchange.getPrimaryExchange()
+        const capitalUsd = (portfolio?.available_capital ?? 5000) / exchange.USD_AED
         const stats = await getTradeStats()
         const sizing = riskBasedPositionSize(capitalUsd, enhancedSignal.entry_price, enhancedSignal.stop_loss, stats)
         const userId = 'auto-trader'
 
         await log(db, 'orchestrator', 'info',
-          `SIZING: Kelly:${(stats.kellyFraction * 100).toFixed(1)}% Risk:${(sizing.riskPct * 100).toFixed(1)}% Notional:$${sizing.notionalUsd.toFixed(0)} WR:${(stats.winRate * 100).toFixed(0)}% Streak:${stats.streak}`)
+          `SIZING [${primaryEx.config.name}]: Kelly:${(stats.kellyFraction * 100).toFixed(1)}% Risk:${(sizing.riskPct * 100).toFixed(1)}% Notional:$${sizing.notionalUsd.toFixed(0)} WR:${(stats.winRate * 100).toFixed(0)}% Streak:${stats.streak}`)
 
-        if (enhancedSignal.direction === 'long' && sizing.notionalUsd >= 10) {
-          const result = await binance.executeBuy(
+        if (enhancedSignal.direction === 'long' && sizing.notionalUsd >= primaryEx.config.minOrderSize) {
+          const result = await exchange.executeBuy(
             instrument, sizing.notionalUsd, userId, saved.id,
             enhancedSignal.stop_loss, enhancedSignal.take_profit_1,
           )
           if (result) {
             await log(db, 'orchestrator', 'ok',
-              `AUTO-EXEC: BUY ${instrument} $${sizing.notionalUsd.toFixed(0)} @ $${result.avgPrice.toFixed(2)} (Kelly-sized)`)
+              `AUTO-EXEC [${primaryEx.config.name}]: BUY ${instrument} $${sizing.notionalUsd.toFixed(0)} @ $${result.avgPrice.toFixed(2)} (Kelly-sized)`)
             if (enhancedSignal.stop_loss && enhancedSignal.take_profit_1) {
-              await binance.setStopLossAndTakeProfit(
+              await exchange.setStopLossAndTakeProfit(
                 instrument, result.executedQty,
                 enhancedSignal.stop_loss, enhancedSignal.take_profit_1
               )

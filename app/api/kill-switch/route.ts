@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServerSupabase } from '@/lib/supabase-server'
 import { activateKillSwitch, deactivateKillSwitch } from '@/lib/safety'
+import { notifyKillSwitch as waKillSwitch } from '@/lib/whatsapp'
 
 export async function POST(req: NextRequest) {
   const supabase = await createServerSupabase()
@@ -19,9 +20,11 @@ export async function POST(req: NextRequest) {
 
   if (body.action === 'deactivate') {
     await deactivateKillSwitch()
+    await waKillSwitch(false).catch(() => {})
     return NextResponse.json({ success: true, message: 'Kill switch deactivated' })
   }
 
   await activateKillSwitch()
+  await waKillSwitch(true, 'Manually activated from Settings').catch(() => {})
   return NextResponse.json({ success: true, message: 'Kill switch activated — trading halted' })
 }

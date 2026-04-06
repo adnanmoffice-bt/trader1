@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceSupabase } from '@/lib/supabase'
-import { fetchBinanceTicker } from '@/lib/price-fetcher'
+import { ExchangeManager } from '@/lib/exchanges'
 import { sendPositionAlert } from '@/lib/telegram'
+import { notifyPositionAlert as waPositionAlert } from '@/lib/whatsapp'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -13,6 +14,7 @@ export async function GET(req: NextRequest) {
   }
 
   const db = createServiceSupabase()
+  const mgr = new ExchangeManager()
   const { data: positions } = await db.from('positions').select('*')
   if (!positions?.length) {
     return NextResponse.json({ success: true, message: 'No open positions', timestamp: new Date().toISOString() })
@@ -22,7 +24,7 @@ export async function GET(req: NextRequest) {
   const updated: string[] = []
 
   for (const pos of positions) {
-    const ticker = await fetchBinanceTicker(pos.instrument)
+    const ticker = await mgr.getBestTicker(pos.instrument)
     if (!ticker) continue
 
     const cur = ticker.price
@@ -76,6 +78,7 @@ export async function GET(req: NextRequest) {
     } catch { /* RPC may not exist yet */ }
 
     await sendPositionAlert(pos.instrument, reason, pnlAed, pnlPct).catch(() => {})
+    await waPositionAlert(pos.instrument, reason, pnlAed, pnlPct).catch(() => {})
 
     closed.push(`${pos.instrument} ${reason} P&L: ${pnlAed.toFixed(0)} AED`)
   }

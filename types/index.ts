@@ -259,6 +259,19 @@ export interface DemoSession {
   trades: DemoTrade[]
 }
 
+// ─── Exchange Types ────────────────────────────────────────────────────────────
+
+export type ExchangeId = 'binance' | 'bybit' | 'okx' | 'kraken' | 'kucoin' | 'bitget' | 'gateio' | 'mexc'
+
+export interface ExchangeInfo {
+  id: ExchangeId
+  name: string
+  logo: string
+  configured: boolean
+  quoteBalance: number
+  canTrade: boolean
+}
+
 // ─── API Response Wrappers ─────────────────────────────────────────────────────
 
 export interface ApiResponse<T> {

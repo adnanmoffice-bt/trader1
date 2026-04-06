@@ -1,37 +1,182 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useStore } from '@/lib/store'
 import { RealtimeProvider } from '@/components/providers/RealtimeProvider'
-import type { Signal, MarketData } from '@/types'
+import type { Signal, MarketData, OHLCV } from '@/types'
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-function fmtPrice(n: number | null): string {
-  if (!n) return '—'
-  return n >= 1000
-    ? '$' + n.toLocaleString('en', { minimumFractionDigits: 2 })
-    : '$' + n.toFixed(2)
+// ═══════════════════════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function fmt(n: number | null | undefined, prefix = '$'): string {
+  if (n == null || isNaN(n)) return '—'
+  if (Math.abs(n) >= 10000) return `${prefix}${n.toLocaleString('en', { maximumFractionDigits: 0 })}`
+  if (Math.abs(n) >= 100) return `${prefix}${n.toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  return `${prefix}${n.toFixed(2)}`
 }
-function cn(...classes: (string | false | undefined)[]) {
-  return classes.filter(Boolean).join(' ')
+function cn(...c: (string | false | undefined | null)[]) { return c.filter(Boolean).join(' ') }
+function pctColor(n: number) { return n >= 0 ? 'text-[#00ffa3]' : 'text-[#ff3366]' }
+function bgPct(n: number) { return n >= 0 ? 'bg-[rgba(0,255,163,0.08)]' : 'bg-[rgba(255,51,102,0.08)]' }
+const SYM_LABELS: Record<string, string> = {
+  'BTC/USD': 'BTC', 'ETH/USD': 'ETH', 'SOL/USD': 'SOL', 'BNB/USD': 'BNB',
+  'BRENT': 'BRENT', 'XAU/USD': 'GOLD', 'SPY': 'SPY', 'QQQ': 'QQQ',
+  'EUR/USD': 'EUR', 'USD/JPY': 'JPY', 'XAG/USD': 'SILVER', 'WTI': 'WTI',
 }
 
-// ── Price Strip ───────────────────────────────────────────────────────────────
-function PriceStrip({ prices }: { prices: Record<string, MarketData> }) {
-  const symbols = ['BTC/USD', 'ETH/USD', 'BRENT', 'XAU/USD', 'SPY']
+// ═══════════════════════════════════════════════════════════════════════════════
+// CANDLESTICK CHART (SVG)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function CandlestickChart({ candles, symbol }: { candles: OHLCV[]; symbol: string }) {
+  const W = 960, H = 360
+  const VOL_H = 50, PAD_R = 70, PAD_T = 8, PAD_B = 20
+  const CHART_H = H - VOL_H - PAD_B - PAD_T
+  const chartW = W - PAD_R
+
+  if (!candles.length) return (
+    <div className="flex items-center justify-center h-full text-[#44446a] text-xs">Ucitavam chart...</div>
+  )
+
+  const data = candles.slice(-100)
+  const highs = data.map(c => c.high)
+  const lows = data.map(c => c.low)
+  const vols = data.map(c => c.volume)
+  const pMin = Math.min(...lows) * 0.999
+  const pMax = Math.max(...highs) * 1.001
+  const vMax = Math.max(...vols) || 1
+
+  const gap = chartW / data.length
+  const cw = Math.max(1, gap * 0.65)
+  const yP = (p: number) => PAD_T + (1 - (p - pMin) / (pMax - pMin)) * CHART_H
+  const yV = (v: number) => H - PAD_B - (v / vMax) * VOL_H
+
+  // Price grid lines
+  const priceStep = (pMax - pMin) / 5
+  const gridLines = Array.from({ length: 6 }, (_, i) => pMin + priceStep * i)
+
+  // EMA-20 line
+  const closes = data.map(c => c.close)
+  const ema20: number[] = [closes[0]]
+  const k = 2 / 21
+  for (let i = 1; i < closes.length; i++) ema20.push(closes[i] * k + ema20[i - 1] * (1 - k))
+  const emaPath = ema20.map((v, i) => `${i === 0 ? 'M' : 'L'}${i * gap + gap / 2},${yP(v)}`).join(' ')
+
+  const lastPrice = data[data.length - 1]?.close ?? 0
+  const lastY = yP(lastPrice)
+
   return (
-    <div className="flex gap-2 overflow-x-auto pb-1 mb-4">
+    <div className="w-full h-full">
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-full" preserveAspectRatio="none">
+        {/* Grid */}
+        {gridLines.map((p, i) => (
+          <g key={i}>
+            <line x1={0} y1={yP(p)} x2={chartW} y2={yP(p)} stroke="#1a1a2e" strokeWidth={0.5} />
+            <text x={chartW + 4} y={yP(p) + 3} fill="#44446a" fontSize={9} fontFamily="monospace">{p >= 1000 ? p.toFixed(0) : p.toFixed(2)}</text>
+          </g>
+        ))}
+
+        {/* Volume bars */}
+        {data.map((d, i) => {
+          const isUp = d.close >= d.open
+          return (
+            <rect key={`v${i}`} x={i * gap + (gap - cw) / 2} y={yV(d.volume)} width={cw}
+              height={H - PAD_B - yV(d.volume)} fill={isUp ? 'rgba(0,255,163,0.12)' : 'rgba(255,51,102,0.12)'} />
+          )
+        })}
+
+        {/* EMA-20 line */}
+        <path d={emaPath} fill="none" stroke="#9966ff" strokeWidth={1} opacity={0.6} />
+
+        {/* Candlesticks */}
+        {data.map((d, i) => {
+          const x = i * gap + gap / 2
+          const isUp = d.close >= d.open
+          const color = isUp ? '#00ffa3' : '#ff3366'
+          const bodyTop = yP(Math.max(d.open, d.close))
+          const bodyBot = yP(Math.min(d.open, d.close))
+          const bodyH = Math.max(bodyBot - bodyTop, 0.5)
+          return (
+            <g key={`c${i}`}>
+              <line x1={x} y1={yP(d.high)} x2={x} y2={yP(d.low)} stroke={color} strokeWidth={0.8} />
+              <rect x={x - cw / 2} y={bodyTop} width={cw} height={bodyH} fill={isUp ? color : color} rx={0.5} />
+            </g>
+          )
+        })}
+
+        {/* Current price line */}
+        <line x1={0} y1={lastY} x2={chartW} y2={lastY} stroke="#00ccff" strokeWidth={0.5} strokeDasharray="3 2" />
+        <rect x={chartW} y={lastY - 8} width={PAD_R - 2} height={16} rx={2} fill="#00ccff" />
+        <text x={chartW + 4} y={lastY + 4} fill="#03030a" fontSize={9} fontWeight="bold" fontFamily="monospace">
+          {lastPrice >= 1000 ? lastPrice.toFixed(0) : lastPrice.toFixed(2)}
+        </text>
+
+        {/* Symbol label */}
+        <text x={8} y={20} fill="#44446a" fontSize={11} fontWeight="bold" fontFamily="monospace" letterSpacing={1}>
+          {symbol} 1H
+        </text>
+        <text x={8} y={34} fill="#7878aa" fontSize={9} fontFamily="monospace">
+          EMA20
+        </text>
+        <line x1={42} y1={31} x2={65} y2={31} stroke="#9966ff" strokeWidth={1} />
+      </svg>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PANEL WRAPPER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function Panel({ title, icon, badge, children, className = '' }: {
+  title: string; icon?: string; badge?: string | number; children: React.ReactNode; className?: string
+}) {
+  return (
+    <div className={cn('flex flex-col bg-[#07070f] border border-[#1a1a2e] overflow-hidden', className)}>
+      <div className="flex items-center justify-between px-3 py-1.5 bg-[#0a0a16] border-b border-[#1a1a2e] flex-shrink-0">
+        <div className="flex items-center gap-2">
+          {icon && <span className="text-[9px]">{icon}</span>}
+          <span className="text-[9px] font-bold tracking-[0.15em] text-[#44446a] uppercase">{title}</span>
+        </div>
+        {badge !== undefined && (
+          <span className="text-[8px] font-bold text-[#7878aa] bg-[#141428] px-1.5 py-0.5 rounded">{badge}</span>
+        )}
+      </div>
+      <div className="flex-1 overflow-y-auto overflow-x-hidden">{children}</div>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MARKET DATA TABLE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function MarketTable({ prices, selected, onSelect }: {
+  prices: Record<string, MarketData>; selected: string; onSelect: (s: string) => void
+}) {
+  const symbols = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'BNB/USD', 'XAU/USD', 'BRENT', 'SPY', 'QQQ', 'EUR/USD', 'USD/JPY']
+  return (
+    <div className="text-[10px]">
+      <div className="grid grid-cols-[1fr_80px_60px] gap-0 px-2 py-1 text-[8px] text-[#44446a] tracking-wider border-b border-[#1a1a2e]">
+        <span>SYMBOL</span><span className="text-right">CIJENA</span><span className="text-right">24H</span>
+      </div>
       {symbols.map(sym => {
         const d = prices[sym]
-        const up = (d?.change_pct_24h ?? 0) >= 0
+        if (!d) return null
+        const pct = d.change_pct_24h ?? 0
+        const up = pct >= 0
         return (
-          <div key={sym} className="flex-shrink-0 bg-[#0f0f1e] border border-white/[0.07] rounded-lg px-4 py-2 min-w-[130px]">
-            <div className="text-[10px] font-bold text-[#44446a] tracking-wider mb-1">{sym}</div>
-            <div className="text-base font-bold mono text-[#e2e2f5]">
-              {d ? fmtPrice(d.price) : '—'}
-            </div>
-            <div className={cn('text-[11px] font-bold', up ? 'text-[#00ffa3]' : 'text-[#ff3366]')}>
-              {up ? '▲' : '▼'} {Math.abs(d?.change_pct_24h ?? 0).toFixed(2)}%
-            </div>
+          <div key={sym} onClick={() => onSelect(sym)}
+            className={cn(
+              'grid grid-cols-[1fr_80px_60px] gap-0 px-2 py-[5px] cursor-pointer transition-colors border-b border-[#0f0f1e]',
+              selected === sym ? 'bg-[rgba(0,204,255,0.06)] border-l-2 border-l-[#00ccff]' : 'hover:bg-[#0f0f1e] border-l-2 border-l-transparent'
+            )}>
+            <span className="font-bold text-[#e2e2f5]">{SYM_LABELS[sym] ?? sym}</span>
+            <span className="text-right mono font-bold text-[#e2e2f5]">
+              {d.price >= 1000 ? d.price.toLocaleString('en', { maximumFractionDigits: 0 }) : d.price.toFixed(2)}
+            </span>
+            <span className={cn('text-right font-bold mono', pctColor(pct))}>
+              {up ? '+' : ''}{pct.toFixed(2)}%
+            </span>
           </div>
         )
       })}
@@ -39,155 +184,231 @@ function PriceStrip({ prices }: { prices: Record<string, MarketData> }) {
   )
 }
 
-// ── Signal Card ───────────────────────────────────────────────────────────────
-function SignalCard({ s }: { s: Signal }) {
-  const isLong  = s.direction === 'long'
-  const isShort = s.direction === 'short'
-  const barColor = s.confidence >= 75 ? '#00ffa3' : s.confidence >= 55 ? '#ffcc00' : '#ff3366'
+// ═══════════════════════════════════════════════════════════════════════════════
+// SIGNALS LIST
+// ═══════════════════════════════════════════════════════════════════════════════
 
+function SignalsList({ signals }: { signals: Signal[] }) {
   return (
-    <div className={cn(
-      'bg-[#0f0f1e] border border-white/[0.07] rounded-xl overflow-hidden transition-all hover:border-white/[0.14] hover:-translate-y-0.5 cursor-pointer',
-      isLong  && 'border-t-2 border-t-[#00ffa3]',
-      isShort && 'border-t-2 border-t-[#ff3366]',
-      !isLong && !isShort && 'border-t-2 border-t-[#ffcc00]'
-    )}>
-      {/* Head */}
-      <div className="flex items-start justify-between p-3 bg-[#111122]">
-        <div>
-          <div className="text-sm font-bold text-[#e2e2f5]">{s.instrument}</div>
-          <div className="text-[10px] text-[#44446a] mt-0.5">{new Date(s.created_at).toLocaleTimeString('en', { timeZone: 'Asia/Dubai', hour: '2-digit', minute: '2-digit' })} UAE</div>
-        </div>
-        <div className="flex flex-col gap-1 items-end">
-          <span className={cn(
-            'text-[9px] font-black px-2 py-0.5 rounded tracking-wider',
-            isLong  && 'bg-[rgba(0,255,163,0.18)] text-[#00ffa3]',
-            isShort && 'bg-[rgba(255,51,102,0.18)] text-[#ff3366]',
-            !isLong && !isShort && 'bg-[rgba(255,204,0,0.1)] text-[#ffcc00]'
-          )}>{s.direction.toUpperCase()}</span>
-          {s.risk_reward && (
-            <span className="text-[9px] font-bold bg-[rgba(77,136,255,0.1)] text-[#4d88ff] px-2 py-0.5 rounded">
-              R:R {s.risk_reward}×
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Levels */}
-      {s.direction !== 'hold' && (
-        <div className="grid grid-cols-3 gap-1.5 p-3">
-          {[
-            { l: 'ENTRY',  v: s.entry_price,    cls: 'text-[#e2e2f5]' },
-            { l: 'STOP',   v: s.stop_loss,       cls: 'text-[#ff3366]' },
-            { l: 'TARGET', v: s.take_profit_1,   cls: 'text-[#00ffa3]' },
-          ].map(({ l, v, cls }) => (
-            <div key={l} className="bg-[#07070f] rounded-md p-2">
-              <div className="text-[8px] text-[#44446a] tracking-wider mb-1">{l}</div>
-              <div className={cn('text-[11px] font-bold mono', cls)}>{fmtPrice(v)}</div>
+    <div>
+      {signals.slice(0, 8).map(s => {
+        const isL = s.direction === 'long'
+        const isS = s.direction === 'short'
+        return (
+          <div key={s.id} className="px-2 py-2 border-b border-[#0f0f1e] hover:bg-[#0f0f1e] transition-colors">
+            <div className="flex items-center justify-between mb-1">
+              <div className="flex items-center gap-1.5">
+                <span className="font-bold text-[10px] text-[#e2e2f5]">{s.instrument}</span>
+                <span className={cn('text-[8px] font-black px-1.5 py-0.5 rounded',
+                  isL && 'bg-[rgba(0,255,163,0.15)] text-[#00ffa3]',
+                  isS && 'bg-[rgba(255,51,102,0.15)] text-[#ff3366]',
+                  !isL && !isS && 'bg-[rgba(255,204,0,0.1)] text-[#ffcc00]'
+                )}>{s.direction.toUpperCase()}</span>
+                <span className="text-[8px] text-[#4d88ff] font-bold">R:R {s.risk_reward ?? '—'}x</span>
+              </div>
+              <span className="text-[8px] font-bold text-[#7878aa]">{s.confidence}%</span>
             </div>
-          ))}
-        </div>
+            <div className="flex gap-3 text-[9px] mono text-[#7878aa]">
+              <span>E: <span className="text-[#e2e2f5]">{fmt(s.entry_price)}</span></span>
+              <span>SL: <span className="text-[#ff3366]">{fmt(s.stop_loss)}</span></span>
+              <span>TP: <span className="text-[#00ffa3]">{fmt(s.take_profit_1)}</span></span>
+            </div>
+            <div className="text-[8px] text-[#44446a] mt-1 leading-snug">{s.reasoning}</div>
+          </div>
+        )
+      })}
+      {signals.length === 0 && (
+        <div className="text-center py-6 text-[#44446a] text-[10px]">Cekam signale...</div>
       )}
-
-      {/* Confidence */}
-      <div className="px-3 pb-1">
-        <div className="flex justify-between text-[9px] text-[#44446a] mb-1">
-          <span>CONFIDENCE</span>
-          <span style={{ color: barColor }} className="font-bold">{s.confidence}%</span>
-        </div>
-        <div className="h-1 bg-[#141428] rounded-full overflow-hidden">
-          <div className="h-full rounded-full transition-all" style={{ width: `${s.confidence}%`, background: barColor }} />
-        </div>
-      </div>
-
-      {/* AI */}
-      <div className="mx-3 mb-3 mt-2 p-2 bg-[#07070f] rounded-lg">
-        <div className="text-[8px] font-bold text-[#9966ff] tracking-wider mb-1">AI ANALIZA</div>
-        <div className="text-[10px] text-[#7878aa] leading-relaxed">{s.ai_analysis}</div>
-      </div>
     </div>
   )
 }
 
-// ── Agent Log Item ────────────────────────────────────────────────────────────
-function LogItem({ log }: { log: any }) {
+// ═══════════════════════════════════════════════════════════════════════════════
+// DEMO / SIMULATION PANEL
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function DemoPanel({ demoData }: { demoData: { session: Record<string, unknown> | null; trades: Array<Record<string, unknown>> } }) {
+  const s = demoData.session
+  if (!s) return <div className="text-center py-4 text-[#44446a] text-[10px]">Nema demo sesije</div>
+
+  const openTrades = demoData.trades.filter(t => !t.exit_time)
+  const closedTrades = demoData.trades.filter(t => t.exit_time)
+  const pnl = Number(s.total_pnl || 0)
+  const pnlPct = Number(s.total_pnl_pct || 0)
+  const wins = Number(s.win_count || 0)
+  const losses = Number(s.loss_count || 0)
+  const wr = wins + losses > 0 ? (wins / (wins + losses) * 100) : 0
+
+  return (
+    <div className="text-[10px]">
+      {/* Stats bar */}
+      <div className="flex gap-0 border-b border-[#1a1a2e]">
+        {[
+          { l: 'KAPITAL', v: `AED ${Number(s.initial_capital || 0).toLocaleString()}` },
+          { l: 'P&L', v: `${pnl >= 0 ? '+' : ''}${pnl.toFixed(0)}`, cls: pctColor(pnl) },
+          { l: '%', v: `${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%`, cls: pctColor(pnlPct) },
+          { l: 'W/L', v: `${wins}/${losses}` },
+          { l: 'WR', v: `${wr.toFixed(0)}%` },
+        ].map(st => (
+          <div key={st.l} className="flex-1 px-2 py-1.5 border-r border-[#1a1a2e] last:border-r-0">
+            <div className="text-[7px] text-[#44446a] tracking-wider">{st.l}</div>
+            <div className={cn('font-bold mono text-[11px]', st.cls || 'text-[#e2e2f5]')}>{st.v}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Open trades */}
+      {openTrades.map((t, i) => {
+        const dir = String(t.direction)
+        const livePnl = Number(t.live_pnl_aed || 0)
+        const livePct = Number(t.live_pnl_pct || 0)
+        return (
+          <div key={i} className="flex items-center gap-2 px-2 py-1.5 border-b border-[#0f0f1e] hover:bg-[#0f0f1e]">
+            <span className={cn('w-1 h-1 rounded-full', dir === 'long' ? 'bg-[#00ffa3]' : 'bg-[#ff3366]')} />
+            <span className="font-bold text-[#e2e2f5] w-16">{SYM_LABELS[String(t.instrument)] ?? t.instrument}</span>
+            <span className={cn('text-[8px] font-black', dir === 'long' ? 'text-[#00ffa3]' : 'text-[#ff3366]')}>{dir.toUpperCase()}</span>
+            <span className="mono text-[#7878aa] flex-1">@ {fmt(Number(t.entry_price))}</span>
+            <span className={cn('mono font-bold', pctColor(livePnl))}>
+              {livePnl >= 0 ? '+' : ''}{livePnl.toFixed(0)} AED
+            </span>
+            <span className={cn('mono text-[9px]', pctColor(livePct))}>
+              {livePct >= 0 ? '+' : ''}{livePct.toFixed(2)}%
+            </span>
+          </div>
+        )
+      })}
+
+      {/* Closed trades (last 5) */}
+      {closedTrades.slice(0, 5).map((t, i) => {
+        const pnlA = Number(t.pnl_aed || 0)
+        const isWin = pnlA > 0
+        return (
+          <div key={`c${i}`} className="flex items-center gap-2 px-2 py-1 border-b border-[#0f0f1e] opacity-60">
+            <span className={cn('w-1 h-1 rounded-full', isWin ? 'bg-[#00ffa3]' : 'bg-[#ff3366]')} />
+            <span className="text-[#7878aa] w-16">{SYM_LABELS[String(t.instrument)] ?? t.instrument}</span>
+            <span className="text-[8px] text-[#44446a]">{String(t.exit_reason) === 'take_profit' ? 'TP' : 'SL'}</span>
+            <span className="flex-1" />
+            <span className={cn('mono font-bold', pctColor(pnlA))}>
+              {isWin ? '+' : ''}{pnlA.toFixed(0)}
+            </span>
+          </div>
+        )
+      })}
+
+      {openTrades.length === 0 && closedTrades.length === 0 && (
+        <div className="text-center py-4 text-[#44446a] text-[9px]">Bot skenira svakih 15min...</div>
+      )}
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AGENT LOG
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function AgentLog({ logs }: { logs: Array<Record<string, unknown>> }) {
+  const dotColor: Record<string, string> = { ok: 'bg-[#00ffa3]', warn: 'bg-[#ffcc00]', error: 'bg-[#ff3366]', info: 'bg-[#44446a]' }
   const tagColor: Record<string, string> = {
-    'orchestrator':    'bg-[rgba(153,102,255,0.09)] text-[#9966ff]',
-    'market-analyst':  'bg-[rgba(77,136,255,0.08)] text-[#4d88ff]',
-    'signal-generator':'bg-[rgba(0,255,163,0.18)] text-[#00ffa3]',
-    'risk-manager':    'bg-[rgba(255,204,0,0.08)] text-[#ffcc00]',
-    'trade-reviewer':  'bg-[rgba(0,204,255,0.08)] text-[#00ccff]',
-  }
-  const dotColor: Record<string, string> = {
-    ok: 'bg-[#00ffa3]', warn: 'bg-[#ffcc00]', error: 'bg-[#ff3366]', info: 'bg-[#44446a]',
+    'orchestrator': 'text-[#9966ff]', 'market-analyst': 'text-[#4d88ff]',
+    'risk-manager': 'text-[#ffcc00]', 'polymarket-scanner': 'text-[#00ccff]',
+    'trade-reviewer': 'text-[#00ccff]',
   }
   return (
-    <div className="grid grid-cols-[44px_80px_1fr_10px] gap-2 items-start px-3 py-2 border-b border-white/[0.05] hover:bg-[#0f0f1e] transition-colors">
-      <span className="text-[9px] text-[#44446a] mono pt-0.5">
-        {new Date(log.created_at).toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit' })}
-      </span>
-      <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded w-fit ${tagColor[log.agent] ?? 'bg-[#141428] text-[#44446a]'}`}>
-        {log.agent.split('-').map((w: string) => w[0].toUpperCase()).join('')}
-      </span>
-      <span className="text-[10px] text-[#7878aa]">{log.message}</span>
-      <div className={`w-1.5 h-1.5 rounded-full mt-1 ${dotColor[log.level] ?? 'bg-[#44446a]'}`} />
+    <div>
+      {logs.slice(0, 30).map((log, i) => (
+        <div key={i} className="flex items-start gap-1.5 px-2 py-1 border-b border-[#0f0f1e] hover:bg-[#0f0f1e]">
+          <div className={cn('w-1.5 h-1.5 rounded-full mt-1 flex-shrink-0', dotColor[String(log.level)] ?? 'bg-[#44446a]')} />
+          <span className="text-[8px] text-[#44446a] mono w-10 flex-shrink-0">
+            {log.created_at ? new Date(String(log.created_at)).toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit' }) : ''}
+          </span>
+          <span className={cn('text-[8px] font-bold flex-shrink-0 w-6', tagColor[String(log.agent)] ?? 'text-[#44446a]')}>
+            {String(log.agent ?? '').split('-').map((w: string) => w[0]?.toUpperCase() ?? '').join('')}
+          </span>
+          <span className="text-[9px] text-[#7878aa] leading-tight">{String(log.message ?? '').slice(0, 100)}</span>
+        </div>
+      ))}
+      {logs.length === 0 && <div className="text-center py-4 text-[#44446a] text-[9px]">Cekam agent aktivnost...</div>}
     </div>
   )
 }
 
-// ── Main Dashboard ────────────────────────────────────────────────────────────
-function Dashboard() {
+// ═══════════════════════════════════════════════════════════════════════════════
+// POLYMARKET COMPACT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function PolyCompact({ bets, markets }: { bets: Array<Record<string, unknown>>; markets: Array<Record<string, unknown>> }) {
+  return (
+    <div>
+      {bets.length > 0 && bets.slice(0, 3).map((b, i) => (
+        <div key={i} className="px-2 py-1.5 border-b border-[#0f0f1e]">
+          <div className="flex items-center gap-1.5">
+            <span className={cn('text-[8px] font-black px-1 rounded',
+              String(b.side) === 'YES' ? 'bg-[rgba(0,255,163,0.15)] text-[#00ffa3]' : 'bg-[rgba(255,51,102,0.15)] text-[#ff3366]'
+            )}>{String(b.side)}</span>
+            <span className="text-[9px] text-[#e2e2f5] leading-tight truncate">{String(b.question).slice(0, 60)}</span>
+          </div>
+        </div>
+      ))}
+      {markets.slice(0, 6).map((m, i) => (
+        <div key={i} className="flex items-center justify-between px-2 py-1 border-b border-[#0f0f1e] hover:bg-[#0f0f1e]">
+          <span className="text-[9px] text-[#7878aa] truncate flex-1 pr-2">{String(m.question).slice(0, 55)}</span>
+          <span className={cn('text-[10px] font-bold mono flex-shrink-0',
+            Number(m.yes_price) > 0.6 ? 'text-[#00ffa3]' : Number(m.yes_price) < 0.4 ? 'text-[#ff3366]' : 'text-[#ffcc00]'
+          )}>{(Number(m.yes_price) * 100).toFixed(0)}%</span>
+        </div>
+      ))}
+      {markets.length === 0 && bets.length === 0 && (
+        <div className="text-center py-4 text-[#44446a] text-[9px]">Ucitavam prediction markets...</div>
+      )}
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MAIN TERMINAL
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function Terminal() {
   const prices = useStore(s => s.prices)
   const signals = useStore(s => s.signals)
   const agentLogs = useStore(s => s.agentLogs)
-  const portfolio = useStore(s => s.portfolio)
-  const positions = useStore(s => s.positions)
   const fearGreedIndex = useStore(s => s.fearGreedIndex)
-  const [activeTab, setActiveTab] = useState<'opportunities' | 'portfolio' | 'demo' | 'agents' | 'polymarket' | 'news'>('opportunities')
   const [clock, setClock] = useState('')
+  const [selectedSym, setSelectedSym] = useState('BTC/USD')
+  const [candles, setCandles] = useState<OHLCV[]>([])
   const [polyBets, setPolyBets] = useState<Array<Record<string, unknown>>>([])
   const [polyMarkets, setPolyMarkets] = useState<Array<Record<string, unknown>>>([])
-  const [killLoading, setKillLoading] = useState(false)
   const [demoData, setDemoData] = useState<{ session: Record<string, unknown> | null; trades: Array<Record<string, unknown>> }>({ session: null, trades: [] })
+  const [fng, setFng] = useState(50)
 
+  // Clock
   useEffect(() => {
     const t = setInterval(() => {
-      const now = new Date().toLocaleTimeString('en', { timeZone: 'Asia/Dubai', hour: '2-digit', minute: '2-digit', second: '2-digit' })
-      setClock(now)
+      setClock(new Date().toLocaleTimeString('en', { timeZone: 'Asia/Dubai', hour: '2-digit', minute: '2-digit', second: '2-digit' }))
     }, 1000)
     return () => clearInterval(t)
   }, [])
 
-  // Fetch initial data
+  // Initial data fetch
   useEffect(() => {
     const store = useStore.getState()
-    fetch('/api/prices')
-      .then(r => r.json())
-      .then(d => {
-        if (d.data && Array.isArray(d.data)) {
-          const parsed = d.data.map((item: Record<string, unknown>) => ({
-            ...item,
-            price:          Number(item.price) || 0,
-            change_24h:     Number(item.change_24h) || 0,
-            change_pct_24h: Number(item.change_pct_24h) || 0,
-            volume_24h:     Number(item.volume_24h) || 0,
-            high_24h:       Number(item.high_24h) || 0,
-            low_24h:        Number(item.low_24h) || 0,
-            open_24h:       Number(item.open_24h) || 0,
-            market_cap:     item.market_cap ? Number(item.market_cap) : null,
-          }))
-          store.setPrices(parsed)
-        }
-      })
-      .catch(err => console.error('[APEX] Price fetch failed:', err))
-    fetch('/api/signals')
-      .then(r => r.json())
-      .then(d => { if (d.data) store.setSignals(d.data) })
-      .catch(err => console.error('[APEX] Signal fetch failed:', err))
-    fetch('/api/agent-logs')
-      .then(r => r.json())
-      .then(d => { if (d.data) d.data.forEach((log: import('@/types').AgentLog) => store.addAgentLog(log)) })
-      .catch(() => {})
+    fetch('/api/prices').then(r => r.json()).then(d => {
+      if (d.data && Array.isArray(d.data)) {
+        const parsed = d.data.map((item: Record<string, unknown>) => ({
+          ...item,
+          price: Number(item.price) || 0, change_24h: Number(item.change_24h) || 0,
+          change_pct_24h: Number(item.change_pct_24h) || 0, volume_24h: Number(item.volume_24h) || 0,
+          high_24h: Number(item.high_24h) || 0, low_24h: Number(item.low_24h) || 0,
+          open_24h: Number(item.open_24h) || 0, market_cap: item.market_cap ? Number(item.market_cap) : null,
+        }))
+        store.setPrices(parsed)
+      }
+    }).catch(() => {})
+    fetch('/api/signals').then(r => r.json()).then(d => { if (d.data) store.setSignals(d.data) }).catch(() => {})
+    fetch('/api/agent-logs').then(r => r.json()).then(d => {
+      if (d.data) d.data.forEach((log: import('@/types').AgentLog) => store.addAgentLog(log))
+    }).catch(() => {})
     fetch('/api/polymarket/bets').then(r => r.json()).then(d => { if (d.data) setPolyBets(d.data) }).catch(() => {})
     fetch('/api/polymarket/markets').then(r => r.json()).then(d => { if (d.data) setPolyMarkets(d.data) }).catch(() => {})
     fetch('/api/demo').then(r => r.json()).then(d => {
@@ -195,503 +416,161 @@ function Dashboard() {
     }).catch(() => {})
   }, [])
 
-  const totalPnl = positions.reduce((s, p) => s + (p.unrealized_pnl ?? 0), 0)
-  const openCount = positions.length
+  // Fetch candles when symbol changes
+  const fetchCandles = useCallback((sym: string) => {
+    fetch(`/api/prices?symbol=${encodeURIComponent(sym)}&candles=true&interval=1h&limit=100`)
+      .then(r => r.json())
+      .then(d => { if (d.data) setCandles(d.data) })
+      .catch(() => {})
+  }, [])
 
-  const tabs = [
-    { id: 'opportunities', label: '📈 Prilike' },
-    { id: 'demo',          label: '🧪 Simulacija' },
-    { id: 'portfolio',     label: '💼 Portfolio' },
-    { id: 'polymarket',    label: '🎯 Polymarket' },
-    { id: 'agents',        label: '🤖 Agenti' },
-    { id: 'news',          label: '📰 Vijesti' },
-  ]
+  useEffect(() => { fetchCandles(selectedSym) }, [selectedSym, fetchCandles])
 
-  const handleKillSwitch = async () => {
-    if (!confirm('KILL SWITCH: Zatvori SVE pozicije i otkaži ordere?')) return
-    setKillLoading(true)
-    try {
-      await fetch('/api/kill-switch', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${process.env.NEXT_PUBLIC_CRON_SECRET ?? 'change_this_to_a_random_string_min_32_chars'}` },
-      })
-      alert('Kill switch aktiviran. Sve pozicije zatvorene.')
-    } catch { alert('Greska pri aktiviranju kill switch-a') }
-    setKillLoading(false)
-  }
+  // Auto-refresh demo data every 30s
+  useEffect(() => {
+    const t = setInterval(() => {
+      fetch('/api/demo').then(r => r.json()).then(d => {
+        if (d.success) setDemoData({ session: d.data, trades: d.trades ?? [] })
+      }).catch(() => {})
+    }, 30000)
+    return () => clearInterval(t)
+  }, [])
+
+  const selectedPrice = prices[selectedSym]
+  const tickerSymbols = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'BNB/USD', 'XAU/USD', 'BRENT', 'SPY']
+
+  // Demo stats for header
+  const demoPnl = Number(demoData.session?.total_pnl || 0)
+  const demoOpenCount = demoData.trades.filter(t => !t.exit_time).length
+
+  const fgColor = fearGreedIndex > 60 ? 'text-[#00ffa3]' : fearGreedIndex < 40 ? 'text-[#ff3366]' : 'text-[#ffcc00]'
+  const fgLabel = fearGreedIndex > 75 ? 'GREED' : fearGreedIndex > 55 ? 'NEUTRAL' : fearGreedIndex > 25 ? 'FEAR' : 'EXTREME FEAR'
 
   return (
-    <div className="flex flex-col h-screen bg-[#03030a]">
-      {/* Header */}
-      <header className="flex items-center justify-between px-5 h-12 bg-[#07070f] border-b border-white/[0.06] flex-shrink-0">
-        <div className="flex items-center gap-3">
-          <span className="text-lg font-black tracking-tight text-[#e2e2f5]">APEX</span>
-          <span className="flex items-center gap-1.5 text-[9px] font-bold text-[#00ffa3] tracking-[0.15em] px-2 py-1 border border-[rgba(0,255,163,0.2)] rounded bg-[rgba(0,255,163,0.07)]">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#00ffa3] animate-blink" />
-            LIVE
+    <div className="flex flex-col h-screen bg-[#03030a] text-[#e2e2f5] select-none">
+
+      {/* ═══ TOP BAR ═══ */}
+      <header className="flex items-center h-10 bg-[#07070f] border-b border-[#1a1a2e] flex-shrink-0 px-3 gap-4">
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <span className="text-sm font-black tracking-tight">APEX</span>
+          <span className="flex items-center gap-1 text-[8px] font-bold text-[#00ffa3] tracking-[0.15em] px-1.5 py-0.5 border border-[rgba(0,255,163,0.2)] rounded bg-[rgba(0,255,163,0.05)]">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#00ffa3] animate-pulse" />LIVE
           </span>
         </div>
-        <div className="flex items-center gap-5 text-xs">
+
+        {/* Ticker strip */}
+        <div className="flex items-center gap-4 flex-1 overflow-hidden">
+          {tickerSymbols.map(sym => {
+            const d = prices[sym]
+            if (!d) return null
+            const pct = d.change_pct_24h ?? 0
+            return (
+              <button key={sym} onClick={() => setSelectedSym(sym)}
+                className={cn('flex items-center gap-1.5 text-[10px] flex-shrink-0 px-1.5 py-0.5 rounded transition-colors',
+                  selectedSym === sym ? 'bg-[rgba(0,204,255,0.08)]' : 'hover:bg-[#0f0f1e]'
+                )}>
+                <span className="font-bold text-[#7878aa]">{SYM_LABELS[sym]}</span>
+                <span className="mono font-bold text-[#e2e2f5]">{d.price >= 1000 ? d.price.toLocaleString('en', { maximumFractionDigits: 0 }) : d.price.toFixed(2)}</span>
+                <span className={cn('mono font-bold', pctColor(pct))}>
+                  {pct >= 0 ? '+' : ''}{pct.toFixed(2)}%
+                </span>
+              </button>
+            )
+          })}
+        </div>
+
+        {/* Right stats */}
+        <div className="flex items-center gap-4 flex-shrink-0 text-[10px]">
           <div className="text-right">
-            <div className="text-[9px] text-[#44446a] tracking-wider">KAPITAL</div>
-            <div className="font-bold mono text-[#e2e2f5]">AED {(portfolio?.capital ?? 5000).toLocaleString()}</div>
+            <div className="text-[7px] text-[#44446a]">DEMO P&L</div>
+            <div className={cn('font-bold mono', pctColor(demoPnl))}>{demoPnl >= 0 ? '+' : ''}{demoPnl.toFixed(0)} AED</div>
           </div>
           <div className="text-right">
-            <div className="text-[9px] text-[#44446a] tracking-wider">OPEN P&L</div>
-            <div className={`font-bold mono ${totalPnl >= 0 ? 'text-[#00ffa3]' : 'text-[#ff3366]'}`}>
-              {totalPnl >= 0 ? '+' : ''}AED {Math.abs(totalPnl).toLocaleString(undefined, { maximumFractionDigits: 0 })}
-            </div>
+            <div className="text-[7px] text-[#44446a]">OPEN</div>
+            <div className="font-bold mono text-[#00ccff]">{demoOpenCount}</div>
           </div>
           <div className="text-right">
-            <div className="text-[9px] text-[#44446a] tracking-wider">F&G</div>
-            <div className={`font-bold mono ${fearGreedIndex > 60 ? 'text-[#00ffa3]' : fearGreedIndex < 40 ? 'text-[#ff3366]' : 'text-[#ffcc00]'}`}>
-              {fearGreedIndex}
-            </div>
+            <div className="text-[7px] text-[#44446a]">F&G</div>
+            <div className={cn('font-bold mono', fgColor)}>{fearGreedIndex}</div>
           </div>
-          <div className="text-right">
-            <div className="text-[9px] text-[#44446a] tracking-wider">ABU DHABI</div>
+          <div className="text-right flex-shrink-0">
+            <div className="text-[7px] text-[#44446a]">ABU DHABI</div>
             <div className="font-bold mono text-[#00ccff]">{clock}</div>
           </div>
-          <button
-            onClick={handleKillSwitch}
-            disabled={killLoading}
-            className="px-3 py-1.5 text-[9px] font-black tracking-wider bg-[rgba(255,51,102,0.15)] text-[#ff3366] border border-[rgba(255,51,102,0.3)] rounded hover:bg-[rgba(255,51,102,0.3)] transition-all disabled:opacity-50"
-          >
-            {killLoading ? '...' : 'KILL SWITCH'}
-          </button>
         </div>
       </header>
 
-      {/* Tabs */}
-      <div className="flex gap-0.5 px-5 pt-2 bg-[#07070f] border-b border-white/[0.06] flex-shrink-0">
-        {tabs.map(t => (
-          <button
-            key={t.id}
-            onClick={() => setActiveTab(t.id as any)}
-            className={cn(
-              'px-4 py-2 text-[11px] font-semibold rounded-t border-b-2 transition-all',
-              activeTab === t.id
-                ? 'text-[#e2e2f5] border-[#00ccff] bg-[rgba(0,204,255,0.06)]'
-                : 'text-[#44446a] border-transparent hover:text-[#7878aa] hover:bg-[#0f0f1e]'
-            )}
-          >{t.label}</button>
+      {/* ═══ INSTRUMENT TABS ═══ */}
+      <div className="flex items-center h-7 bg-[#0a0a16] border-b border-[#1a1a2e] flex-shrink-0 px-2 gap-0.5">
+        {['BTC/USD', 'ETH/USD', 'SOL/USD', 'BNB/USD', 'XAU/USD', 'BRENT'].map(sym => (
+          <button key={sym} onClick={() => setSelectedSym(sym)}
+            className={cn('px-3 py-1 text-[9px] font-bold rounded-sm transition-colors',
+              selectedSym === sym
+                ? 'bg-[rgba(0,204,255,0.1)] text-[#00ccff] border-b border-[#00ccff]'
+                : 'text-[#44446a] hover:text-[#7878aa] hover:bg-[#0f0f1e]'
+            )}>
+            {SYM_LABELS[sym] ?? sym}
+          </button>
         ))}
+        <div className="flex-1" />
+        {selectedPrice && (
+          <div className="flex items-center gap-3 text-[10px]">
+            <span className="mono font-bold">{fmt(selectedPrice.price)}</span>
+            <span className={cn('mono font-bold', pctColor(selectedPrice.change_pct_24h ?? 0))}>
+              {(selectedPrice.change_pct_24h ?? 0) >= 0 ? '+' : ''}{(selectedPrice.change_pct_24h ?? 0).toFixed(2)}%
+            </span>
+            <span className="text-[#44446a]">H: <span className="text-[#7878aa] mono">{fmt(selectedPrice.high_24h)}</span></span>
+            <span className="text-[#44446a]">L: <span className="text-[#7878aa] mono">{fmt(selectedPrice.low_24h)}</span></span>
+            <span className="text-[#44446a]">Vol: <span className="text-[#7878aa] mono">{selectedPrice.volume_24h >= 1e6 ? `$${(selectedPrice.volume_24h / 1e6).toFixed(1)}M` : `$${selectedPrice.volume_24h.toLocaleString()}`}</span></span>
+          </div>
+        )}
       </div>
 
-      {/* Content */}
-      <main className="flex-1 overflow-y-auto p-5">
+      {/* ═══ MAIN GRID ═══ */}
+      <div className="flex-1 grid grid-cols-[1fr_320px] grid-rows-[1fr_260px] gap-px bg-[#1a1a2e]/50 overflow-hidden min-h-0">
 
-        {/* ── PRILIKE ── */}
-        {activeTab === 'opportunities' && (
-          <div>
-            <PriceStrip prices={prices} />
+        {/* CHART PANEL (top-left) */}
+        <div className="bg-[#07070f] overflow-hidden">
+          <CandlestickChart candles={candles} symbol={selectedSym} />
+        </div>
 
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <div className="w-1.5 h-1.5 rounded-full bg-[#9966ff] shadow-[0_0_6px_#9966ff]" />
-                <span className="text-[10px] font-bold tracking-widest text-[#44446a] uppercase">AI Signali</span>
-              </div>
-              <span className="text-[10px] text-[#44446a]">{signals.length} aktivnih</span>
-            </div>
+        {/* RIGHT SIDEBAR (top-right): Market Data + Signals */}
+        <div className="grid grid-rows-[auto_1fr] gap-px bg-[#1a1a2e]/50 overflow-hidden">
+          <Panel title="Market Data" icon="📊" badge={Object.keys(prices).length} className="max-h-[220px]">
+            <MarketTable prices={prices} selected={selectedSym} onSelect={setSelectedSym} />
+          </Panel>
+          <Panel title="AI Signali" icon="🎯" badge={signals.length}>
+            <SignalsList signals={signals} />
+          </Panel>
+        </div>
 
-            {signals.length === 0 ? (
-              <div className="text-center py-16 text-[#44446a]">
-                <div className="text-2xl mb-3">⏳</div>
-                <div className="text-sm">Čekam signal run... (svakih 30min)</div>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                {signals.map(s => <SignalCard key={s.id} s={s} />)}
-              </div>
-            )}
-          </div>
-        )}
+        {/* BOTTOM-LEFT: Demo + Polymarket */}
+        <div className="grid grid-cols-2 gap-px bg-[#1a1a2e]/50 overflow-hidden">
+          <Panel title="Simulacija" icon="🧪" badge={`${demoOpenCount} open`}>
+            <DemoPanel demoData={demoData} />
+          </Panel>
+          <Panel title="Polymarket" icon="🎲" badge={polyBets.length > 0 ? `${polyBets.length} bets` : undefined}>
+            <PolyCompact bets={polyBets} markets={polyMarkets} />
+          </Panel>
+        </div>
 
-        {/* ── PORTFOLIO ── */}
-        {activeTab === 'portfolio' && (
-          <div>
-            <div className="grid grid-cols-5 gap-2 mb-5">
-              {[
-                { l: 'KAPITAL',    v: `AED ${(portfolio?.capital ?? 5000).toLocaleString()}`, cls: 'text-[#e2e2f5]' },
-                { l: 'OPEN P&L',   v: `${totalPnl >= 0 ? '+' : ''}AED ${Math.abs(totalPnl).toLocaleString(undefined,{maximumFractionDigits:0})}`, cls: totalPnl >= 0 ? 'text-[#00ffa3]' : 'text-[#ff3366]' },
-                { l: 'WIN RATE',   v: `${portfolio?.win_rate?.toFixed(1) ?? '—'}%`, cls: 'text-[#00ffa3]' },
-                { l: 'POZICIJE',   v: `${openCount}`, cls: 'text-[#00ccff]' },
-                { l: 'FEAR & GREED', v: `${fearGreedIndex}`, cls: fearGreedIndex > 60 ? 'text-[#00ffa3]' : fearGreedIndex < 40 ? 'text-[#ff3366]' : 'text-[#ffcc00]' },
-              ].map(stat => (
-                <div key={stat.l} className="bg-[#0f0f1e] border border-white/[0.07] rounded-xl p-3">
-                  <div className="text-[9px] text-[#44446a] tracking-wider mb-2">{stat.l}</div>
-                  <div className={`text-lg font-black mono ${stat.cls}`}>{stat.v}</div>
-                </div>
-              ))}
-            </div>
-
-            <div className="bg-[#07070f] border border-white/[0.06] rounded-xl overflow-hidden">
-              <div className="px-4 py-2 border-b border-white/[0.06] bg-[#0f0f1e]">
-                <div className="flex items-center gap-2">
-                  <div className="w-1.5 h-1.5 rounded-full bg-[#4d88ff]" />
-                  <span className="text-[9px] font-bold tracking-widest text-[#44446a] uppercase">Otvorene Pozicije</span>
-                </div>
-              </div>
-              {positions.length === 0 ? (
-                <div className="text-center py-12 text-[#44446a] text-sm">Nema otvorenih pozicija</div>
-              ) : (
-                <table className="w-full">
-                  <thead>
-                    <tr>{['Instrument','Smjer','Ulaz','Trenutna','Stop','Target','P&L','%','Status'].map(h => (
-                      <th key={h} className="text-left text-[9px] text-[#44446a] tracking-wider font-semibold px-4 py-2 border-b border-white/[0.06]">{h}</th>
-                    ))}</tr>
-                  </thead>
-                  <tbody>
-                    {positions.map(p => {
-                      const pnl = p.unrealized_pnl ?? 0
-                      const pos = pnl >= 0
-                      return (
-                        <tr key={p.id} className="hover:bg-[#0f0f1e] transition-colors">
-                          <td className="px-4 py-2.5 font-bold text-[#e2e2f5] text-xs">{p.instrument}</td>
-                          <td className={`px-4 py-2.5 font-bold text-xs ${p.direction === 'long' ? 'text-[#00ffa3]' : 'text-[#ff3366]'}`}>{p.direction.toUpperCase()}</td>
-                          <td className="px-4 py-2.5 mono text-xs text-[#7878aa]">{fmtPrice(p.avg_entry_price)}</td>
-                          <td className={`px-4 py-2.5 mono text-xs font-bold ${pos ? 'text-[#00ffa3]' : 'text-[#ff3366]'}`}>{fmtPrice(p.current_price)}</td>
-                          <td className="px-4 py-2.5 mono text-xs text-[#ff3366]">{fmtPrice(p.stop_loss)}</td>
-                          <td className="px-4 py-2.5 mono text-xs text-[#00ffa3]">{fmtPrice(p.take_profit)}</td>
-                          <td className={`px-4 py-2.5 mono text-xs font-bold ${pos ? 'text-[#00ffa3]' : 'text-[#ff3366]'}`}>{pos ? '+' : ''}AED {Math.abs(pnl).toLocaleString(undefined, {maximumFractionDigits:0})}</td>
-                          <td className={`px-4 py-2.5 mono text-xs font-bold ${pos ? 'text-[#00ffa3]' : 'text-[#ff3366]'}`}>{pos ? '+' : ''}{(p.unrealized_pnl_pct ?? 0).toFixed(2)}%</td>
-                          <td className="px-4 py-2.5"><span className="text-[9px] font-bold bg-[rgba(77,136,255,0.1)] text-[#4d88ff] px-2 py-0.5 rounded">OPEN</span></td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* ── SIMULACIJA (DEMO) ── */}
-        {activeTab === 'demo' && (
-          <div>
-            {/* Session Stats */}
-            {demoData.session ? (
-              <>
-                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2 mb-5">
-                  {[
-                    { l: 'KAPITAL', v: `AED ${Number(demoData.session.initial_capital || 0).toLocaleString()}`, cls: 'text-[#e2e2f5]' },
-                    { l: 'TRENUTNO', v: `AED ${Number(demoData.session.final_capital || demoData.session.initial_capital || 0).toLocaleString()}`, cls: Number(demoData.session.total_pnl || 0) >= 0 ? 'text-[#00ffa3]' : 'text-[#ff3366]' },
-                    { l: 'P&L', v: `${Number(demoData.session.total_pnl || 0) >= 0 ? '+' : ''}AED ${Math.abs(Number(demoData.session.total_pnl || 0)).toLocaleString()}`, cls: Number(demoData.session.total_pnl || 0) >= 0 ? 'text-[#00ffa3]' : 'text-[#ff3366]' },
-                    { l: 'P&L %', v: `${Number(demoData.session.total_pnl_pct || 0) >= 0 ? '+' : ''}${Number(demoData.session.total_pnl_pct || 0).toFixed(2)}%`, cls: Number(demoData.session.total_pnl_pct || 0) >= 0 ? 'text-[#00ffa3]' : 'text-[#ff3366]' },
-                    { l: 'TRADES', v: `${demoData.session.total_trades ?? 0}`, cls: 'text-[#00ccff]' },
-                    { l: 'WIN/LOSS', v: `${demoData.session.win_count ?? 0}W / ${demoData.session.loss_count ?? 0}L`, cls: 'text-[#e2e2f5]' },
-                    { l: 'MAX DD', v: demoData.session.max_drawdown ? `${(Number(demoData.session.max_drawdown) * 100).toFixed(1)}%` : '—', cls: 'text-[#ffcc00]' },
-                  ].map(stat => (
-                    <div key={stat.l} className="bg-[#0f0f1e] border border-white/[0.07] rounded-xl p-3">
-                      <div className="text-[9px] text-[#44446a] tracking-wider mb-2">{stat.l}</div>
-                      <div className={`text-base font-black mono ${stat.cls}`}>{stat.v}</div>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="flex items-center gap-2 mb-1">
-                  <div className="text-[9px] text-[#44446a]">
-                    Sesija: {String(demoData.session.start_date)} — {String(demoData.session.end_date)} | Skenira svakih 15min | 4 instrumenta (BTC, ETH, SOL, BNB)
-                  </div>
-                </div>
-              </>
-            ) : (
-              <div className="bg-[#0f0f1e] border border-white/[0.07] rounded-xl p-8 text-center text-[#44446a] mb-5">
-                <div className="text-2xl mb-3">🧪</div>
-                <div className="text-sm">Nema aktivne demo sesije. Cron ce kreirati novu.</div>
-              </div>
-            )}
-
-            {/* Open Trades */}
-            {(() => {
-              const openTrades = demoData.trades.filter(t => !t.exit_time)
-              const closedTrades = demoData.trades.filter(t => t.exit_time)
-              return (
-                <>
-                  <div className="flex items-center gap-2 mb-3 mt-5">
-                    <div className="w-1.5 h-1.5 rounded-full bg-[#00ffa3] shadow-[0_0_6px_#00ffa3]" />
-                    <span className="text-[10px] font-bold tracking-widest text-[#44446a] uppercase">Otvorene Pozicije</span>
-                    <span className="text-[10px] text-[#44446a]">{openTrades.length} aktivnih</span>
-                  </div>
-
-                  {openTrades.length === 0 ? (
-                    <div className="bg-[#0f0f1e] border border-white/[0.07] rounded-xl p-6 text-center text-[#44446a] text-sm mb-5">
-                      Nema otvorenih demo pozicija — bot ceka signal (score &gt; 55)
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-5">
-                      {openTrades.map((t, i) => {
-                        const dir = String(t.direction)
-                        const entry = Number(t.entry_price)
-                        const cur = Number(t.current_price || entry)
-                        const qty = Number(t.quantity)
-                        const livePnl = Number(t.live_pnl_aed || 0)
-                        const livePct = Number(t.live_pnl_pct || 0)
-                        const isUp = livePnl >= 0
-                        return (
-                          <div key={i} className={cn(
-                            'bg-[#0f0f1e] border border-white/[0.07] rounded-xl overflow-hidden',
-                            dir === 'long' ? 'border-l-2 border-l-[#00ffa3]' : 'border-l-2 border-l-[#ff3366]'
-                          )}>
-                            <div className="flex items-center justify-between p-3 bg-[#111122]">
-                              <div className="flex items-center gap-2">
-                                <span className="font-bold text-[#e2e2f5] text-sm">{String(t.instrument)}</span>
-                                <span className={cn('text-[9px] font-black px-2 py-0.5 rounded',
-                                  dir === 'long' ? 'bg-[rgba(0,255,163,0.18)] text-[#00ffa3]' : 'bg-[rgba(255,51,102,0.18)] text-[#ff3366]'
-                                )}>{dir.toUpperCase()}</span>
-                              </div>
-                              <div className={cn('font-black mono text-sm', isUp ? 'text-[#00ffa3]' : 'text-[#ff3366]')}>
-                                {isUp ? '+' : ''}{livePnl.toFixed(0)} AED ({livePct.toFixed(2)}%)
-                              </div>
-                            </div>
-                            <div className="grid grid-cols-4 gap-2 p-3">
-                              {[
-                                { l: 'ENTRY', v: fmtPrice(entry), cls: 'text-[#e2e2f5]' },
-                                { l: 'CURRENT', v: fmtPrice(cur), cls: isUp ? 'text-[#00ffa3]' : 'text-[#ff3366]' },
-                                { l: 'STOP', v: fmtPrice(Number(t.stop_loss)), cls: 'text-[#ff3366]' },
-                                { l: 'TARGET', v: fmtPrice(Number(t.take_profit)), cls: 'text-[#00ffa3]' },
-                              ].map(({ l, v, cls }) => (
-                                <div key={l} className="bg-[#07070f] rounded-md p-2">
-                                  <div className="text-[8px] text-[#44446a]">{l}</div>
-                                  <div className={cn('text-[11px] font-bold mono', cls)}>{v}</div>
-                                </div>
-                              ))}
-                            </div>
-                            <div className="px-3 pb-2 text-[9px] text-[#7878aa]">{String(t.signal_reason)} | Conf: {String(t.confidence)}%</div>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )}
-
-                  {/* Trade History */}
-                  <div className="flex items-center gap-2 mb-3">
-                    <div className="w-1.5 h-1.5 rounded-full bg-[#9966ff] shadow-[0_0_6px_#9966ff]" />
-                    <span className="text-[10px] font-bold tracking-widest text-[#44446a] uppercase">Historija Trejdova</span>
-                    <span className="text-[10px] text-[#44446a]">{closedTrades.length} zatvorenih</span>
-                  </div>
-
-                  {closedTrades.length === 0 ? (
-                    <div className="bg-[#0f0f1e] border border-white/[0.07] rounded-xl p-6 text-center text-[#44446a] text-sm">
-                      Nema zatvorenih trejdova u ovoj sesiji
-                    </div>
-                  ) : (
-                    <div className="bg-[#07070f] border border-white/[0.06] rounded-xl overflow-hidden">
-                      <table className="w-full">
-                        <thead>
-                          <tr>
-                            {['Instrument', 'Smjer', 'Ulaz', 'Izlaz', 'Razlog', 'P&L', '%', 'Conf', 'Vrijeme'].map(h => (
-                              <th key={h} className="text-left text-[9px] text-[#44446a] tracking-wider font-semibold px-3 py-2 border-b border-white/[0.06]">{h}</th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {closedTrades.map((t, i) => {
-                            const pnl = Number(t.pnl_aed || 0)
-                            const isWin = pnl > 0
-                            return (
-                              <tr key={i} className="hover:bg-[#0f0f1e] transition-colors border-b border-white/[0.03]">
-                                <td className="px-3 py-2 font-bold text-[#e2e2f5] text-xs">{String(t.instrument)}</td>
-                                <td className={cn('px-3 py-2 font-bold text-xs', String(t.direction) === 'long' ? 'text-[#00ffa3]' : 'text-[#ff3366]')}>
-                                  {String(t.direction).toUpperCase()}
-                                </td>
-                                <td className="px-3 py-2 mono text-xs text-[#7878aa]">{fmtPrice(Number(t.entry_price))}</td>
-                                <td className="px-3 py-2 mono text-xs text-[#7878aa]">{fmtPrice(Number(t.exit_price))}</td>
-                                <td className="px-3 py-2">
-                                  <span className={cn('text-[9px] font-bold px-2 py-0.5 rounded',
-                                    String(t.exit_reason) === 'take_profit' ? 'bg-[rgba(0,255,163,0.1)] text-[#00ffa3]' : 'bg-[rgba(255,51,102,0.1)] text-[#ff3366]'
-                                  )}>{String(t.exit_reason) === 'take_profit' ? 'TP HIT' : 'SL HIT'}</span>
-                                </td>
-                                <td className={cn('px-3 py-2 mono text-xs font-bold', isWin ? 'text-[#00ffa3]' : 'text-[#ff3366]')}>
-                                  {isWin ? '+' : ''}{pnl.toFixed(0)} AED
-                                </td>
-                                <td className={cn('px-3 py-2 mono text-xs', isWin ? 'text-[#00ffa3]' : 'text-[#ff3366]')}>
-                                  {Number(t.pnl_pct || 0).toFixed(2)}%
-                                </td>
-                                <td className="px-3 py-2 text-[10px] text-[#7878aa]">{String(t.confidence)}%</td>
-                                <td className="px-3 py-2 text-[9px] text-[#44446a] mono">
-                                  {new Date(String(t.entry_time)).toLocaleDateString('en', { month: 'short', day: 'numeric' })}
-                                </td>
-                              </tr>
-                            )
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </>
-              )
-            })()}
-          </div>
-        )}
-
-        {/* ── AGENTI ── */}
-        {activeTab === 'agents' && (
-          <div>
-            <div className="grid grid-cols-3 gap-3 mb-5">
-              {[
-                { name:'Orchestrator',  col:'#9966ff', status:'AKTIVAN', desc:'Koordinira sve agente. Pokreće se svakih 30min.' },
-                { name:'Market Analyst',col:'#4d88ff', status:'AKTIVAN', desc:'Čita RSS vijesti i analizira sentiment.' },
-                { name:'Signal Generator',col:'#00ffa3',status:'AKTIVAN', desc:'RSI + MACD + BB → LONG/SHORT/HOLD signal.' },
-                { name:'Risk Manager',  col:'#ffcc00', status:'AKTIVAN', desc:'Validira R:R, SL, max pozicije.' },
-                { name:'Trade Reviewer',col:'#00ccff', status:'STANDBY', desc:'Dnevni review zatvorenih trejdova u 22:00.' },
-              ].map(a => (
-                <div key={a.name} className="bg-[#0f0f1e] border border-white/[0.07] rounded-xl p-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="font-bold text-sm text-[#e2e2f5]">{a.name}</span>
-                    <div className="flex items-center gap-2">
-                      <span className={`text-[9px] font-bold ${a.status === 'AKTIVAN' ? 'text-[#00ffa3]' : 'text-[#44446a]'}`}>{a.status}</span>
-                      <div className="w-2 h-2 rounded-full" style={{ background: a.col, boxShadow: `0 0 6px ${a.col}` }} />
-                    </div>
-                  </div>
-                  <p className="text-[11px] text-[#7878aa] leading-relaxed">{a.desc}</p>
-                </div>
-              ))}
-            </div>
-
-            <div className="flex items-center gap-2 mb-3">
-              <div className="w-1.5 h-1.5 rounded-full bg-[#ff3366] shadow-[0_0_6px_#ff3366]" />
-              <span className="text-[9px] font-bold tracking-widest text-[#44446a] uppercase">Log Aktivnosti</span>
-            </div>
-            <div className="bg-[#07070f] border border-white/[0.06] rounded-xl overflow-hidden">
-              {agentLogs.length === 0 ? (
-                <div className="text-center py-8 text-[#44446a] text-sm">Čekam agent run...</div>
-              ) : (
-                agentLogs.map(log => <LogItem key={log.id} log={log} />)
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* ── POLYMARKET ── */}
-        {activeTab === 'polymarket' && (
-          <div>
-            {/* Active Bets */}
-            <div className="flex items-center gap-2 mb-3">
-              <div className="w-1.5 h-1.5 rounded-full bg-[#9966ff] shadow-[0_0_6px_#9966ff]" />
-              <span className="text-[10px] font-bold tracking-widest text-[#44446a] uppercase">Aktivni Betovi</span>
-              <span className="text-[10px] text-[#44446a]">{polyBets.length} otvorenih</span>
-            </div>
-
-            {polyBets.length === 0 ? (
-              <div className="bg-[#0f0f1e] border border-white/[0.07] rounded-xl p-8 text-center text-[#44446a] mb-5">
-                <div className="text-2xl mb-3">🎯</div>
-                <div className="text-sm mb-1">Nema aktivnih betova</div>
-                <div className="text-xs">AI Polymarket Scanner automatski skenira i betuje svakih 30min</div>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-5">
-                {polyBets.map((bet, i) => {
-                  const side = String(bet.side)
-                  const entryPrice = Number(bet.entry_price) || 0
-                  const currentPrice = Number(bet.current_price) || entryPrice
-                  const pnl = (currentPrice - entryPrice) * Number(bet.amount_usd || 0)
-                  return (
-                    <div key={i} className={cn(
-                      'bg-[#0f0f1e] border border-white/[0.07] rounded-xl overflow-hidden',
-                      side === 'YES' ? 'border-t-2 border-t-[#00ffa3]' : 'border-t-2 border-t-[#ff3366]'
-                    )}>
-                      <div className="p-3">
-                        <div className="flex items-start justify-between mb-2">
-                          <div className="text-[11px] text-[#e2e2f5] font-semibold leading-tight pr-2">
-                            {String(bet.question).slice(0, 80)}{String(bet.question).length > 80 ? '...' : ''}
-                          </div>
-                          <span className={cn(
-                            'text-[9px] font-black px-2 py-0.5 rounded tracking-wider flex-shrink-0',
-                            side === 'YES' ? 'bg-[rgba(0,255,163,0.18)] text-[#00ffa3]' : 'bg-[rgba(255,51,102,0.18)] text-[#ff3366]'
-                          )}>{side}</span>
-                        </div>
-                        <div className="grid grid-cols-4 gap-2">
-                          <div className="bg-[#07070f] rounded p-2">
-                            <div className="text-[8px] text-[#44446a]">ULAZ</div>
-                            <div className="text-[11px] font-bold mono text-[#e2e2f5]">{(entryPrice * 100).toFixed(0)}%</div>
-                          </div>
-                          <div className="bg-[#07070f] rounded p-2">
-                            <div className="text-[8px] text-[#44446a]">AI PROB</div>
-                            <div className="text-[11px] font-bold mono text-[#9966ff]">{((Number(bet.ai_probability) || 0) * 100).toFixed(0)}%</div>
-                          </div>
-                          <div className="bg-[#07070f] rounded p-2">
-                            <div className="text-[8px] text-[#44446a]">ULOG</div>
-                            <div className="text-[11px] font-bold mono text-[#e2e2f5]">${Number(bet.amount_usd).toFixed(0)}</div>
-                          </div>
-                          <div className="bg-[#07070f] rounded p-2">
-                            <div className="text-[8px] text-[#44446a]">P&L</div>
-                            <div className={cn('text-[11px] font-bold mono', pnl >= 0 ? 'text-[#00ffa3]' : 'text-[#ff3366]')}>
-                              {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)}
-                            </div>
-                          </div>
-                        </div>
-                        <div className="mt-2 text-[9px] text-[#7878aa]">{String(bet.reasoning)}</div>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-
-            {/* Trending Markets */}
-            <div className="flex items-center gap-2 mb-3">
-              <div className="w-1.5 h-1.5 rounded-full bg-[#00ccff] shadow-[0_0_6px_#00ccff]" />
-              <span className="text-[10px] font-bold tracking-widest text-[#44446a] uppercase">Trending Markets</span>
-            </div>
-
-            {polyMarkets.length === 0 ? (
-              <div className="bg-[#0f0f1e] border border-white/[0.07] rounded-xl p-8 text-center text-[#44446a]">
-                <div className="text-sm">Ucitavam Polymarket data...</div>
-              </div>
-            ) : (
-              <div className="bg-[#07070f] border border-white/[0.06] rounded-xl overflow-hidden">
-                {polyMarkets.map((m, i) => {
-                  const yesP = Number(m.yes_price) || 0
-                  return (
-                    <div key={i} className="flex items-center justify-between px-4 py-3 border-b border-white/[0.05] hover:bg-[#0f0f1e] transition-colors">
-                      <div className="flex-1 pr-4">
-                        <div className="text-[11px] text-[#e2e2f5] font-medium">{String(m.question).slice(0, 90)}</div>
-                        <div className="text-[9px] text-[#44446a] mt-0.5">Vol: ${Number(m.volume).toLocaleString(undefined, {maximumFractionDigits: 0})}</div>
-                      </div>
-                      <div className="flex gap-2 flex-shrink-0">
-                        <div className="text-center">
-                          <div className="text-[8px] text-[#44446a]">YES</div>
-                          <div className={cn('text-sm font-black mono', yesP > 0.6 ? 'text-[#00ffa3]' : yesP < 0.4 ? 'text-[#ff3366]' : 'text-[#ffcc00]')}>
-                            {(yesP * 100).toFixed(0)}%
-                          </div>
-                        </div>
-                        <div className="text-center">
-                          <div className="text-[8px] text-[#44446a]">NO</div>
-                          <div className="text-sm font-black mono text-[#7878aa]">{((1 - yesP) * 100).toFixed(0)}%</div>
-                        </div>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ── VIJESTI ── */}
-        {activeTab === 'news' && (
-          <div className="grid grid-cols-2 gap-3">
-            <div className="col-span-2 text-[10px] text-[#44446a] mb-1">
-              Vijesti se ažuriraju automatski svakih 15 minuta via NewsAPI + RSS
-            </div>
-            <div className="bg-[#0f0f1e] border border-white/[0.07] rounded-xl p-5 text-center text-[#44446a] col-span-2 py-16">
-              <div className="text-2xl mb-3">📰</div>
-              <div className="text-sm mb-1">NewsAPI integracija u toku</div>
-              <div className="text-xs">Dodaj NEWS_API_KEY u .env.local i vijesti će se učitati automatski</div>
-            </div>
-          </div>
-        )}
-
-      </main>
+        {/* BOTTOM-RIGHT: Agent Logs */}
+        <Panel title="Agent Aktivnost" icon="🤖" badge={agentLogs.length}>
+          <AgentLog logs={agentLogs as unknown as Array<Record<string, unknown>>} />
+        </Panel>
+      </div>
     </div>
   )
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// PAGE EXPORT
+// ═══════════════════════════════════════════════════════════════════════════════
+
 export default function Page() {
   return (
     <RealtimeProvider>
-      <Dashboard />
+      <Terminal />
     </RealtimeProvider>
   )
 }

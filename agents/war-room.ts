@@ -5,6 +5,7 @@ import { sendSignalAlert } from '@/lib/telegram'
 import { notifySignal as waSignal, notifyWarRoomDecision as waDecision, notifyWarRoomOpen as waOpen, notifyWarRoomDebate as waDebate, notifyWarRoomBlocked as waBlocked, notifyWarRoomScan as waScan } from '@/lib/whatsapp'
 import { checkSafety } from '@/lib/safety'
 import { hardRiskCheck, checkDailyLossLimit, getTradeStats, riskBasedPositionSize } from '@/lib/risk-controls'
+import { AGENT_PROMPTS, AGENT_TOKEN_LIMITS, type AgentId, type PromptContext } from '@/agents/agent-prompts'
 import type { Instrument, OHLCV, Signal } from '@/types'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -144,135 +145,62 @@ async function runMeeting(db: ReturnType<typeof createServiceSupabase>, meetingI
   const { count: openPos } = await db.from('positions').select('*', { count: 'exact', head: true })
   const recentLosses = (pastTrades ?? []).filter(t => +t.pnl_aed < 0).length
 
-  // ── 1. MACRO AGENT ──
-  await agentSpeak(db, meetingId, instrument, conv, 'macro-agent',
-    `You are the Macro Economist in a trading War Room. Provide a structured macro analysis:
+  // Get news context
+  const { data: news } = await db.from('news').select('headline, sentiment').order('published_at', { ascending: false }).limit(5)
+  const newsCtx = (news ?? []).map(n => `${n.headline} [${n.sentiment}]`).join('; ') || 'No recent news.'
 
-1. THESIS: State the current macro regime (risk-on, risk-off, transitional) and why
-2. KEY FACTORS: Fed policy stance, interest rate trajectory, inflation data, geopolitical risks
-3. ASSET IMPACT: How does this macro environment specifically affect ${instrument}?
-4. TRADE ALIGNMENT: Does the macro picture support or undermine a ${triggerDir} trade? Give a clear directional bias with reasoning
-5. CONFIDENCE: Rate your macro conviction (low/medium/high) with explanation`,
+  // Build shared prompt context for all agents
+  const promptCtx: PromptContext = {
+    instrument, triggerDir, price,
+    rsi: ind.rsi, atr: ind.atr, bbPercentB: ind.bb.percentB,
+    ema20: ind.ema_20, ema50: ind.ema_50, ema200: ind.ema_200,
+    macdHist: ind.macd.histogram, volumeRatio: ind.volume_ratio,
+    priceCtx, newsCtx, tradeHist,
+    openPositions: openPos ?? 0, recentLosses, trigger: allTriggers ?? trigger,
+  }
+
+  // ── 1. MACRO AGENT ──
+  await agentSpeak(db, meetingId, instrument, conv, 'macro-agent', promptCtx,
     `${convoStr()}\n\nCurrent date: ${new Date().toLocaleDateString('en')}. Asset: ${instrument}. Direction: ${triggerDir}.`)
 
   // ── 2. CORRELATION AGENT ──
-  await agentSpeak(db, meetingId, instrument, conv, 'correlation-agent',
-    `You are the Cross-Asset Correlation Analyst. Perform a thorough cross-asset analysis:
-
-1. CORRELATIONS: Which assets typically move with ${instrument}? Are they confirming or diverging right now?
-2. INTERMARKET SIGNALS: Check DXY/USD strength, bond yields, equity risk appetite, commodity trends
-3. DIVERGENCES: Flag any unusual divergences that could signal a reversal or acceleration
-4. SECTOR ROTATION: Is money flowing into or out of this asset class?
-5. VERDICT: Does cross-asset analysis support or contradict the proposed ${triggerDir} trade?`,
+  await agentSpeak(db, meetingId, instrument, conv, 'correlation-agent', promptCtx,
     `${convoStr()}\n\nAll asset prices right now: ${priceCtx}\n\nDoes cross-asset data support ${triggerDir} on ${instrument}?`)
 
-  // ── 3. BULL AGENT ──
-  await agentSpeak(db, meetingId, instrument, conv, 'bull-agent',
-    `You are the Bull Advocate in a trading War Room. Make the STRONGEST possible case FOR this trade with rigorous analysis:
+  // ── 3. BULL AGENT (ICT) ──
+  await agentSpeak(db, meetingId, instrument, conv, 'bull-agent', promptCtx,
+    `${convoStr()}\n\nMake the case FOR ${triggerDir?.toUpperCase()} ${instrument} at $${f(price)}. RSI:${ind.rsi.toFixed(0)} ATR:${ind.atr.toFixed(2)} BB%B:${(ind.bb.percentB * 100).toFixed(0)}% EMA20:${ind.ema_20.toFixed(2)} EMA50:${ind.ema_50.toFixed(2)} EMA200:${ind.ema_200.toFixed(2)} MACD:${ind.macd.histogram > 0 ? '+' : ''}${ind.macd.histogram.toFixed(2)} Vol:${ind.volume_ratio.toFixed(1)}x`)
 
-1. ARGUMENT 1: Your best technical reason to enter (cite specific indicator values and price levels)
-2. ARGUMENT 2: A momentum or structure-based reason (trend, breakout pattern, volume confirmation)
-3. ARGUMENT 3: A risk-reward or catalyst-based reason (upcoming events, historical patterns)
-4. PRICE TARGETS: Where could this trade realistically go? Cite support/resistance levels
-5. COUNTERPOINT: Acknowledge the strongest bear argument and explain why it's wrong
-
-Be passionate but every claim must reference data from the indicators provided.`,
-    `${convoStr()}\n\nMake the case FOR ${triggerDir?.toUpperCase()} ${instrument} at $${f(price)}.`)
-
-  // ── 4. BEAR AGENT ──
-  await agentSpeak(db, meetingId, instrument, conv, 'bear-agent',
-    `You are the Bear Advocate and Devil's Advocate. Your job is to stress-test this trade and find every reason it could fail:
-
-1. RISK 1: The biggest technical risk (cite specific levels where this trade breaks down)
-2. RISK 2: A structural or momentum risk (divergences, exhaustion signals, trap patterns)
-3. RISK 3: An external risk (macro headwinds, correlation breakdown, liquidity concerns)
-4. WORST CASE: What happens if this trade goes wrong? Where is the pain point?
-5. DIRECT REBUTTAL: Challenge the Bull Agent's strongest argument with specific counter-evidence
-
-Be aggressive but data-driven. Your job is to protect capital, not be optimistic.`,
-    `${convoStr()}\n\nMake the case AGAINST this trade. What could go wrong?`)
+  // ── 4. BEAR AGENT (Wyckoff) ──
+  await agentSpeak(db, meetingId, instrument, conv, 'bear-agent', promptCtx,
+    `${convoStr()}\n\nStress-test this trade. RSI:${ind.rsi.toFixed(0)} ATR:${ind.atr.toFixed(2)} BB%B:${(ind.bb.percentB * 100).toFixed(0)}% EMA20:${ind.ema_20.toFixed(2)} EMA50:${ind.ema_50.toFixed(2)} EMA200:${ind.ema_200.toFixed(2)} Vol:${ind.volume_ratio.toFixed(1)}x. What could go wrong?`)
 
   // ── 5. SCALPER AGENT ──
-  await agentSpeak(db, meetingId, instrument, conv, 'scalper-agent',
-    `You are the Scalper Agent specializing in short-term 1-4 hour trades. Analyze the immediate price action:
-
-1. MICROSTRUCTURE: Current RSI ${ind.rsi.toFixed(0)}, ATR ${ind.atr.toFixed(2)}, BB %B ${(ind.bb.percentB * 100).toFixed(0)}%. What does this tell you about short-term momentum?
-2. ENTRY ZONE: Exact price level for entry and why (support bounce, breakout confirmation, mean reversion)
-3. TIGHT LEVELS: Specific SL and TP for a 1-4 hour trade (use 1-1.5x ATR for SL, 2-3x for TP)
-4. TIMING: Is NOW the right moment or should we wait for a pullback/confirmation?
-5. SCALP vs SWING: Given current volatility, is this better as a quick scalp or should it be held longer?`,
-    `${convoStr()}\n\nIs there a scalp opportunity on ${instrument} right now?`)
+  await agentSpeak(db, meetingId, instrument, conv, 'scalper-agent', promptCtx,
+    `${convoStr()}\n\nIs there a scalp opportunity on ${instrument} at $${f(price)} right now? RSI:${ind.rsi.toFixed(0)} ATR:${ind.atr.toFixed(2)} BB%B:${(ind.bb.percentB * 100).toFixed(0)}%`)
 
   // ── 6. TREND AGENT ──
-  await agentSpeak(db, meetingId, instrument, conv, 'trend-agent',
-    `You are the Trend Analysis Agent. Assess the multi-timeframe trend structure:
-
-1. EMA STACK: EMA20:${ind.ema_20.toFixed(2)} vs EMA50:${ind.ema_50.toFixed(2)} vs EMA200:${ind.ema_200.toFixed(2)}. Are they aligned (bullish/bearish) or mixed? Price relative to each?
-2. TREND PHASE: Is this early trend, mature trend, exhaustion, or range-bound? What evidence supports this?
-3. MOMENTUM: Is momentum accelerating or decelerating? Any divergences between price and momentum indicators?
-4. KEY LEVELS: What are the critical support/resistance levels that would confirm or invalidate the trend?
-5. HOLD DURATION: Based on trend strength, should this be a multi-day swing trade or is the trend too weak/noisy?`,
-    `${convoStr()}\n\nEMA20:${ind.ema_20.toFixed(2)} EMA50:${ind.ema_50.toFixed(2)} EMA200:${ind.ema_200.toFixed(2)}. What's the trend picture for ${instrument}?`)
+  await agentSpeak(db, meetingId, instrument, conv, 'trend-agent', promptCtx,
+    `${convoStr()}\n\nEMA20:${ind.ema_20.toFixed(2)} EMA50:${ind.ema_50.toFixed(2)} EMA200:${ind.ema_200.toFixed(2)} Price:$${f(price)} RSI:${ind.rsi.toFixed(0)} MACD hist:${ind.macd.histogram.toFixed(2)}. Trend picture for ${instrument}?`)
 
   // ── 7. MARKET ANALYST ──
-  const { data: news } = await db.from('news').select('headline, sentiment').order('published_at', { ascending: false }).limit(5)
-  const newsCtx = (news ?? []).map(n => `${n.headline} [${n.sentiment}]`).join('; ') || 'No recent news.'
-  await agentSpeak(db, meetingId, instrument, conv, 'market-analyst',
-    `You are the Market Sentiment Analyst. Provide a comprehensive sentiment assessment:
-
-1. NEWS FLOW: Analyze the recent headlines — what narrative is the market pricing in?
-2. SENTIMENT GAUGE: Is market sentiment overly bullish (contrarian sell signal) or overly bearish (contrarian buy)?
-3. INSTITUTIONAL FLOW: Based on price action and volume, are institutions buying or selling?
-4. CATALYST WATCH: Any upcoming events (earnings, Fed meetings, economic data) that could move this asset?
-5. SENTIMENT VERDICT: Does the sentiment picture support or contradict the proposed ${triggerDir} trade?`,
+  await agentSpeak(db, meetingId, instrument, conv, 'market-analyst', promptCtx,
     `${convoStr()}\n\nRecent news: ${newsCtx}\n\nSentiment assessment for ${instrument}?`)
 
   // ── 8. SIGNAL GENERATOR ──
-  await agentSpeak(db, meetingId, instrument, conv, 'signal-generator',
-    `You are the Signal Generator. Synthesize the entire debate into a precise, actionable trade setup:
-
-1. DIRECTION: LONG or SHORT (with conviction level)
-2. ENTRY: Exact entry price and entry type (market, limit, stop-entry). Reference current price $${f(price)}
-3. STOP LOSS: Exact SL price. ATR = ${ind.atr.toFixed(2)}, suggested SL distance = 2.5x ATR = $${(ind.atr * 2.5).toFixed(2)}. Explain why this level makes sense technically
-4. TAKE PROFIT: Primary TP (4x ATR) and extended TP (5x ATR). Cite resistance/support levels that align
-5. RISK:REWARD: Calculate the R:R ratio explicitly
-6. CONFIDENCE: 0-100% confidence score, weighted by: how many agents agree, strength of technical signals, macro alignment
-7. KEY INVALIDATION: What single event or price level would invalidate this entire setup?`,
-    `${convoStr()}\n\nGenerate the signal for ${instrument} at $${f(price)}, ATR=${ind.atr.toFixed(2)}.`)
+  await agentSpeak(db, meetingId, instrument, conv, 'signal-generator', promptCtx,
+    `${convoStr()}\n\nGenerate the signal for ${instrument} at $${f(price)}, ATR=${ind.atr.toFixed(2)}. Full debate above — synthesize into precise trade levels.`)
 
   // ── 9. RISK MANAGER ──
-  await agentSpeak(db, meetingId, instrument, conv, 'risk-manager',
-    `You are the Risk Manager. Your job is to protect capital above all else. Conduct a thorough risk review:
-
-1. POSITION SIZING: Open positions: ${openPos ?? 0}/3 max. Is there room for this trade? Portfolio concentration risk?
-2. RISK BUDGET: Max risk per trade: 2% of capital. Calculate if the proposed SL respects this
-3. R:R ANALYSIS: Minimum R:R required: 1.5:1. Does Signal Generator's setup meet this? If not, suggest modifications
-4. DRAWDOWN CHECK: Recent losses: ${recentLosses}/10 last trades. Are we in a drawdown? Should we reduce size or skip?
-5. CORRELATION RISK: Would this trade increase portfolio correlation risk with existing positions?
-6. VERDICT: APPROVE (with any conditions), MODIFY (specify what to change), or REJECT (explain why)`,
-    `${convoStr()}\n\nRisk decision for ${instrument}?`)
+  await agentSpeak(db, meetingId, instrument, conv, 'risk-manager', promptCtx,
+    `${convoStr()}\n\nRisk decision for ${instrument}? Open positions: ${openPos ?? 0}/3. Recent losses: ${recentLosses}/10.`)
 
   // ── 10. TRADE REVIEWER ──
-  await agentSpeak(db, meetingId, instrument, conv, 'trade-reviewer',
-    `You are the Trade Reviewer and Performance Analyst. Review our track record to provide context for this decision:
+  await agentSpeak(db, meetingId, instrument, conv, 'trade-reviewer', promptCtx,
+    `${convoStr()}\n\nRecent trade history: ${tradeHist}\n\nPerformance context for ${instrument}?`)
 
-1. RECENT PERFORMANCE: Analyze the recent trade history — winning streak, losing streak, or mixed?
-2. INSTRUMENT HISTORY: How have we performed on ${instrument} specifically? Any patterns?
-3. STRATEGY FIT: The proposed strategy type — does our history show we're good at this kind of trade?
-4. BEHAVIORAL FLAGS: Are we showing signs of revenge trading, overconfidence after wins, or excessive caution after losses?
-5. RECOMMENDATION: Based on performance data, should we take this trade, skip it, or adjust the size?`,
-    `${convoStr()}\n\nRecent trade history: ${tradeHist}\n\nPerformance context?`)
-
-  // ── 11. MASTER AGENT (meta-analysis) ──
-  await agentSpeak(db, meetingId, instrument, conv, 'master-agent',
-    `You are the Master Agent performing the meta-analysis of the entire debate. Provide a comprehensive summary:
-
-1. VOTE TALLY: Count each agent's stance — clearly list who is FOR and who is AGAINST this trade, by name
-2. BULL CASE SUMMARY: The 2-3 strongest arguments FOR the trade (cite which agents made them)
-3. BEAR CASE SUMMARY: The 2-3 strongest arguments AGAINST the trade (cite which agents made them)
-4. CONSENSUS QUALITY: Is this a strong consensus or deeply divided? Are the disagreements on minor details or fundamental direction?
-5. WEIGHTED RECOMMENDATION: Accounting for the quality and relevance of each argument (not just vote count), what should the Orchestrator decide? EXECUTE, MODIFY, or REJECT?
-6. CONFIDENCE SCORE: Overall confidence level for the recommended action`,
+  // ── 11. MASTER AGENT ──
+  await agentSpeak(db, meetingId, instrument, conv, 'master-agent', promptCtx,
     `${convoStr()}\n\nSummarize the full debate. List each agent's stance. Tally the votes. Give your weighted recommendation.`)
 
   // ── WhatsApp: Send debate summary to the team ──
@@ -287,16 +215,13 @@ Be aggressive but data-driven. Your job is to protect capital, not be optimistic
   await waDebate({ instrument, agents: debateAgents }).catch(() => {})
 
   // ── 12. ORCHESTRATOR FINAL DECISION ──
+  const orchDbPrompt = await getActivePrompt(db, 'orchestrator')
+  const orchDefaultPrompt = AGENT_PROMPTS['orchestrator'](promptCtx)
   const decisionResponse = await callAgent<string>({
-    system: `You are the Orchestrator making the FINAL DECISION for the trading War Room. Based on the Master Agent's vote tally and ALL agents' input:
-
-1. SUMMARY: Recap the key arguments from both sides (2-3 sentences)
-2. WEIGHT: Which agents made the most compelling data-driven points?
-3. DECISION: State clearly EXECUTE, MODIFY, or REJECT
-4. RATIONALE: Why this decision, citing specific price levels, indicators, and risk factors
-5. If EXECUTE: confirm direction, approximate entry zone, and key levels to watch`,
-    user: `${convoStr()}\n\nFinal decision for ${instrument}. Be thorough and decisive.`,
-    maxTokens: 800, timeoutMs: 25000,
+    system: orchDbPrompt ?? orchDefaultPrompt,
+    user: `${convoStr()}\n\nFinal decision for ${instrument}. You have heard all 11 agents. Make your call.`,
+    maxTokens: AGENT_TOKEN_LIMITS['orchestrator'],
+    timeoutMs: 30000,
   })
 
   const isExecute = /execut|approv|proceed|go ahead|take the trade/i.test(decisionResponse)
@@ -415,16 +340,29 @@ Be aggressive but data-driven. Your job is to protect capital, not be optimistic
 // HELPERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+async function getActivePrompt(db: ReturnType<typeof createServiceSupabase>, agentId: string): Promise<string | null> {
+  try {
+    const { data } = await db.from('agent_knowledge')
+      .select('content').eq('agent_id', agentId).eq('type', 'prompt').eq('active', true)
+      .order('version', { ascending: false }).limit(1).single()
+    return data?.content ?? null
+  } catch { return null }
+}
+
 async function agentSpeak(
   db: ReturnType<typeof createServiceSupabase>,
   meetingId: string, instrument: Instrument, conv: Msg[],
-  agent: string, system: string, user: string,
+  agentId: AgentId, promptCtx: PromptContext, userMsg: string,
 ) {
   try {
-    const response = await callAgent<string>({ system, user, maxTokens: 600, timeoutMs: 25000 })
-    await speak(db, meetingId, instrument, conv, { agent, role: 'speak', message: response })
+    const dbPrompt = await getActivePrompt(db, agentId)
+    const defaultPrompt = AGENT_PROMPTS[agentId](promptCtx)
+    const system = dbPrompt ?? defaultPrompt
+    const maxTokens = AGENT_TOKEN_LIMITS[agentId] ?? 1200
+    const response = await callAgent<string>({ system, user: userMsg, maxTokens, timeoutMs: 30000 })
+    await speak(db, meetingId, instrument, conv, { agent: agentId, role: 'speak', message: response })
   } catch (err) {
-    await speak(db, meetingId, instrument, conv, { agent, role: 'alert', message: `[timeout/error] ${String(err).slice(0, 80)}` })
+    await speak(db, meetingId, instrument, conv, { agent: agentId, role: 'alert', message: `[timeout/error] ${String(err).slice(0, 80)}` })
   }
 }
 

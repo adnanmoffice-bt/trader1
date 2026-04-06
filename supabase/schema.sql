@@ -369,6 +369,28 @@ ALTER TABLE user_settings ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "user_own_settings" ON user_settings FOR ALL USING (auth.uid() = user_id);
 CREATE POLICY "service_write_settings" ON user_settings FOR ALL USING (auth.role() = 'service_role');
 
+-- ─── Agent Knowledge (Meta-Agent Memory) ─────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS agent_knowledge (
+  id          UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  agent_id    VARCHAR(30) NOT NULL,
+  type        VARCHAR(30) NOT NULL CHECK (type IN ('prompt', 'insight', 'score', 'config')),
+  content     TEXT NOT NULL,
+  metadata    JSONB DEFAULT '{}',
+  version     INT DEFAULT 1,
+  active      BOOLEAN DEFAULT true,
+  created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ak_agent_active ON agent_knowledge(agent_id, type, active);
+CREATE INDEX IF NOT EXISTS idx_ak_created ON agent_knowledge(created_at DESC);
+
+ALTER TABLE agent_knowledge ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "public_read_knowledge" ON agent_knowledge FOR SELECT USING (true);
+CREATE POLICY "service_write_knowledge" ON agent_knowledge FOR ALL USING (auth.role() = 'service_role');
+
+ALTER PUBLICATION supabase_realtime ADD TABLE agent_knowledge;
+
 -- ─── Useful Views ─────────────────────────────────────────────────────────────
 
 CREATE OR REPLACE VIEW portfolio_summary AS

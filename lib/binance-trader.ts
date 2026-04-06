@@ -58,9 +58,11 @@ export async function getUsdtBalance(): Promise<number> {
 
 export async function executeBuy(
   instrument: string,
-  capitalUsd: number,
+  notionalUsd: number,
   userId: string,
-  signalId: string | null = null
+  signalId: string | null = null,
+  stopLoss: number | null = null,
+  takeProfit: number | null = null,
 ): Promise<{ orderId: string; executedQty: number; avgPrice: number } | null> {
   if (!isConfigured()) throw new Error('Binance API not configured')
 
@@ -68,13 +70,14 @@ export async function executeBuy(
   if (!symbol) throw new Error(`Unknown instrument: ${instrument}`)
 
   const balance = await getUsdtBalance()
-  if (balance < capitalUsd) throw new Error(`Insufficient USDT: have $${balance.toFixed(2)}, need $${capitalUsd.toFixed(2)}`)
+  const orderAmount = Math.min(notionalUsd, balance * 0.95)
+  if (orderAmount < 10) throw new Error(`Order too small: $${orderAmount.toFixed(2)} (balance: $${balance.toFixed(2)})`)
 
   const data = await binanceRequest('POST', '/api/v3/order', {
     symbol,
     side: 'BUY',
     type: 'MARKET',
-    quoteOrderQty: capitalUsd.toFixed(2),
+    quoteOrderQty: orderAmount.toFixed(2),
   }, true)
 
   const executedQty = parseFloat(data.executedQty)
@@ -89,11 +92,11 @@ export async function executeBuy(
     direction:   'long',
     quantity:    executedQty,
     entry_price: avgPrice,
-    stop_loss:   null,
-    take_profit: null,
+    stop_loss:   stopLoss,
+    take_profit: takeProfit,
     status:      'open',
     is_demo:     false,
-    notes:       `Binance order ${data.orderId}`,
+    notes:       `Binance order ${data.orderId} | risk-sized $${orderAmount.toFixed(0)}`,
   })
 
   await db.from('positions').upsert({
@@ -103,13 +106,15 @@ export async function executeBuy(
     quantity:        executedQty,
     avg_entry_price: avgPrice,
     current_price:   avgPrice,
+    stop_loss:       stopLoss,
+    take_profit:     takeProfit,
     is_demo:         false,
   }, { onConflict: 'user_id,instrument,is_demo' })
 
   await db.from('agent_logs').insert({
     agent: 'orchestrator',
     level: 'ok',
-    message: `AUTO-TRADE: BUY ${instrument} qty:${executedQty.toFixed(6)} @ $${avgPrice.toFixed(2)} ($${capitalUsd.toFixed(0)})`,
+    message: `AUTO-TRADE: BUY ${instrument} qty:${executedQty.toFixed(6)} @ $${avgPrice.toFixed(2)} ($${orderAmount.toFixed(0)} risk-sized)`,
   })
 
   return { orderId: data.orderId.toString(), executedQty, avgPrice }

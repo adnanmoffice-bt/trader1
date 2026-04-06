@@ -1,8 +1,9 @@
 import { callAgent } from '@/lib/anthropic'
-import { computeIndicators, technicalScore, detectBBSqueeze, detectEMACross } from '@/lib/indicators'
+import { computeIndicators, technicalScore, detectBBSqueeze, detectEMACross, detectRSIExtreme, detectMACDCross, detectVolumeSpike, detectEMA50Breakout, quickBacktest } from '@/lib/indicators'
 import { createServiceSupabase } from '@/lib/supabase'
 import { sendSignalAlert } from '@/lib/telegram'
 import { checkSafety } from '@/lib/safety'
+import { hardRiskCheck, checkDailyLossLimit, getTradeStats, riskBasedPositionSize } from '@/lib/risk-controls'
 import type { Instrument, OHLCV, Signal } from '@/types'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -31,11 +32,18 @@ export async function runWarRoom(): Promise<void> {
     return
   }
 
-  // Scan ALL instruments — quick scan first, full meeting only on triggers
+  // Get recent full debates to enforce cooldown (no re-debate within 15 min)
+  const cooldownMin = 15
+  const { data: recentDebates } = await db.from('war_room_messages')
+    .select('instrument, created_at')
+    .eq('role', 'decision')
+    .gte('created_at', new Date(Date.now() - cooldownMin * 60_000).toISOString())
+  const coolingDown = new Set((recentDebates ?? []).map(d => d.instrument))
+
   for (const instrument of ALL_INSTRUMENTS) {
     const meetingId = crypto.randomUUID()
     try {
-      await runMeeting(db, meetingId, instrument)
+      await runMeeting(db, meetingId, instrument, coolingDown.has(instrument))
     } catch (err) {
       await say(db, meetingId, instrument, { agent: 'orchestrator', role: 'alert', message: `Error: ${String(err).slice(0, 150)}` })
     }
@@ -46,7 +54,7 @@ export async function runWarRoom(): Promise<void> {
 // MEETING — Full 12-agent debate for triggered instruments
 // ═══════════════════════════════════════════════════════════════════════════════
 
-async function runMeeting(db: ReturnType<typeof createServiceSupabase>, meetingId: string, instrument: Instrument) {
+async function runMeeting(db: ReturnType<typeof createServiceSupabase>, meetingId: string, instrument: Instrument, onCooldown = false) {
   const conv: Msg[] = []
 
   // Get candles
@@ -66,26 +74,46 @@ async function runMeeting(db: ReturnType<typeof createServiceSupabase>, meetingI
 
   const ind = computeIndicators(ohlcv)
   const tech = technicalScore(ind)
-  const bbSig = detectBBSqueeze(ohlcv)
-  const emaCross = detectEMACross(ohlcv)
   const price = ind.current_price
-  const trigger = bbSig.triggered ? 'BB Squeeze Breakout' : emaCross.triggered ? 'EMA 12/26 Cross' : null
-  const triggerDir = bbSig.triggered ? bbSig.direction : emaCross.triggered ? emaCross.direction : null
+
+  // Check all trigger types — first match wins (ordered by signal quality)
+  const rawTriggers = [
+    { name: 'BB Squeeze Breakout', ...detectBBSqueeze(ohlcv) },
+    { name: 'EMA 12/26 Cross',    ...detectEMACross(ohlcv) },
+    { name: 'MACD Crossover',     ...detectMACDCross(ohlcv) },
+    { name: 'RSI Extreme',        ...detectRSIExtreme(ohlcv) },
+    { name: 'Volume Spike',       ...detectVolumeSpike(ohlcv) },
+    { name: 'EMA 50 Breakout',    ...detectEMA50Breakout(ohlcv) },
+  ].filter(t => t.triggered)
+
+  const trigger = rawTriggers[0]?.name ?? null
+  const triggerDir = rawTriggers[0]?.direction ?? null
+  const allTriggers = rawTriggers.map(t => t.name).join(' + ') || null
+
+  // Cooldown: skip full debate if this instrument was debated recently
+  if (trigger && onCooldown) {
+    await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
+      message: `${instrument} @ $${f(price)} | ${allTriggers} detected but on cooldown (debated <15min ago). Adjourned.`,
+      data: { price, trigger: allTriggers, cooldown: true },
+    })
+    return
+  }
 
   // Quick scan — no trigger = short meeting
   if (!trigger) {
     await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
-      message: `${instrument} @ $${f(price)} | RSI:${ind.rsi.toFixed(0)} MACD:${ind.macd.histogram > 0 ? '+' : '-'} BB:${(ind.bb.percentB * 100).toFixed(0)}% | No trigger. Adjourned.`,
-      data: { price, rsi: ind.rsi, trigger: null },
+      message: `${instrument} @ $${f(price)} | RSI:${ind.rsi.toFixed(0)} MACD:${ind.macd.histogram > 0 ? '+' : '-'}${Math.abs(ind.macd.histogram).toFixed(2)} BB:${(ind.bb.percentB * 100).toFixed(0)}% Vol:${ind.volume_ratio.toFixed(1)}x EMA:${price > ind.ema_50 ? '↑' : '↓'} | No trigger. Adjourned.`,
+      data: { price, rsi: ind.rsi, macd_hist: ind.macd.histogram, bb_pctb: ind.bb.percentB, volume_ratio: ind.volume_ratio, trigger: null },
     })
     return
   }
 
   // ═══ FULL DEBATE — all 12 agents participate ═══
 
+  const triggerLabel = rawTriggers.length > 1 ? `${allTriggers} (${rawTriggers.length} signals)` : trigger
   await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'open',
-    message: `MEETING: ${instrument} @ $${f(price)}. ${trigger} detected → ${triggerDir?.toUpperCase()}. RSI:${ind.rsi.toFixed(0)} ATR:${ind.atr.toFixed(2)} Vol:${ind.volume_ratio.toFixed(1)}x. Calling all agents.`,
-    data: { price, rsi: ind.rsi, atr: ind.atr, trigger, triggerDir },
+    message: `MEETING: ${instrument} @ $${f(price)}. ${triggerLabel} detected → ${triggerDir?.toUpperCase()}. RSI:${ind.rsi.toFixed(0)} ATR:${ind.atr.toFixed(2)} Vol:${ind.volume_ratio.toFixed(1)}x. Calling all agents.`,
+    data: { price, rsi: ind.rsi, atr: ind.atr, trigger: allTriggers, triggerDir, triggerCount: rawTriggers.length },
   })
 
   const convoStr = () => conv.map(m => `[${m.agent.toUpperCase()}]: ${m.message}`).join('\n')
@@ -178,21 +206,68 @@ async function runMeeting(db: ReturnType<typeof createServiceSupabase>, meetingI
     data: { execute: isExecute, trigger, direction: triggerDir, votesFor: voteFor, votesAgainst: voteAgainst, agentCount: 12 },
   })
 
-  // Execute if approved
+  // Execute if approved — but must pass hard risk checks first
   if (isExecute && triggerDir) {
-    const slDist = ind.atr * 2.5
-    const tpDist = ind.atr * (trigger === 'BB Squeeze Breakout' ? 4 : 5)
+    const slMult = 2.5
+    const tpMult = trigger === 'BB Squeeze Breakout' ? 4 : 5
+    const slDist = ind.atr * slMult
+    const tpDist = ind.atr * tpMult
     const entry = price
     const sl = triggerDir === 'long' ? entry - slDist : entry + slDist
     const tp = triggerDir === 'long' ? entry + tpDist : entry - tpDist
     const rr = Math.round((tpDist / slDist) * 100) / 100
 
+    // ── HARD RISK GATE — same rules as runRiskManager in agents/index.ts ──
+    const riskCheck = hardRiskCheck(rr, entry, sl, openPos ?? 0)
+    if (!riskCheck.allowed) {
+      await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'decision',
+        message: `HARD REJECT: ${riskCheck.reason}`,
+      })
+      await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
+        message: `BLOCKED by risk rules: ${riskCheck.reason}. Meeting closed.`,
+      })
+      return
+    }
+
+    // ── DAILY LOSS LIMIT CHECK ──
+    const { data: portfolio } = await db.from('portfolio').select('capital').eq('is_demo', false).single()
+    const capitalAed = portfolio?.capital ?? 5000
+    const dailyCheck = await checkDailyLossLimit(capitalAed)
+    if (!dailyCheck.allowed) {
+      await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'decision',
+        message: `DAILY LIMIT: ${dailyCheck.reason}`,
+      })
+      await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
+        message: `BLOCKED by daily loss limit. Meeting closed.`,
+      })
+      return
+    }
+
+    // ── QUICK BACKTEST — reject if strategy fails on recent data ──
+    const strategyType = trigger === 'BB Squeeze Breakout' ? 'BB_SQUEEZE' as const : 'EMA_CROSS' as const
+    const bt = quickBacktest(ohlcv, strategyType, slMult, tpMult)
+    if (!bt.passed) {
+      await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'decision',
+        message: `BACKTEST FAIL: ${strategyType} win rate ${(bt.winRate * 100).toFixed(0)}% (${bt.wins}W/${bt.losses}L) on recent data — below 35% threshold`,
+      })
+      await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
+        message: `BLOCKED by backtest validation. Meeting closed.`,
+      })
+      return
+    }
+
+    // ── KELLY-WEIGHTED CONFIDENCE ──
+    const stats = await getTradeStats()
+    const dynamicConf = stats.totalTrades >= 10
+      ? Math.round(80 * (0.5 + stats.winRate * 0.5))
+      : 80
+
     const { data: saved } = await db.from('signals').insert({
       instrument, direction: triggerDir,
       entry_price: entry, stop_loss: sl, take_profit_1: tp,
       take_profit_2: triggerDir === 'long' ? entry + tpDist * 1.5 : entry - tpDist * 1.5,
-      confidence: 80, risk_reward: rr,
-      reasoning: `War Room 12-agent consensus (${voteFor} for, ${voteAgainst} against): ${trigger}`,
+      confidence: dynamicConf, risk_reward: rr,
+      reasoning: `War Room 12-agent consensus (${voteFor}/${voteAgainst}) ${trigger} | BT:${bt.wins}W/${bt.losses}L Kelly:${(stats.kellyFraction * 100).toFixed(1)}%`,
       ai_analysis: decisionResponse, news_sentiment: 'neutral',
       technical_score: tech.score, status: 'active',
     }).select().single()
@@ -200,7 +275,7 @@ async function runMeeting(db: ReturnType<typeof createServiceSupabase>, meetingI
     if (saved) await sendSignalAlert(saved as Signal).catch(() => {})
 
     await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
-      message: `EXECUTED: ${triggerDir.toUpperCase()} ${instrument} @ $${f(entry)} | SL:$${f(sl)} TP:$${f(tp)} R:R ${rr}x | Vote: ${voteFor}-${voteAgainst}. Meeting closed.`,
+      message: `EXECUTED: ${triggerDir.toUpperCase()} ${instrument} @ $${f(entry)} | SL:$${f(sl)} TP:$${f(tp)} R:R ${rr}x | Vote: ${voteFor}-${voteAgainst} | BT:${bt.wins}W/${bt.losses}L | Kelly:${(stats.kellyFraction * 100).toFixed(1)}%. Meeting closed.`,
     })
   } else {
     await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',

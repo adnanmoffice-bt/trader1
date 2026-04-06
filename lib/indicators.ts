@@ -205,6 +205,68 @@ export function detectEMACross(candles: OHLCV[]): { triggered: boolean; directio
   return { triggered: false, direction: null }
 }
 
+// ─── RSI Extreme Detection ───────────────────────────────────────────────────
+
+export function detectRSIExtreme(candles: OHLCV[]): { triggered: boolean; direction: 'long' | 'short' | null } {
+  if (candles.length < 20) return { triggered: false, direction: null }
+  const closes = candles.map(c => c.close)
+  const r = rsi(closes)
+  const prevCloses = closes.slice(0, -1)
+  const prevR = rsi(prevCloses)
+
+  // Trigger on RSI entering extreme zone (not already in it)
+  if (r <= 25 && prevR > 25) return { triggered: true, direction: 'long' }
+  if (r >= 75 && prevR < 75) return { triggered: true, direction: 'short' }
+  return { triggered: false, direction: null }
+}
+
+// ─── MACD Crossover Detection ────────────────────────────────────────────────
+
+export function detectMACDCross(candles: OHLCV[]): { triggered: boolean; direction: 'long' | 'short' | null } {
+  if (candles.length < 30) return { triggered: false, direction: null }
+  const closes = candles.map(c => c.close)
+  const emaFast = ema(closes, 12)
+  const emaSlow = ema(closes, 26)
+  const macdLine = emaFast.map((v, i) => v - emaSlow[i])
+  const signalLine = ema(macdLine, 9)
+  const n = macdLine.length - 1
+
+  const crossUp = macdLine[n] > signalLine[n] && macdLine[n - 1] <= signalLine[n - 1]
+  const crossDn = macdLine[n] < signalLine[n] && macdLine[n - 1] >= signalLine[n - 1]
+
+  if (crossUp) return { triggered: true, direction: 'long' }
+  if (crossDn) return { triggered: true, direction: 'short' }
+  return { triggered: false, direction: null }
+}
+
+// ─── Volume Spike Detection ──────────────────────────────────────────────────
+
+export function detectVolumeSpike(candles: OHLCV[]): { triggered: boolean; direction: 'long' | 'short' | null } {
+  if (candles.length < 25) return { triggered: false, direction: null }
+  const vr = volumeRatio(candles)
+  if (vr < 2.5) return { triggered: false, direction: null }
+
+  const last = candles.at(-1)!
+  const direction = last.close > last.open ? 'long' : 'short'
+  return { triggered: true, direction }
+}
+
+// ─── Price Breakout vs EMA 50 ────────────────────────────────────────────────
+
+export function detectEMA50Breakout(candles: OHLCV[]): { triggered: boolean; direction: 'long' | 'short' | null } {
+  if (candles.length < 55) return { triggered: false, direction: null }
+  const closes = candles.map(c => c.close)
+  const ema50 = ema(closes, 50)
+  const n = closes.length - 1
+
+  const crossUp = closes[n] > ema50[n] && closes[n - 1] <= ema50[n - 1]
+  const crossDn = closes[n] < ema50[n] && closes[n - 1] >= ema50[n - 1]
+
+  if (crossUp) return { triggered: true, direction: 'long' }
+  if (crossDn) return { triggered: true, direction: 'short' }
+  return { triggered: false, direction: null }
+}
+
 // ─── Signal Scoring (backtested dual-strategy) ───────────────────────────────
 
 export function technicalScore(ind: Indicators): { score: number; bias: 'long' | 'short' | 'neutral' } {
@@ -272,8 +334,74 @@ export function kellyFraction(winRate: number, avgWinPct: number, avgLossPct: nu
   const W = winRate
   const R = Math.abs(avgWinPct / avgLossPct)
   const kelly = W - (1 - W) / R
-  // Half-Kelly for safety
   return Math.max(0, Math.min(kelly * 0.5, 0.05))
+}
+
+// ─── Quick Backtest — walk-forward validation on recent candles ──────────────
+
+export interface BacktestResult {
+  totalTriggers: number
+  wins: number
+  losses: number
+  winRate: number
+  avgRR: number
+  passed: boolean
+}
+
+export function quickBacktest(
+  candles: OHLCV[],
+  strategy: 'BB_SQUEEZE' | 'EMA_CROSS',
+  slMult: number,
+  tpMult: number,
+  minWinRate = 0.35,
+): BacktestResult {
+  const minCandles = 60
+  if (candles.length < minCandles) {
+    return { totalTriggers: 0, wins: 0, losses: 0, winRate: 0, avgRR: 0, passed: true }
+  }
+
+  let wins = 0, losses = 0
+  const rrResults: number[] = []
+
+  for (let i = 50; i < candles.length - 10; i++) {
+    const window = candles.slice(0, i + 1)
+    const trigger = strategy === 'BB_SQUEEZE' ? detectBBSqueeze(window) : detectEMACross(window)
+    if (!trigger.triggered || !trigger.direction) continue
+
+    const entryPrice = candles[i].close
+    const atrVal = atr(window)
+    if (atrVal <= 0) continue
+
+    const slDist = atrVal * slMult
+    const tpDist = atrVal * tpMult
+    const sl = trigger.direction === 'long' ? entryPrice - slDist : entryPrice + slDist
+    const tp = trigger.direction === 'long' ? entryPrice + tpDist : entryPrice - tpDist
+
+    let hit: 'tp' | 'sl' | 'none' = 'none'
+    for (let j = i + 1; j < Math.min(i + 10, candles.length); j++) {
+      const c = candles[j]
+      if (trigger.direction === 'long') {
+        if (c.low <= sl) { hit = 'sl'; break }
+        if (c.high >= tp) { hit = 'tp'; break }
+      } else {
+        if (c.high >= sl) { hit = 'sl'; break }
+        if (c.low <= tp) { hit = 'tp'; break }
+      }
+    }
+
+    if (hit === 'tp') { wins++; rrResults.push(tpDist / slDist) }
+    else if (hit === 'sl') { losses++; rrResults.push(-1) }
+  }
+
+  const total = wins + losses
+  const winRate = total > 0 ? wins / total : 0
+  const avgRR = rrResults.length > 0 ? rrResults.reduce((a, b) => a + b, 0) / rrResults.length : 0
+
+  return {
+    totalTriggers: total,
+    wins, losses, winRate, avgRR,
+    passed: total < 3 || winRate >= minWinRate,
+  }
 }
 
 function round(n: number): number {

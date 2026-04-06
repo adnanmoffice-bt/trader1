@@ -2,7 +2,7 @@
   "regions": ["lhr1"],
   "crons": [
     { "path": "/api/cron/market-data",  "schedule": "* * * * *" },
-    { "path": "/api/cron/signals",      "schedule": "*/30 * * * *" },
+    { "path": "/api/cron/signals",      "schedule": "*/5 * * * *" },
     { "path": "/api/cron/positions",    "schedule": "*/2 * * * *" },
     { "path": "/api/cron/polymarket",   "schedule": "*/30 * * * *" },
     { "path": "/api/cron/demo",         "schedule": "*/15 * * * *" }

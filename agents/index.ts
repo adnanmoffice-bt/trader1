@@ -1,8 +1,9 @@
 import { callAgent } from '@/lib/anthropic'
-import { computeIndicators, technicalScore, detectBBSqueeze, detectEMACross, kellyFraction } from '@/lib/indicators'
+import { computeIndicators, technicalScore, detectBBSqueeze, detectEMACross, quickBacktest } from '@/lib/indicators'
 import { createServiceSupabase } from '@/lib/supabase'
 import { sendSignalAlert } from '@/lib/telegram'
 import { checkSafety } from '@/lib/safety'
+import { getTradeStats, riskBasedPositionSize, checkDailyLossLimit } from '@/lib/risk-controls'
 import * as binance from '@/lib/binance-trader'
 import * as poly from '@/lib/polymarket-trader'
 import type {
@@ -30,7 +31,7 @@ export async function runOrchestrator(): Promise<void> {
 
   const { data: portfolio } = await db
     .from('portfolio')
-    .select('capital, available_capital')
+    .select('capital, available_capital, realized_pnl')
     .eq('is_demo', false)
     .single()
 
@@ -60,7 +61,7 @@ export async function runOrchestrator(): Promise<void> {
 async function processInstrument(
   db: ReturnType<typeof createServiceSupabase>,
   instrument: Instrument,
-  portfolio: { capital: number; available_capital: number } | null,
+  portfolio: { capital: number; available_capital: number; realized_pnl: number } | null,
   openCount: number
 ): Promise<string> {
   const { data: candles } = await db
@@ -166,6 +167,27 @@ async function processInstrument(
     ai_analysis: signalOut.ai_analysis,
   }
 
+  // ── STEP 3b: Quick backtest validation ──────────────────────────────────
+  const btStrategy = strategyName === 'BB_SQUEEZE' ? 'BB_SQUEEZE' as const : 'EMA_CROSS' as const
+  const bt = quickBacktest(ohlcv, btStrategy, slMult, tpMult)
+  if (!bt.passed) {
+    await log(db, 'orchestrator', 'warn',
+      `${instrument}: BACKTEST FAIL — ${btStrategy} WR:${(bt.winRate * 100).toFixed(0)}% (${bt.wins}W/${bt.losses}L) below 35% threshold`)
+    return `backtest fail (WR:${(bt.winRate * 100).toFixed(0)}%)`
+  }
+  if (bt.totalTriggers > 0) {
+    await log(db, 'orchestrator', 'info',
+      `${instrument}: Backtest OK — ${btStrategy} WR:${(bt.winRate * 100).toFixed(0)}% (${bt.wins}W/${bt.losses}L) avgRR:${bt.avgRR.toFixed(2)}`)
+  }
+
+  // ── STEP 3c: Daily loss limit ─────────────────────────────────────────
+  const capitalAed = portfolio?.capital ?? 5000
+  const dailyCheck = await checkDailyLossLimit(capitalAed)
+  if (!dailyCheck.allowed) {
+    await log(db, 'orchestrator', 'warn', `${instrument}: ${dailyCheck.reason}`)
+    return 'daily loss limit'
+  }
+
   // ── STEP 4: Risk manager validation ───────────────────────────────────────
   const approved = await runRiskManager(enhancedSignal, {
     instrument,
@@ -209,18 +231,25 @@ async function processInstrument(
     if (binance.isConfigured() && enhancedSignal.entry_price && enhancedSignal.stop_loss) {
       try {
         const capitalUsd = (portfolio?.available_capital ?? 5000) / binance.USD_AED
-        const tradeSize = capitalUsd * binance.MAX_RISK_PCT
+        const stats = await getTradeStats()
+        const sizing = riskBasedPositionSize(capitalUsd, enhancedSignal.entry_price, enhancedSignal.stop_loss, stats)
         const userId = 'auto-trader'
 
-            if (enhancedSignal.direction === 'long') {
-          const result = await binance.executeBuy(instrument, tradeSize, userId, saved.id)
+        await log(db, 'orchestrator', 'info',
+          `SIZING: Kelly:${(stats.kellyFraction * 100).toFixed(1)}% Risk:${(sizing.riskPct * 100).toFixed(1)}% Notional:$${sizing.notionalUsd.toFixed(0)} WR:${(stats.winRate * 100).toFixed(0)}% Streak:${stats.streak}`)
+
+        if (enhancedSignal.direction === 'long' && sizing.notionalUsd >= 10) {
+          const result = await binance.executeBuy(
+            instrument, sizing.notionalUsd, userId, saved.id,
+            enhancedSignal.stop_loss, enhancedSignal.take_profit_1,
+          )
           if (result) {
             await log(db, 'orchestrator', 'ok',
-              `AUTO-EXEC: BUY ${instrument} $${tradeSize.toFixed(0)} @ $${result.avgPrice.toFixed(2)}`)
-                if (enhancedSignal.stop_loss && enhancedSignal.take_profit_1) {
-                  await binance.setStopLossAndTakeProfit(
-                    instrument, result.executedQty,
-                    enhancedSignal.stop_loss, enhancedSignal.take_profit_1
+              `AUTO-EXEC: BUY ${instrument} $${sizing.notionalUsd.toFixed(0)} @ $${result.avgPrice.toFixed(2)} (Kelly-sized)`)
+            if (enhancedSignal.stop_loss && enhancedSignal.take_profit_1) {
+              await binance.setStopLossAndTakeProfit(
+                instrument, result.executedQty,
+                enhancedSignal.stop_loss, enhancedSignal.take_profit_1
               )
             }
           }

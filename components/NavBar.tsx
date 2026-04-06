@@ -3,16 +3,16 @@ import { usePathname, useRouter } from 'next/navigation'
 import { useTheme } from '@/lib/theme'
 import { useEffect, useState } from 'react'
 
-const NAV_ITEMS = [
-  { href: '/',                label: 'Dashboard' },
-  { href: '/signals',        label: 'Signals' },
-  { href: '/simulation',     label: 'Simulation' },
-  { href: '/ai-log',         label: 'AI Log' },
-  { href: '/polymarket-page', label: 'Polymarket' },
+const NAV = [
+  { href: '/', label: 'DASHBOARD' },
+  { href: '/signals', label: 'SIGNALS' },
+  { href: '/simulation', label: 'SIMULATION' },
+  { href: '/ai-log', label: 'AI LOG' },
+  { href: '/polymarket-page', label: 'POLYMARKET' },
 ]
 
 export function NavBar() {
-  const pathname = usePathname()
+  const path = usePathname()
   const router = useRouter()
   const { theme, toggle } = useTheme()
   const [user, setUser] = useState<{ name: string } | null>(null)
@@ -24,54 +24,30 @@ export function NavBar() {
     return () => clearInterval(t)
   }, [])
 
-  async function handleLogout() {
-    await fetch('/api/auth/logout', { method: 'POST' })
-    router.push('/login')
-    router.refresh()
-  }
-
   return (
-    <nav className="flex items-center h-12 px-4 border-b border-[var(--border)] flex-shrink-0 gap-1" style={{ background: 'var(--bg-panel)' }}>
-      {/* Logo */}
-      <div className="flex items-center gap-2 mr-4 flex-shrink-0">
-        <span className="text-base font-black tracking-tight text-[var(--text-primary)]">APEX</span>
-        <span className="flex items-center gap-1 text-[8px] font-bold tracking-[0.15em] px-1.5 py-0.5 rounded text-white" style={{ background: 'var(--green)' }}>
-          <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />LIVE
-        </span>
-      </div>
+    <nav className="flex items-center h-8 px-2 gap-0 flex-shrink-0" style={{ background: 'var(--bg-1)', borderBottom: '1px solid var(--border)' }}>
+      <span className="font-black text-[11px] tracking-tight mr-1" style={{ color: 'var(--amber)' }}>APEX</span>
+      <span className="text-[8px] font-bold px-1 py-0.5 rounded mr-3" style={{ background: 'var(--green)', color: '#000' }}>LIVE</span>
 
-      {/* Nav links */}
-      <div className="flex items-center gap-0.5 flex-1">
-        {NAV_ITEMS.map(item => {
-          const active = pathname === item.href || (item.href !== '/' && pathname.startsWith(item.href))
-          return (
-            <a key={item.href} href={item.href}
-              className={`px-3 py-1.5 text-[11px] font-semibold rounded-md transition-colors ${
-                active
-                  ? 'bg-[var(--text-primary)] text-[var(--bg-primary)]'
-                  : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'
-              }`}>
-              {item.label}
-            </a>
-          )
-        })}
-      </div>
+      {NAV.map(n => {
+        const active = path === n.href || (n.href !== '/' && path.startsWith(n.href))
+        return (
+          <a key={n.href} href={n.href} className="px-2 py-0.5 text-[10px] font-bold transition-colors" style={{
+            color: active ? 'var(--amber)' : 'var(--text-2)',
+            background: active ? 'var(--bg-2)' : 'transparent',
+            borderBottom: active ? '2px solid var(--amber)' : '2px solid transparent',
+          }}>{n.label}</a>
+        )
+      })}
 
-      {/* Right side */}
-      <div className="flex items-center gap-3 flex-shrink-0 text-[10px]">
-        <span className="mono font-bold text-[var(--blue)]">{clock}</span>
-        <a href="/investor" className="text-[var(--text-muted)] hover:text-[var(--blue)] transition-colors">Investor View</a>
-        <a href="/settings" className="text-[var(--text-muted)] hover:text-[var(--blue)] transition-colors">Settings</a>
-        <button onClick={toggle} className="w-7 h-7 flex items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] transition-colors text-sm">
-          {theme === 'light' ? '🌙' : '☀️'}
-        </button>
-        {user && (
-          <div className="flex items-center gap-2">
-            <span className="text-[var(--text-secondary)] font-medium">{user.name}</span>
-            <button onClick={handleLogout} className="text-[var(--text-muted)] hover:text-[var(--red)] transition-colors">Logout</button>
-          </div>
-        )}
-      </div>
+      <div className="flex-1" />
+
+      <a href="/investor" className="text-[9px] px-1.5" style={{ color: 'var(--text-3)' }}>INVESTOR</a>
+      <a href="/settings" className="text-[9px] px-1.5" style={{ color: 'var(--text-3)' }}>SETTINGS</a>
+      <button onClick={toggle} className="text-[9px] px-1 mx-1" style={{ color: 'var(--text-2)' }}>{theme === 'light' ? 'DARK' : 'LIGHT'}</button>
+      <span className="text-[10px] font-bold mx-1" style={{ color: 'var(--cyan)' }}>{clock}</span>
+      {user && <span className="text-[9px] mx-1" style={{ color: 'var(--text-2)' }}>{user.name}</span>}
+      <button onClick={() => { fetch('/api/auth/logout', { method: 'POST' }).then(() => { router.push('/login'); router.refresh() }) }} className="text-[9px] px-1" style={{ color: 'var(--text-3)' }}>EXIT</button>
     </nav>
   )
 }

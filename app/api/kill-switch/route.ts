@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createServerSupabase } from '@/lib/supabase'
+import { createServerSupabase } from '@/lib/supabase-server'
 import { activateKillSwitch, deactivateKillSwitch } from '@/lib/safety'
 
 export async function POST(req: NextRequest) {

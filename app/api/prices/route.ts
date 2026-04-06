@@ -1,16 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceSupabase } from '@/lib/supabase'
-import { fetchBinanceKlines } from '@/lib/price-fetcher'
+import { fetchKlines } from '@/lib/price-fetcher'
 
 export async function GET(req: NextRequest) {
   const params   = req.nextUrl.searchParams
   const symbol   = params.get('symbol')
-  const interval = (params.get('interval') ?? '1h') as '1m'|'5m'|'1h'|'4h'|'1d'
+  const interval = (params.get('interval') ?? '1h') as string
   const limit    = parseInt(params.get('limit') ?? '200')
 
   if (symbol && params.get('candles') === 'true') {
-    // Return OHLCV candles for chart
-    const candles = await fetchBinanceKlines(symbol, interval, limit)
+    const candles = await fetchKlines(symbol, interval, limit)
     return NextResponse.json({ data: candles, success: true })
   }
 

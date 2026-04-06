@@ -11,6 +11,7 @@ const BINANCE_SYMBOLS: Record<string, string> = {
   'ETH/USD': 'ETHUSDT',
   'SOL/USD': 'SOLUSDT',
   'BNB/USD': 'BNBUSDT',
+  'XAU/USD': 'PAXGUSDT',  // PAX Gold tracks real gold price
 }
 
 const YAHOO_SYMBOLS: Record<string, string> = {
@@ -124,6 +125,58 @@ export async function fetchBinanceKlinesRange(
   }
 
   return all
+}
+
+// ─── Yahoo Finance Candles (for commodities/forex/indices) ───────────────────
+
+export async function fetchYahooKlines(symbol: string, limit = 100): Promise<OHLCV[]> {
+  const yahooSym = YAHOO_SYMBOLS[symbol]
+  if (!yahooSym) return []
+
+  try {
+    const range = limit > 100 ? '6mo' : '1mo'
+    const interval = '1h'
+    const res = await fetch(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSym}?interval=${interval}&range=${range}`,
+      { headers: { 'User-Agent': 'Mozilla/5.0' }, next: { revalidate: 300 } }
+    )
+    if (!res.ok) return []
+    const data = await res.json()
+    const result = data?.chart?.result?.[0]
+    if (!result) return []
+
+    const timestamps = result.timestamp ?? []
+    const quotes = result.indicators?.quote?.[0] ?? {}
+    const { open = [], high = [], low = [], close = [], volume = [] } = quotes
+
+    const candles: OHLCV[] = []
+    for (let i = 0; i < timestamps.length; i++) {
+      if (open[i] == null || close[i] == null) continue
+      candles.push({
+        timestamp: timestamps[i] * 1000,
+        open: open[i], high: high[i] ?? open[i],
+        low: low[i] ?? open[i], close: close[i],
+        volume: volume[i] ?? 0,
+      })
+    }
+    return candles.slice(-limit)
+  } catch {
+    return []
+  }
+}
+
+// ─── Universal Candle Fetcher ────────────────────────────────────────────────
+
+export async function fetchKlines(symbol: string, interval: string, limit = 200): Promise<OHLCV[]> {
+  // Try Binance first (more reliable for crypto + gold)
+  const binanceData = await fetchBinanceKlines(symbol, interval as '1h', limit)
+  if (binanceData.length > 0) return binanceData
+
+  // Fallback to Yahoo for commodities/forex/indices
+  const yahooData = await fetchYahooKlines(symbol, limit)
+  if (yahooData.length > 0) return yahooData
+
+  return []
 }
 
 // ─── CoinGecko ────────────────────────────────────────────────────────────────

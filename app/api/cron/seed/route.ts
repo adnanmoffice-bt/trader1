@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
   const results: Record<string, string> = {}
 
   // 1. Fetch 200 hourly candles for each symbol (needed for indicators/signals)
-  const symbols = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'BNB/USD'] as const
+  const symbols = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'BNB/USD', 'XAU/USD'] as const
   for (const sym of symbols) {
     try {
       const candles = await fetchBinanceKlines(sym, '1h', 200)

@@ -31,7 +31,7 @@ export async function GET(req: NextRequest) {
   }
 
   // 2. Store last 5 hourly candles (parallel)
-  const candleSymbols = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'BNB/USD'] as const
+  const candleSymbols = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'BNB/USD', 'XAU/USD'] as const
   try {
     await Promise.allSettled(
       candleSymbols.map(async (sym) => {

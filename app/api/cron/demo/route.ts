@@ -7,7 +7,7 @@ import type { OHLCV } from '@/types'
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
-const DEMO_INSTRUMENTS = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'BNB/USD'] as const
+const DEMO_INSTRUMENTS = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'BNB/USD', 'XAU/USD'] as const
 const USD_AED = 3.6725
 const RISK_PER_TRADE = 0.03  // 3% risk per trade
 const MIN_RR = 2.0            // minimum 2:1 reward:risk

@@ -463,7 +463,7 @@ export async function runPolymarketScanner(): Promise<{ scanned: number; bets: n
         `"${market.question.slice(0, 50)}..." Market:${(market.yes_price * 100).toFixed(0)}% AI:${(analysis.ai_probability * 100).toFixed(0)}% Edge:${(edge * 100).toFixed(1)}%`)
 
       // Only bet if edge > 15% and confidence > 70
-      if (edge < 0.15 || analysis.confidence < 70) continue
+      if (edge < 0.08 || analysis.confidence < 60) continue
 
       const side: 'YES' | 'NO' = analysis.ai_probability > market.yes_price ? 'YES' : 'NO'
       const betAmount = Math.min(poly.MAX_BET_USD, 10 + edge * 40)

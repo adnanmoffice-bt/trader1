@@ -14,69 +14,50 @@ export default function LoginPage() {
     e.preventDefault()
     setError('')
     setLoading(true)
-
     const supabase = createBrowserSupabase()
     const { error } = await supabase.auth.signInWithPassword({ email, password })
-
-    if (error) {
-      setError(error.message)
-      setLoading(false)
-      return
-    }
-
+    if (error) { setError(error.message); setLoading(false); return }
     router.push('/')
     router.refresh()
   }
 
   return (
-    <div className="min-h-screen bg-[#03030a] flex items-center justify-center px-4">
+    <div className="min-h-screen bg-[#f8f9fb] flex items-center justify-center px-4">
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <h1 className="text-2xl font-black text-[#e2e2f5] tracking-tight">APEX</h1>
-          <div className="flex items-center justify-center gap-2 mt-2">
-            <span className="w-2 h-2 rounded-full bg-[#00ffa3] animate-pulse" />
-            <span className="text-[10px] font-bold text-[#00ffa3] tracking-[0.2em]">AI TRADING TERMINAL</span>
-          </div>
+          <h1 className="text-3xl font-black text-[#0f172a] tracking-tight">APEX</h1>
+          <p className="text-sm text-[#64748b] mt-1">AI Trading Terminal</p>
         </div>
 
-        <form onSubmit={handleLogin} className="bg-[#07070f] border border-[#1a1a2e] rounded-xl p-6">
+        <form onSubmit={handleLogin} className="bg-white border border-[#e2e8f0] rounded-xl p-6 shadow-sm">
           <div className="mb-4">
-            <label className="block text-[10px] font-bold text-[#44446a] tracking-wider mb-1.5">EMAIL</label>
+            <label className="block text-[11px] font-semibold text-[#64748b] mb-1.5">EMAIL</label>
             <input
               type="email" value={email} onChange={e => setEmail(e.target.value)}
-              className="w-full bg-[#0f0f1e] border border-[#1a1a2e] rounded-lg px-3 py-2.5 text-sm text-[#e2e2f5] placeholder-[#44446a] focus:border-[#00ccff] focus:outline-none transition-colors"
+              className="w-full bg-[#f8f9fb] border border-[#e2e8f0] rounded-lg px-3 py-2.5 text-sm text-[#0f172a] placeholder-[#94a3b8] focus:border-[#2563eb] focus:ring-1 focus:ring-[#2563eb] focus:outline-none transition-all"
               placeholder="your@email.com" required autoFocus
             />
           </div>
-
           <div className="mb-6">
-            <label className="block text-[10px] font-bold text-[#44446a] tracking-wider mb-1.5">PASSWORD</label>
+            <label className="block text-[11px] font-semibold text-[#64748b] mb-1.5">PASSWORD</label>
             <input
               type="password" value={password} onChange={e => setPassword(e.target.value)}
-              className="w-full bg-[#0f0f1e] border border-[#1a1a2e] rounded-lg px-3 py-2.5 text-sm text-[#e2e2f5] placeholder-[#44446a] focus:border-[#00ccff] focus:outline-none transition-colors"
+              className="w-full bg-[#f8f9fb] border border-[#e2e8f0] rounded-lg px-3 py-2.5 text-sm text-[#0f172a] placeholder-[#94a3b8] focus:border-[#2563eb] focus:ring-1 focus:ring-[#2563eb] focus:outline-none transition-all"
               placeholder="********" required
             />
           </div>
 
           {error && (
-            <div className="mb-4 px-3 py-2 bg-[rgba(255,51,102,0.08)] border border-[rgba(255,51,102,0.2)] rounded-lg text-[11px] text-[#ff3366]">
-              {error}
-            </div>
+            <div className="mb-4 px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-[11px] text-red-600">{error}</div>
           )}
 
-          <button
-            type="submit" disabled={loading}
-            className="w-full py-2.5 bg-[#00ccff] text-[#03030a] font-bold text-sm rounded-lg hover:bg-[#00bbee] transition-colors disabled:opacity-50"
-          >
-            {loading ? 'Prijava...' : 'Prijavi se'}
+          <button type="submit" disabled={loading}
+            className="w-full py-2.5 bg-[#0f172a] text-white font-semibold text-sm rounded-lg hover:bg-[#1e293b] transition-colors disabled:opacity-50">
+            {loading ? 'Signing in...' : 'Sign In'}
           </button>
-
-          
         </form>
 
-        <div className="mt-6 text-center text-[9px] text-[#44446a]">
-          Secured by Supabase Auth + 2FA
-        </div>
+        <p className="mt-6 text-center text-[10px] text-[#94a3b8]">Secured by Supabase Auth</p>
       </div>
     </div>
   )

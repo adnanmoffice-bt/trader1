@@ -2,43 +2,74 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --bg-void: #03030a;
-  --bg-deep: #07070f;
-  --bg-base: #0b0b16;
+/* ═══ Light Theme (default) ═══ */
+:root, [data-theme="light"] {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f8f9fb;
+  --bg-panel: #ffffff;
+  --bg-hover: #f1f5f9;
+  --text-primary: #0f172a;
+  --text-secondary: #64748b;
+  --text-muted: #94a3b8;
+  --border: #e2e8f0;
+  --border-light: #f1f5f9;
+  --green: #16a34a;
+  --red: #dc2626;
+  --blue: #2563eb;
+  --purple: #7c3aed;
+  --amber: #d97706;
+  --cyan: #0891b2;
+  --chart-up: #16a34a;
+  --chart-dn: #dc2626;
+  --chart-grid: #f1f5f9;
+  --chart-ema: #7c3aed;
+  --chart-price-bg: #2563eb;
+  --shadow: 0 1px 3px rgba(0,0,0,0.06);
+}
+
+/* ═══ Dark Theme ═══ */
+[data-theme="dark"] {
+  --bg-primary: #03030a;
+  --bg-secondary: #07070f;
+  --bg-panel: #07070f;
+  --bg-hover: #0f0f1e;
+  --text-primary: #e2e2f5;
+  --text-secondary: #7878aa;
+  --text-muted: #44446a;
+  --border: #1a1a2e;
+  --border-light: #0f0f1e;
   --green: #00ffa3;
   --red: #ff3366;
-  --cyan: #00ccff;
-  --amber: #ffcc00;
+  --blue: #00ccff;
   --purple: #9966ff;
+  --amber: #ffcc00;
+  --cyan: #00ccff;
+  --chart-up: #00ffa3;
+  --chart-dn: #ff3366;
+  --chart-grid: #1a1a2e;
+  --chart-ema: #9966ff;
+  --chart-price-bg: #00ccff;
+  --shadow: none;
 }
 
 * { box-sizing: border-box; }
 
 html, body {
-  background: var(--bg-void);
-  color: #e2e2f5;
+  background: var(--bg-primary);
+  color: var(--text-primary);
   font-family: 'Inter', sans-serif;
   -webkit-font-smoothing: antialiased;
+  transition: background 0.2s, color 0.2s;
 }
 
 ::-webkit-scrollbar { width: 3px; height: 3px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #141428; border-radius: 2px; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
 .mono { font-family: 'JetBrains Mono', monospace; }
-.up { color: #00ffa3; }
-.dn { color: #ff3366; }
-.nt { color: #ffcc00; }
 
 @keyframes blink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.25; }
 }
 .animate-blink { animation: blink 2s ease-in-out infinite; }
-
-@keyframes slideIn {
-  from { opacity: 0; transform: translateY(8px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-.animate-slide-in { animation: slideIn 0.3s ease-out; }

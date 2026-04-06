@@ -9,11 +9,11 @@ export const maxDuration = 60
 
 const DEMO_INSTRUMENTS = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'BNB/USD', 'XAU/USD'] as const
 const USD_AED = 3.6725
-const RISK_PER_TRADE = 0.03  // 3% risk per trade
-const MIN_RR = 2.0            // minimum 2:1 reward:risk
-const MIN_SCORE = 55          // lower threshold = more trades
-const SESSION_CAPITAL = 10000 // 10,000 AED
+const RISK_PER_TRADE = 0.03
+const MIN_SCORE = 55
+const SESSION_CAPITAL = 5000
 const MAX_OPEN_PER_SESSION = 4
+const MAX_POSITION_AGE_MS = 48 * 60 * 60 * 1000 // 48 hours
 
 export async function GET(req: NextRequest) {
   const auth = req.headers.get('authorization')
@@ -24,7 +24,6 @@ export async function GET(req: NextRequest) {
   const db = createServiceSupabase()
   const t0 = Date.now()
 
-  // Get or create running session
   let { data: session } = await db
     .from('demo_sessions')
     .select('*')
@@ -51,7 +50,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Failed to create demo session' }, { status: 500 })
   }
 
-  // Check session expiry
   if (new Date(session.end_date) < new Date()) {
     await db.from('demo_sessions').update({ status: 'completed' }).eq('id', session.id)
     return NextResponse.json({ success: true, message: 'Session expired, will create new one next run' })
@@ -59,53 +57,115 @@ export async function GET(req: NextRequest) {
 
   const actions: string[] = []
 
-  // Count current open trades
-  const { data: allOpenTrades } = await db
+  // ── PHASE 1: Close exits FIRST (with fallback pricing) ──
+  const { data: openTrades } = await db
+    .from('demo_trades')
+    .select('*')
+    .eq('session_id', session.id)
+    .is('exit_time', null)
+
+  for (const trade of openTrades ?? []) {
+    const sym = trade.instrument as string
+    let price: number | null = null
+
+    // Try Binance ticker first
+    const ticker = await fetchBinanceTicker(sym)
+    if (ticker) {
+      price = ticker.price
+    } else {
+      // Fallback: use market_data table
+      const { data: md } = await db.from('market_data').select('price').eq('symbol', sym).single()
+      if (md) price = Number(md.price)
+    }
+
+    if (!price) {
+      // Last resort: use latest candle close from price_history
+      const { data: lastCandle } = await db.from('price_history')
+        .select('close').eq('symbol', sym).order('timestamp', { ascending: false }).limit(1).single()
+      if (lastCandle) price = Number(lastCandle.close)
+    }
+
+    if (!price) {
+      actions.push(`${sym}: no price available, skipping exit check`)
+      continue
+    }
+
+    // Check SL/TP hit
+    const result = checkTradeExit(trade, price)
+    if (result) {
+      await db.from('demo_trades').update({
+        exit_price:  result.exitPrice,
+        exit_time:   new Date().toISOString(),
+        exit_reason: result.reason,
+        pnl:         result.pnl,
+        pnl_pct:     result.pnlPct,
+        pnl_aed:     result.pnlAed,
+      }).eq('id', trade.id)
+      actions.push(`${sym}: ${result.reason} @ $${result.exitPrice.toFixed(2)} P&L: ${result.pnlAed.toFixed(0)} AED`)
+      continue
+    }
+
+    // Check candle high/low for missed SL/TP between cron runs
+    const { data: recentCandles } = await db.from('price_history')
+      .select('high, low').eq('symbol', sym).eq('interval', '1h')
+      .order('timestamp', { ascending: false }).limit(2)
+
+    if (recentCandles?.length) {
+      const candleHigh = Math.max(...recentCandles.map(c => Number(c.high)))
+      const candleLow = Math.min(...recentCandles.map(c => Number(c.low)))
+      const wickResult = checkTradeExitWick(trade, candleHigh, candleLow)
+      if (wickResult) {
+        await db.from('demo_trades').update({
+          exit_price:  wickResult.exitPrice,
+          exit_time:   new Date().toISOString(),
+          exit_reason: wickResult.reason,
+          pnl:         wickResult.pnl,
+          pnl_pct:     wickResult.pnlPct,
+          pnl_aed:     wickResult.pnlAed,
+        }).eq('id', trade.id)
+        actions.push(`${sym}: ${wickResult.reason} (wick) @ $${wickResult.exitPrice.toFixed(2)} P&L: ${wickResult.pnlAed.toFixed(0)} AED`)
+        continue
+      }
+    }
+
+    // Check max position age — close stale positions at market price
+    const entryTime = new Date(trade.entry_time as string).getTime()
+    if (Date.now() - entryTime > MAX_POSITION_AGE_MS) {
+      const dir = String(trade.direction)
+      const entry = Number(trade.entry_price)
+      const qty = Number(trade.quantity)
+      const pnl = dir === 'long' ? (price - entry) * qty : (entry - price) * qty
+      const pnlPct = (pnl / (entry * qty)) * 100
+      const pnlAed = pnl * USD_AED
+
+      await db.from('demo_trades').update({
+        exit_price:  price,
+        exit_time:   new Date().toISOString(),
+        exit_reason: 'timeout',
+        pnl, pnl_pct: pnlPct, pnl_aed: pnlAed,
+      }).eq('id', trade.id)
+      actions.push(`${sym}: TIMEOUT (48h) @ $${price.toFixed(2)} P&L: ${pnlAed.toFixed(0)} AED`)
+    }
+  }
+
+  // ── PHASE 2: Open new positions ──
+  const { data: stillOpen } = await db
     .from('demo_trades')
     .select('id, instrument')
     .eq('session_id', session.id)
     .is('exit_time', null)
 
-  const openCount = allOpenTrades?.length ?? 0
-  const openInstruments = new Set(allOpenTrades?.map(t => t.instrument) ?? [])
+  const currentOpenCount = stillOpen?.length ?? 0
+  const currentOpenSymbols = new Set(stillOpen?.map(t => t.instrument) ?? [])
 
-  // Process each instrument
   for (const sym of DEMO_INSTRUMENTS) {
+    if (currentOpenCount >= MAX_OPEN_PER_SESSION) break
+    if (currentOpenSymbols.has(sym)) continue
+
     const ticker = await fetchBinanceTicker(sym)
     if (!ticker) continue
     const price = ticker.price
 
-    // Check if we have an open trade for this instrument
-    if (openInstruments.has(sym)) {
-      const { data: openTrade } = await db
-        .from('demo_trades')
-        .select('*')
-        .eq('session_id', session.id)
-        .eq('instrument', sym)
-        .is('exit_time', null)
-        .single()
-
-      if (openTrade) {
-        const result = checkTradeExit(openTrade, price)
-        if (result) {
-          await db.from('demo_trades').update({
-            exit_price:  result.exitPrice,
-            exit_time:   new Date().toISOString(),
-            exit_reason: result.reason,
-            pnl:         result.pnl,
-            pnl_pct:     result.pnlPct,
-            pnl_aed:     result.pnlAed,
-          }).eq('id', openTrade.id)
-          actions.push(`${sym}: ${result.reason} @ $${result.exitPrice.toFixed(2)} P&L: ${result.pnlAed.toFixed(0)} AED`)
-        }
-      }
-      continue
-    }
-
-    // Don't open new trades if max reached
-    if (openCount >= MAX_OPEN_PER_SESSION) continue
-
-    // Get candles for analysis
     const { data: candles } = await db
       .from('price_history')
       .select('*')
@@ -125,20 +185,17 @@ export async function GET(req: NextRequest) {
     const ind = computeIndicators(ohlcv)
     const { score, bias } = technicalScore(ind)
 
-    // Use backtested strategies: BB Squeeze (Sharpe 1.89) + EMA Cross (Sharpe 1.75)
     const bbSig = detectBBSqueeze(ohlcv)
     const emaSig = detectEMACross(ohlcv)
     const hasSignal = bbSig.triggered || emaSig.triggered
     const signalDir = bbSig.triggered ? bbSig.direction : emaSig.triggered ? emaSig.direction : bias
     const stratName = bbSig.triggered ? 'BB_SQUEEZE' : emaSig.triggered ? 'EMA_CROSS' : 'TECH_SCORE'
 
-    // Require either a backtested strategy signal OR strong tech score
     if (!hasSignal && (score < MIN_SCORE || bias === 'neutral')) continue
 
     const effectiveDir = signalDir ?? bias
     if (effectiveDir === 'neutral' || !effectiveDir) continue
 
-    // Check AI signal alignment
     const { data: recentSignal } = await db
       .from('signals')
       .select('direction, confidence')
@@ -151,9 +208,8 @@ export async function GET(req: NextRequest) {
     const aiAligned = recentSignal && recentSignal.direction === effectiveDir
     const effectiveScore = hasSignal ? (aiAligned ? 90 : 75) : (aiAligned ? Math.min(score + 10, 100) : score)
 
-    // ATR-based levels from backtest: 2.5x SL, 4-5x TP
     const atrVal = ind.atr
-    const slMult = stratName === 'BB_SQUEEZE' ? 2.5 : 2.5
+    const slMult = 2.5
     const tpMult = stratName === 'BB_SQUEEZE' ? 4.0 : 5.0
     const slDist = atrVal * slMult
     const tpDist = atrVal * tpMult
@@ -162,7 +218,6 @@ export async function GET(req: NextRequest) {
     const sl = effectiveDir === 'long' ? entry - slDist : entry + slDist
     const tp = effectiveDir === 'long' ? entry + tpDist : entry - tpDist
 
-    // Calculate current capital
     const { data: closedTrades } = await db
       .from('demo_trades')
       .select('pnl_aed')
@@ -172,9 +227,8 @@ export async function GET(req: NextRequest) {
     const realizedPnl = closedTrades?.reduce((s, t) => s + Number(t.pnl_aed || 0), 0) ?? 0
     const currentCapital = Number(session.initial_capital) + realizedPnl
 
-    // Risk sizing: 3% of current capital
     const riskAmt = currentCapital * RISK_PER_TRADE
-    const riskPerUnit = slDist  // USD risk per unit
+    const riskPerUnit = slDist
     const qty = riskAmt / (riskPerUnit * USD_AED)
 
     if (qty <= 0) continue
@@ -195,14 +249,13 @@ export async function GET(req: NextRequest) {
     actions.push(`${sym}: ${stratName} OPEN ${effectiveDir.toUpperCase()} @ $${entry.toFixed(2)} SL:$${sl.toFixed(2)} TP:$${tp.toFixed(2)} conf:${effectiveScore}`)
   }
 
-  // Update session stats
   await updateSessionStats(db, session.id, Number(session.initial_capital))
 
   return NextResponse.json({
     success: true,
     session_id: session.id,
     actions,
-    open_trades: openCount,
+    open_trades: currentOpenCount,
     duration_ms: Date.now() - t0,
     timestamp: new Date().toISOString(),
   })
@@ -221,6 +274,31 @@ function checkTradeExit(
   const hitSL = (dir === 'long' && currentPrice <= sl) || (dir === 'short' && currentPrice >= sl)
   const hitTP = (dir === 'long' && currentPrice >= tp) || (dir === 'short' && currentPrice <= tp)
 
+  if (!hitSL && !hitTP) return null
+
+  const exitPrice = hitSL ? sl : tp
+  const pnl = dir === 'long' ? (exitPrice - entry) * qty : (entry - exitPrice) * qty
+  const pnlPct = (pnl / (entry * qty)) * 100
+  const pnlAed = pnl * USD_AED
+
+  return { exitPrice, reason: hitSL ? 'stop_loss' : 'take_profit', pnl, pnlPct, pnlAed }
+}
+
+function checkTradeExitWick(
+  trade: Record<string, unknown>,
+  candleHigh: number,
+  candleLow: number
+): { exitPrice: number; reason: string; pnl: number; pnlPct: number; pnlAed: number } | null {
+  const entry = Number(trade.entry_price)
+  const sl    = Number(trade.stop_loss)
+  const tp    = Number(trade.take_profit)
+  const qty   = Number(trade.quantity)
+  const dir   = String(trade.direction)
+
+  const hitSL = (dir === 'long' && candleLow <= sl) || (dir === 'short' && candleHigh >= sl)
+  const hitTP = (dir === 'long' && candleHigh >= tp) || (dir === 'short' && candleLow <= tp)
+
+  // SL takes priority (worst case first)
   if (!hitSL && !hitTP) return null
 
   const exitPrice = hitSL ? sl : tp
@@ -253,7 +331,6 @@ async function updateSessionStats(
   const losses = allTrades.filter(t => Number(t.pnl) <= 0).length
   const totalPnl = allTrades.reduce((s, t) => s + Number(t.pnl_aed || 0), 0)
 
-  // Calculate max drawdown
   let peak = initialCapital
   let maxDD = 0
   let running = initialCapital

@@ -246,17 +246,61 @@ export async function fetchPolymarketPrice(tokenId: string): Promise<number> {
   }
 }
 
+// ─── Commodity Prices (via Yahoo Finance proxy) ─────────────────────────────
+
+async function fetchYahooPrice(symbol: string, yahooSym: string): Promise<MarketData | null> {
+  try {
+    const res = await fetch(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSym}?interval=1d&range=2d`,
+      { headers: { 'User-Agent': 'Mozilla/5.0' }, next: { revalidate: 300 } }
+    )
+    if (!res.ok) return null
+    const data = await res.json()
+    const meta = data?.chart?.result?.[0]?.meta
+    if (!meta) return null
+
+    const price = meta.regularMarketPrice ?? 0
+    const prevClose = meta.previousClose ?? price
+
+    return {
+      id:             crypto.randomUUID(),
+      symbol,
+      price,
+      change_24h:     price - prevClose,
+      change_pct_24h: prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : 0,
+      volume_24h:     meta.regularMarketVolume ?? 0,
+      high_24h:       meta.regularMarketDayHigh ?? price,
+      low_24h:        meta.regularMarketDayLow ?? price,
+      open_24h:       meta.regularMarketOpen ?? prevClose,
+      market_cap:     null,
+      source:         'yahoo',
+      fetched_at:     new Date().toISOString(),
+    }
+  } catch {
+    return null
+  }
+}
+
 // ─── Aggregate Fetch (used by cron) ───────────────────────────────────────────
 
 export async function fetchAllMarketData(): Promise<MarketData[]> {
   const results: MarketData[] = []
 
-  // Fetch crypto from Binance (fastest, most reliable)
+  // Fetch crypto from Binance (fast, reliable)
   const cryptoSymbols = Object.keys(BINANCE_SYMBOLS)
   const cryptoData = await Promise.allSettled(
     cryptoSymbols.map(sym => fetchBinanceTicker(sym))
   )
   cryptoData.forEach(r => {
+    if (r.status === 'fulfilled' && r.value) results.push(r.value)
+  })
+
+  // Fetch commodities from Yahoo
+  const commodityFetches = Object.entries(YAHOO_SYMBOLS).map(([sym, yahoo]) =>
+    fetchYahooPrice(sym, yahoo)
+  )
+  const commodityData = await Promise.allSettled(commodityFetches)
+  commodityData.forEach(r => {
     if (r.status === 'fulfilled' && r.value) results.push(r.value)
   })
 

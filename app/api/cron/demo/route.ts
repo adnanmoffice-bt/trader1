@@ -100,7 +100,7 @@ export async function GET(req: NextRequest) {
       .order('timestamp', { ascending: false })
       .limit(200)
 
-    if (!candles || candles.length < 50) continue
+    if (!candles || candles.length < 30) continue
 
     const ohlcv: OHLCV[] = candles.reverse().map(c => ({
       timestamp: new Date(c.timestamp).getTime(),

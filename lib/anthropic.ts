@@ -9,36 +9,42 @@ interface CallAgentOptions {
   user: string
   maxTokens?: number
   expectJson?: boolean
+  timeoutMs?: number
 }
 
-/**
- * Call Claude with a system + user prompt.
- * If expectJson=true, strips code fences and parses JSON.
- */
 export async function callAgent<T = string>(opts: CallAgentOptions): Promise<T> {
-  const { system, user, maxTokens = 1024, expectJson = false } = opts
+  const { system, user, maxTokens = 1024, expectJson = false, timeoutMs = 25_000 } = opts
 
-  const response = await client.messages.create({
-    model: MODEL,
-    max_tokens: maxTokens,
-    system,
-    messages: [{ role: 'user', content: user }],
-  })
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
 
-  const text = response.content
-    .filter(b => b.type === 'text')
-    .map(b => b.text)
-    .join('')
+  try {
+    const response = await client.messages.create(
+      {
+        model: MODEL,
+        max_tokens: maxTokens,
+        system,
+        messages: [{ role: 'user', content: user }],
+      },
+      { signal: controller.signal }
+    )
 
-  if (!expectJson) return text as T
+    const text = response.content
+      .filter(b => b.type === 'text')
+      .map(b => b.text)
+      .join('')
 
-  // Strip markdown code fences if present
-  const clean = text
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```\s*$/i, '')
-    .trim()
+    if (!expectJson) return text as T
 
-  return JSON.parse(clean) as T
+    const clean = text
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```\s*$/i, '')
+      .trim()
+
+    return JSON.parse(clean) as T
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 export { client as anthropic }

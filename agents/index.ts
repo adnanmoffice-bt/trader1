@@ -30,121 +30,153 @@ export async function runOrchestrator(): Promise<void> {
     .select('*', { count: 'exact', head: true })
     .eq('is_demo', false)
 
-  for (const instrument of INSTRUMENTS) {
-    try {
-      // Fetch candles from price_history
-      const { data: candles } = await db
-        .from('price_history')
-        .select('*')
-        .eq('symbol', instrument)
-        .eq('interval', '1h')
-        .order('timestamp', { ascending: false })
-        .limit(200)
+  // Process all instruments in PARALLEL (not sequential) for speed
+  const results = await Promise.allSettled(
+    INSTRUMENTS.map(instrument => withTimeout(
+      processInstrument(db, instrument, portfolio, openCount ?? 0),
+      55_000, // 55s max per instrument
+      `${instrument} timed out`
+    ))
+  )
 
-      if (!candles || candles.length < 50) {
-        await log(db, 'orchestrator', 'warn', `${instrument}: insufficient candle data`)
-        continue
-      }
+  const summary = results.map((r, i) => {
+    const sym = INSTRUMENTS[i]
+    if (r.status === 'fulfilled') return `${sym}: ${r.value}`
+    return `${sym}: ERROR ${r.reason}`
+  })
 
-      const ohlcv: OHLCV[] = candles.reverse().map(c => ({
-        timestamp: new Date(c.timestamp).getTime(),
-        open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume,
-      }))
+  await log(db, 'orchestrator', 'ok', `Pipeline complete — ${summary.join(' | ')}`)
+}
 
-      const ind = computeIndicators(ohlcv)
-      const tech = technicalScore(ind)
+async function processInstrument(
+  db: ReturnType<typeof createServiceSupabase>,
+  instrument: Instrument,
+  portfolio: { capital: number; available_capital: number } | null,
+  openCount: number
+): Promise<string> {
+  const { data: candles } = await db
+    .from('price_history')
+    .select('*')
+    .eq('symbol', instrument)
+    .eq('interval', '1h')
+    .order('timestamp', { ascending: false })
+    .limit(200)
 
-      // Run market analyst
-      const sentiment = await runMarketAnalyst(db, instrument)
+  if (!candles || candles.length < 30) {
+    await log(db, 'orchestrator', 'warn', `${instrument}: insufficient candle data (${candles?.length ?? 0})`)
+    return `skip (${candles?.length ?? 0} candles)`
+  }
 
-      const context: AgentContext = {
-        instrument,
-        current_price:      ind.current_price,
-        ohlcv_1h:           ohlcv.slice(-48),
-        ohlcv_4h:           ohlcv.slice(-48).filter((_, i) => i % 4 === 0),
-        rsi:                ind.rsi,
-        macd:               ind.macd,
-        bb:                 ind.bb,
-        ema_20:             ind.ema_20,
-        ema_50:             ind.ema_50,
-        ema_200:            ind.ema_200,
-        atr:                ind.atr,
-        volume_ratio:       ind.volume_ratio,
-        news_sentiment:     sentiment,
-        fear_greed_index:   50, // fetched separately
-        portfolio_capital:  portfolio?.available_capital ?? 5000,
-        open_positions_count: openCount ?? 0,
-        max_positions:      3,
-      }
+  const ohlcv: OHLCV[] = candles.reverse().map(c => ({
+    timestamp: new Date(c.timestamp).getTime(),
+    open: Number(c.open), high: Number(c.high), low: Number(c.low),
+    close: Number(c.close), volume: Number(c.volume),
+  }))
 
-      // Run signal generator
-      const signalOut = await runSignalGenerator(context)
+  const ind = computeIndicators(ohlcv)
+  const tech = technicalScore(ind)
 
-      if (signalOut.confidence < 65 || signalOut.direction === 'hold') {
-        await log(db, 'orchestrator', 'info', `${instrument}: HOLD (conf ${signalOut.confidence}%)`)
-        continue
-      }
+  // Run market analyst + signal generator in parallel
+  const [sentiment, signalOut] = await Promise.all([
+    runMarketAnalyst(db, instrument),
+    runSignalGenerator({
+      instrument,
+      current_price:      ind.current_price,
+      ohlcv_1h:           ohlcv.slice(-48),
+      ohlcv_4h:           ohlcv.slice(-48).filter((_, i) => i % 4 === 0),
+      rsi:                ind.rsi,
+      macd:               ind.macd,
+      bb:                 ind.bb,
+      ema_20:             ind.ema_20,
+      ema_50:             ind.ema_50,
+      ema_200:            ind.ema_200,
+      atr:                ind.atr,
+      volume_ratio:       ind.volume_ratio,
+      news_sentiment:     'neutral',
+      fear_greed_index:   50,
+      portfolio_capital:  portfolio?.available_capital ?? 5000,
+      open_positions_count: openCount,
+      max_positions:      3,
+    }),
+  ])
 
-      // Risk check
-      const approved = await runRiskManager(signalOut, context)
-      if (!approved) {
-        await log(db, 'orchestrator', 'warn', `${instrument}: rejected by risk manager`)
-        continue
-      }
+  if (signalOut.confidence < 65 || signalOut.direction === 'hold') {
+    await log(db, 'orchestrator', 'info', `${instrument}: HOLD (conf ${signalOut.confidence}%)`)
+    return `HOLD conf:${signalOut.confidence}%`
+  }
 
-      // Save signal
-      const { data: saved } = await db.from('signals').insert({
-        instrument: signalOut.instrument,
-        direction:  signalOut.direction,
-        entry_price:   signalOut.entry_price,
-        stop_loss:     signalOut.stop_loss,
-        take_profit_1: signalOut.take_profit_1,
-        take_profit_2: signalOut.take_profit_2,
-        confidence:    signalOut.confidence,
-        risk_reward:   signalOut.risk_reward,
-        reasoning:     signalOut.reasoning,
-        ai_analysis:   signalOut.ai_analysis,
-        news_sentiment: sentiment,
-        technical_score: tech.score,
-        status: 'active',
-      }).select().single()
+  const approved = await runRiskManager(signalOut, {
+    instrument,
+    current_price: ind.current_price,
+    ohlcv_1h: ohlcv.slice(-48),
+    ohlcv_4h: ohlcv.slice(-48).filter((_, i) => i % 4 === 0),
+    rsi: ind.rsi, macd: ind.macd, bb: ind.bb,
+    ema_20: ind.ema_20, ema_50: ind.ema_50, ema_200: ind.ema_200,
+    atr: ind.atr, volume_ratio: ind.volume_ratio,
+    news_sentiment: sentiment, fear_greed_index: 50,
+    portfolio_capital: portfolio?.available_capital ?? 5000,
+    open_positions_count: openCount, max_positions: 3,
+  })
 
-      if (saved) {
-        await sendSignalAlert(saved as Signal)
-        await log(db, 'orchestrator', 'ok', `${instrument}: signal saved & sent — ${signalOut.direction.toUpperCase()} conf ${signalOut.confidence}%`)
+  if (!approved) {
+    await log(db, 'orchestrator', 'warn', `${instrument}: rejected by risk manager`)
+    return 'rejected'
+  }
 
-        // AUTO-EXECUTE on Binance if configured
-        if (binance.isConfigured() && signalOut.entry_price && signalOut.stop_loss) {
-          try {
-            const capitalUsd = (portfolio?.available_capital ?? 5000) / binance.USD_AED
-            const tradeSize = capitalUsd * binance.MAX_RISK_PCT
-            const userId = 'auto-trader'
+  const { data: saved } = await db.from('signals').insert({
+    instrument: signalOut.instrument,
+    direction:  signalOut.direction,
+    entry_price:   signalOut.entry_price,
+    stop_loss:     signalOut.stop_loss,
+    take_profit_1: signalOut.take_profit_1,
+    take_profit_2: signalOut.take_profit_2,
+    confidence:    signalOut.confidence,
+    risk_reward:   signalOut.risk_reward,
+    reasoning:     signalOut.reasoning,
+    ai_analysis:   signalOut.ai_analysis,
+    news_sentiment: sentiment,
+    technical_score: tech.score,
+    status: 'active',
+  }).select().single()
 
-            if (signalOut.direction === 'long') {
-              const result = await binance.executeBuy(instrument, tradeSize, userId, saved.id)
-              if (result) {
-                await log(db, 'orchestrator', 'ok',
-                  `AUTO-EXEC: BUY ${instrument} $${tradeSize.toFixed(0)} @ $${result.avgPrice.toFixed(2)}`)
-                if (signalOut.stop_loss && signalOut.take_profit_1) {
-                  await binance.setStopLossAndTakeProfit(
-                    instrument, result.executedQty,
-                    signalOut.stop_loss, signalOut.take_profit_1
-                  )
-                }
-              }
+  if (saved) {
+    await sendSignalAlert(saved as Signal).catch(() => {})
+    await log(db, 'orchestrator', 'ok',
+      `${instrument}: signal saved — ${signalOut.direction.toUpperCase()} conf ${signalOut.confidence}%`)
+
+    if (binance.isConfigured() && signalOut.entry_price && signalOut.stop_loss) {
+      try {
+        const capitalUsd = (portfolio?.available_capital ?? 5000) / binance.USD_AED
+        const tradeSize = capitalUsd * binance.MAX_RISK_PCT
+        const userId = 'auto-trader'
+
+        if (signalOut.direction === 'long') {
+          const result = await binance.executeBuy(instrument, tradeSize, userId, saved.id)
+          if (result) {
+            await log(db, 'orchestrator', 'ok',
+              `AUTO-EXEC: BUY ${instrument} $${tradeSize.toFixed(0)} @ $${result.avgPrice.toFixed(2)}`)
+            if (signalOut.stop_loss && signalOut.take_profit_1) {
+              await binance.setStopLossAndTakeProfit(
+                instrument, result.executedQty,
+                signalOut.stop_loss, signalOut.take_profit_1
+              )
             }
-          } catch (execErr) {
-            await log(db, 'orchestrator', 'error', `AUTO-EXEC failed: ${String(execErr)}`)
           }
         }
+      } catch (execErr) {
+        await log(db, 'orchestrator', 'error', `AUTO-EXEC failed: ${String(execErr)}`)
       }
-
-    } catch (err) {
-      await log(db, 'orchestrator', 'error', `${instrument} pipeline error: ${String(err)}`)
     }
   }
 
-  await log(db, 'orchestrator', 'ok', 'Pipeline complete')
+  return `${signalOut.direction.toUpperCase()} conf:${signalOut.confidence}%`
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, msg: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error(msg)), ms)),
+  ])
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

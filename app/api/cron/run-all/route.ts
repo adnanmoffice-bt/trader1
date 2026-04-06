@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { after } from 'next/server'
 import { createServiceSupabase } from '@/lib/supabase'
 import { fetchAllMarketData, fetchBinanceKlines, fetchFearGreed } from '@/lib/price-fetcher'
-import { runOrchestrator } from '@/agents'
-import { runPolymarketScanner } from '@/agents'
 
 export const runtime = 'nodejs'
-export const maxDuration = 300
+export const maxDuration = 60
 
 export async function GET(req: NextRequest) {
   const auth = req.headers.get('authorization')
@@ -16,7 +15,7 @@ export async function GET(req: NextRequest) {
   const db = createServiceSupabase()
   const results: Record<string, string> = {}
 
-  // 1. Market Data
+  // ── Market Data (fast, ~3-5s) ─────────────────────────────────────────────
   try {
     const prices = await fetchAllMarketData()
     if (prices.length) {
@@ -25,10 +24,12 @@ export async function GET(req: NextRequest) {
         { onConflict: 'symbol' }
       )
     }
+
     const candleSymbols = ['BTC/USD', 'ETH/USD'] as const
-    for (const sym of candleSymbols) {
-      const candles = await fetchBinanceKlines(sym, '1h', 5)
-      if (candles.length) {
+    const candleResults = await Promise.allSettled(
+      candleSymbols.map(async (sym) => {
+        const candles = await fetchBinanceKlines(sym, '1h', 5)
+        if (!candles.length) return 0
         await db.from('price_history').upsert(
           candles.map(c => ({
             symbol: sym, open: c.open, high: c.high, low: c.low,
@@ -37,64 +38,39 @@ export async function GET(req: NextRequest) {
           })),
           { onConflict: 'symbol,interval,timestamp' }
         )
-      }
-    }
+        return candles.length
+      })
+    )
+
     const fng = await fetchFearGreed(1)
-    results.market = `${prices.length} prices, F&G: ${fng[0]?.value ?? '?'}`
-  } catch (e) { results.market = `error: ${String(e).slice(0, 60)}` }
+    results.market = `${prices.length} prices, candles OK, F&G: ${fng[0]?.value ?? '?'}`
+  } catch (e) {
+    results.market = `error: ${String(e).slice(0, 80)}`
+  }
 
-  // 2. AI Signals
-  try {
-    await runOrchestrator()
-    results.signals = 'ok'
-  } catch (e) { results.signals = `error: ${String(e).slice(0, 60)}` }
+  // ── Dispatch heavy tasks to separate function invocations ─────────────────
+  const baseUrl = process.env.VERCEL_URL
+    ? `https://${process.env.VERCEL_URL}`
+    : process.env.NEXT_PUBLIC_APP_URL || 'https://trader1-nu.vercel.app'
+  const headers = { Authorization: `Bearer ${process.env.CRON_SECRET}` }
 
-  // 3. Demo trading - check positions
-  try {
-    const { data: session } = await db.from('demo_sessions').select('*')
-      .eq('status', 'running').order('created_at', { ascending: false }).limit(1).single()
-
-    if (session) {
-      const { data: openTrades } = await db.from('demo_trades').select('*')
-        .eq('session_id', session.id).is('exit_time', null)
-
-      let closed = 0
-      for (const trade of openTrades ?? []) {
-        const { data: md } = await db.from('market_data').select('price')
-          .eq('symbol', trade.instrument).single()
-        if (!md) continue
-        const price = Number(md.price)
-        const sl = Number(trade.stop_loss)
-        const tp = Number(trade.take_profit)
-        const entry = Number(trade.entry_price)
-        const qty = Number(trade.quantity)
-        const dir = trade.direction
-
-        const hitSL = (dir === 'long' && price <= sl) || (dir === 'short' && price >= sl)
-        const hitTP = (dir === 'long' && price >= tp) || (dir === 'short' && price <= tp)
-
-        if (hitSL || hitTP) {
-          const exitP = hitSL ? sl : tp
-          const pnl = dir === 'long' ? (exitP - entry) * qty : (entry - exitP) * qty
-          await db.from('demo_trades').update({
-            exit_price: exitP, exit_time: new Date().toISOString(),
-            exit_reason: hitSL ? 'stop_loss' : 'take_profit',
-            pnl, pnl_pct: (pnl / (entry * qty)) * 100, pnl_aed: pnl * 3.6725,
-          }).eq('id', trade.id)
-          closed++
-        }
-      }
-      results.demo = `checked ${openTrades?.length ?? 0} positions, closed ${closed}`
-    } else {
-      results.demo = 'no active session'
+  after(async () => {
+    try {
+      await Promise.allSettled([
+        fetch(`${baseUrl}/api/cron/signals`, { headers }).catch(() => {}),
+        fetch(`${baseUrl}/api/cron/demo`, { headers }).catch(() => {}),
+        fetch(`${baseUrl}/api/cron/polymarket`, { headers }).catch(() => {}),
+      ])
+    } catch {
+      console.error('[run-all] dispatch error')
     }
-  } catch (e) { results.demo = `error: ${String(e).slice(0, 60)}` }
+  })
 
-  // 4. Polymarket
-  try {
-    const pm = await runPolymarketScanner()
-    results.polymarket = `scanned ${pm.scanned}, bets ${pm.bets}`
-  } catch (e) { results.polymarket = `error: ${String(e).slice(0, 60)}` }
+  results.dispatched = 'signals, demo, polymarket'
 
-  return NextResponse.json({ success: true, results, timestamp: new Date().toISOString() })
+  return NextResponse.json({
+    success: true,
+    results,
+    timestamp: new Date().toISOString(),
+  })
 }

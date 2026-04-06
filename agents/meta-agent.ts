@@ -2,6 +2,7 @@ import { callAgent } from '@/lib/anthropic'
 import { createServiceSupabase } from '@/lib/supabase'
 import { sendGroupMessage } from '@/lib/whatsapp'
 import { AGENT_PROMPTS, AGENT_TOKEN_LIMITS, type AgentId } from '@/agents/agent-prompts'
+import type { Instrument } from '@/types'
 
 const ALL_AGENTS: AgentId[] = [
   'macro-agent', 'correlation-agent', 'bull-agent', 'bear-agent',
@@ -396,4 +397,81 @@ Improve the prompt to be more accurate. Keep the methodology but add rigor. Outp
   await sendGroupMessage(waMsg).catch(() => {})
 
   return { actions, report: weeklyReport }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// POST-MEETING BRIEF — Runs after EVERY War Room session (called from war-room.ts)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+interface MeetingOutcome {
+  instrument: Instrument
+  decision: 'executed' | 'rejected' | 'blocked'
+  direction?: string
+  entry?: number
+  sl?: number
+  tp?: number
+  rr?: number
+  votesFor: number
+  votesAgainst: number
+  trigger?: string
+  agentStances: { agent: string; stance: 'bull' | 'bear' | 'neutral' }[]
+}
+
+export async function runPostMeetingBrief(outcome: MeetingOutcome): Promise<void> {
+  const db = createServiceSupabase()
+
+  // Quick agent accuracy lookup from recent scores
+  const { data: recentScores } = await db.from('agent_knowledge')
+    .select('agent_id, metadata')
+    .eq('type', 'score')
+    .order('created_at', { ascending: false })
+    .limit(12)
+
+  const accMap: Record<string, number> = {}
+  for (const s of recentScores ?? []) {
+    const meta = s.metadata as { accuracy?: number } | null
+    if (meta?.accuracy !== undefined && !accMap[s.agent_id]) accMap[s.agent_id] = meta.accuracy
+  }
+
+  // Count consensus
+  const bulls = outcome.agentStances.filter(a => a.stance === 'bull').length
+  const bears = outcome.agentStances.filter(a => a.stance === 'bear').length
+  const consensusStrength = Math.max(bulls, bears) >= 8 ? '💪 Strong' : Math.max(bulls, bears) >= 6 ? '🤝 Moderate' : '⚖️ Split'
+
+  // Best/worst performing agents in this session (based on historical accuracy)
+  const topAgent = outcome.agentStances
+    .filter(a => accMap[a.agent] !== undefined)
+    .sort((a, b) => (accMap[b.agent] ?? 0) - (accMap[a.agent] ?? 0))[0]
+  const weakAgent = outcome.agentStances
+    .filter(a => accMap[a.agent] !== undefined)
+    .sort((a, b) => (accMap[a.agent] ?? 100) - (accMap[b.agent] ?? 100))[0]
+
+  let msg: string
+
+  if (outcome.decision === 'executed') {
+    msg =
+      `🧬 META — ${outcome.instrument} ${outcome.direction?.toUpperCase()}\n\n` +
+      `✅ TRADE TAKEN\n` +
+      `📍 Entry: $${outcome.entry?.toFixed(2) ?? '?'}\n` +
+      `🛑 SL: $${outcome.sl?.toFixed(2) ?? '?'} | 🎯 TP: $${outcome.tp?.toFixed(2) ?? '?'}\n` +
+      `📊 R:R ${outcome.rr?.toFixed(1) ?? '?'}:1\n` +
+      `🗳 Vote: ${outcome.votesFor} FOR / ${outcome.votesAgainst} AGAINST (${consensusStrength})\n` +
+      `⚡ Trigger: ${outcome.trigger ?? 'N/A'}\n` +
+      (topAgent ? `\n🏆 Most reliable: ${AGENT_NAMES[topAgent.agent]} (${accMap[topAgent.agent]}% acc)` : '') +
+      (weakAgent && (accMap[weakAgent.agent] ?? 100) < 55 ? `\n⚠️ Watch: ${AGENT_NAMES[weakAgent.agent]} (${accMap[weakAgent.agent]}% acc)` : '')
+  } else if (outcome.decision === 'rejected') {
+    msg =
+      `🧬 META — ${outcome.instrument}\n\n` +
+      `❌ TRADE REJECTED\n` +
+      `🗳 Vote: ${outcome.votesFor} FOR / ${outcome.votesAgainst} AGAINST\n` +
+      `${consensusStrength} consensus against.\n` +
+      `⚡ Trigger was: ${outcome.trigger ?? 'N/A'}`
+  } else {
+    msg =
+      `🧬 META — ${outcome.instrument}\n\n` +
+      `🚫 BLOCKED by risk controls\n` +
+      `⚡ Trigger: ${outcome.trigger ?? 'N/A'}`
+  }
+
+  await sendGroupMessage(msg).catch(() => {})
 }

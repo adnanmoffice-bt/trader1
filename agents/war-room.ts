@@ -6,6 +6,7 @@ import { notifySignal as waSignal, notifyWarRoomDecision as waDecision, notifyWa
 import { checkSafety } from '@/lib/safety'
 import { hardRiskCheck, checkDailyLossLimit, getTradeStats, riskBasedPositionSize } from '@/lib/risk-controls'
 import { AGENT_PROMPTS, AGENT_TOKEN_LIMITS, type AgentId, type PromptContext } from '@/agents/agent-prompts'
+import { runPostMeetingBrief } from '@/agents/meta-agent'
 import type { Instrument, OHLCV, Signal } from '@/types'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -235,6 +236,15 @@ async function runMeeting(db: ReturnType<typeof createServiceSupabase>, meetingI
     data: { execute: isExecute, trigger, direction: triggerDir, votesFor: voteFor, votesAgainst: voteAgainst, agentCount: 12 },
   })
 
+  // Build agent stances for meta-agent brief
+  const agentStances = conv
+    .filter(m => m.role === 'speak' && m.agent !== 'orchestrator')
+    .map(m => {
+      const b = /bullish|long|buy|support|for|approve|execute/i.test(m.message)
+      const br = /bearish|short|sell|reject|against|caution|risk/i.test(m.message)
+      return { agent: m.agent, stance: (b && !br ? 'bull' : br && !b ? 'bear' : 'neutral') as 'bull' | 'bear' | 'neutral' }
+    })
+
   // Execute if approved — but must pass hard risk checks first
   if (isExecute && triggerDir) {
     const slMult = 2.5
@@ -256,6 +266,7 @@ async function runMeeting(db: ReturnType<typeof createServiceSupabase>, meetingI
         message: `BLOCKED by risk rules: ${riskCheck.reason}. Meeting closed.`,
       })
       await waBlocked({ instrument, reason: riskCheck.reason, blocker: 'Risk Manager' }).catch(() => {})
+      await runPostMeetingBrief({ instrument, decision: 'blocked', votesFor: voteFor, votesAgainst: voteAgainst, trigger: allTriggers ?? trigger, agentStances }).catch(() => {})
       return 'blocked'
     }
 
@@ -271,6 +282,7 @@ async function runMeeting(db: ReturnType<typeof createServiceSupabase>, meetingI
         message: `BLOCKED by daily loss limit. Meeting closed.`,
       })
       await waBlocked({ instrument, reason: dailyCheck.reason, blocker: 'Daily Loss Limit' }).catch(() => {})
+      await runPostMeetingBrief({ instrument, decision: 'blocked', votesFor: voteFor, votesAgainst: voteAgainst, trigger: allTriggers ?? trigger, agentStances }).catch(() => {})
       return 'blocked'
     }
 
@@ -285,6 +297,7 @@ async function runMeeting(db: ReturnType<typeof createServiceSupabase>, meetingI
         message: `BLOCKED by backtest validation. Meeting closed.`,
       })
       await waBlocked({ instrument, reason: `Backtest failed: ${bt.wins}W/${bt.losses}L (${(bt.winRate * 100).toFixed(0)}%)`, blocker: 'Backtest Validation' }).catch(() => {})
+      await runPostMeetingBrief({ instrument, decision: 'blocked', votesFor: voteFor, votesAgainst: voteAgainst, trigger: allTriggers ?? trigger, agentStances }).catch(() => {})
       return 'blocked'
     }
 
@@ -321,6 +334,7 @@ async function runMeeting(db: ReturnType<typeof createServiceSupabase>, meetingI
     await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
       message: `EXECUTED: ${triggerDir.toUpperCase()} ${instrument} @ $${f(entry)} | SL:$${f(sl)} TP:$${f(tp)} R:R ${rr}x | Vote: ${voteFor}-${voteAgainst} | BT:${bt.wins}W/${bt.losses}L | Kelly:${(stats.kellyFraction * 100).toFixed(1)}%. Meeting closed.`,
     })
+    await runPostMeetingBrief({ instrument, decision: 'executed', direction: triggerDir, entry, sl, tp, rr, votesFor: voteFor, votesAgainst: voteAgainst, trigger: allTriggers ?? trigger, agentStances }).catch(() => {})
     return 'executed'
   } else {
     await waDecision({
@@ -332,6 +346,7 @@ async function runMeeting(db: ReturnType<typeof createServiceSupabase>, meetingI
     await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
       message: `REJECTED: No trade on ${instrument}. Vote: ${voteFor} for, ${voteAgainst} against. Meeting closed.`,
     })
+    await runPostMeetingBrief({ instrument, decision: 'rejected', votesFor: voteFor, votesAgainst: voteAgainst, trigger: allTriggers ?? trigger, agentStances }).catch(() => {})
     return 'rejected'
   }
 }

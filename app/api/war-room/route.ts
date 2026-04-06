@@ -3,14 +3,15 @@ import { createServiceSupabase } from '@/lib/supabase'
 
 export async function GET(req: NextRequest) {
   const db = createServiceSupabase()
-  const limit = parseInt(req.nextUrl.searchParams.get('limit') ?? '10')
+  const limit = parseInt(req.nextUrl.searchParams.get('limit') ?? '50')
 
-  // Try war_room_messages table first
+  // Get meetings that have actual debates (more than 2 messages = full meeting)
+  // First get distinct meeting_ids with decisions or many messages
   const { data: wrData, error: wrErr } = await db
     .from('war_room_messages')
     .select('*')
     .order('created_at', { ascending: false })
-    .limit(300)
+    .limit(2000)
 
   if (!wrErr && wrData && wrData.length > 0) {
     const meetingMap = new Map<string, typeof wrData>()
@@ -21,10 +22,18 @@ export async function GET(req: NextRequest) {
     const meetings = Array.from(meetingMap.entries()).map(([id, msgs]) => ({
       id, instrument: msgs[0]?.instrument ?? '—', messageCount: msgs.length,
       startedAt: msgs[msgs.length - 1]?.created_at,
-      decision: msgs.find(m => m.role === 'decision')?.message ?? 'No decision',
+      decision: msgs.find(m => m.role === 'decision')?.message ?? msgs.find(m => m.role === 'close')?.message ?? 'No decision',
+      hasDebate: msgs.length > 3,
       messages: msgs.reverse(),
-    })).slice(0, limit)
-    return NextResponse.json({ data: wrData, meetings, success: true })
+    }))
+    // Sort: debates first (by date desc), then quick scans
+    .sort((a, b) => {
+      if (a.hasDebate && !b.hasDebate) return -1
+      if (!a.hasDebate && b.hasDebate) return 1
+      return new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()
+    })
+    .slice(0, limit)
+    return NextResponse.json({ data: meetings.flatMap(m => m.messages), meetings, success: true })
   }
 
   // Fallback: read from agent_logs where War Room messages were stored

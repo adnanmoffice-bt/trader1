@@ -3,11 +3,14 @@
 export type Instrument =
   | 'BTC/USD'
   | 'ETH/USD'
+  | 'SOL/USD'
+  | 'BNB/USD'
   | 'BRENT'
   | 'WTI'
   | 'XAU/USD'
   | 'XAG/USD'
   | 'SPY'
+  | 'QQQ'
   | 'EUR/USD'
   | 'USD/JPY'
 

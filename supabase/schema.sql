@@ -284,6 +284,26 @@ CREATE POLICY "public_read_poly_bets" ON polymarket_bets FOR SELECT USING (true)
 CREATE POLICY "service_write_poly_bets" ON polymarket_bets FOR ALL USING (auth.role() = 'service_role');
 ALTER PUBLICATION supabase_realtime ADD TABLE polymarket_bets;
 
+-- ─── War Room Messages ──────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS war_room_messages (
+  id          UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  meeting_id  UUID NOT NULL,
+  agent       VARCHAR(30) NOT NULL,
+  role        VARCHAR(20) NOT NULL CHECK (role IN ('speak','question','decision','alert','open','close')),
+  message     TEXT NOT NULL,
+  data        JSONB,
+  instrument  VARCHAR(20),
+  created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_warroom_meeting ON war_room_messages(meeting_id, created_at);
+CREATE INDEX idx_warroom_created ON war_room_messages(created_at DESC);
+ALTER TABLE war_room_messages ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "public_read_warroom" ON war_room_messages FOR SELECT USING (true);
+CREATE POLICY "service_write_warroom" ON war_room_messages FOR ALL USING (auth.role() = 'service_role');
+ALTER PUBLICATION supabase_realtime ADD TABLE war_room_messages;
+
 -- ─── Portfolio Update RPC ─────────────────────────────────────────────────────
 
 CREATE OR REPLACE FUNCTION update_portfolio_on_close(

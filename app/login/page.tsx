@@ -71,11 +71,7 @@ export default function LoginPage() {
             {loading ? 'Prijava...' : 'Prijavi se'}
           </button>
 
-          <div className="mt-4 text-center">
-            <a href="/register" className="text-[11px] text-[#44446a] hover:text-[#00ccff] transition-colors">
-              Nemas racun? Registruj se
-            </a>
-          </div>
+          
         </form>
 
         <div className="mt-6 text-center text-[9px] text-[#44446a]">

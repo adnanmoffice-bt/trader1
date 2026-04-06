@@ -304,31 +304,138 @@ function DemoPanel({ demoData }: { demoData: { session: Record<string, unknown> 
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// AGENT LOG
+// LIVE BLOG — Narrative feed of what agents are doing and why
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function AgentLog({ logs }: { logs: Array<Record<string, unknown>> }) {
-  const dotColor: Record<string, string> = { ok: 'bg-[#00ffa3]', warn: 'bg-[#ffcc00]', error: 'bg-[#ff3366]', info: 'bg-[#44446a]' }
-  const tagColor: Record<string, string> = {
-    'orchestrator': 'text-[#9966ff]', 'market-analyst': 'text-[#4d88ff]',
-    'risk-manager': 'text-[#ffcc00]', 'polymarket-scanner': 'text-[#00ccff]',
-    'trade-reviewer': 'text-[#00ccff]',
+const AGENT_META: Record<string, { icon: string; name: string; color: string; desc: string }> = {
+  'orchestrator':        { icon: '🧠', name: 'Orchestrator',       color: '#9966ff', desc: 'Master AI that coordinates all trading agents' },
+  'market-analyst':      { icon: '📰', name: 'Market Analyst',     color: '#4d88ff', desc: 'Reads news, analyzes market sentiment' },
+  'signal-generator':    { icon: '🎯', name: 'Signal Generator',   color: '#00ffa3', desc: 'Technical analysis → trade signals' },
+  'risk-manager':        { icon: '🛡️', name: 'Risk Manager',       color: '#ffcc00', desc: 'Validates R:R, position sizing, exposure' },
+  'trade-reviewer':      { icon: '📊', name: 'Trade Reviewer',     color: '#00ccff', desc: 'End-of-day performance analysis' },
+  'polymarket-scanner':  { icon: '🔮', name: 'Polymarket Scanner', color: '#ff66cc', desc: 'AI prediction market analysis' },
+}
+
+function narratize(agent: string, level: string, message: string): { headline: string; detail: string; type: 'action' | 'analysis' | 'decision' | 'result' } {
+  const msg = message
+
+  // Orchestrator
+  if (agent === 'orchestrator' && msg.includes('Pipeline started')) {
+    return { headline: 'Trading pipeline started', detail: 'Scanning all instruments for opportunities using technical indicators + AI sentiment analysis.', type: 'action' }
   }
+  if (agent === 'orchestrator' && msg.includes('Pipeline complete')) {
+    const parts = msg.split('—')[1]?.trim() ?? msg
+    return { headline: 'Pipeline scan complete', detail: `Results: ${parts}. Each instrument was analyzed for RSI, MACD, Bollinger Bands, EMA crossovers, and volume.`, type: 'result' }
+  }
+  if (agent === 'orchestrator' && msg.includes('HOLD')) {
+    const match = msg.match(/(\w+\/?\w*): HOLD \(conf (\d+)%\)/)
+    if (match) return { headline: `${match[1]}: No trade — HOLD`, detail: `Confidence only ${match[2]}% (need 65%+). Indicators don't show clear direction. Waiting for stronger setup.`, type: 'decision' }
+  }
+  if (agent === 'orchestrator' && msg.includes('signal saved')) {
+    const match = msg.match(/(\w+\/?\w*): signal saved.*?(\w+)\s+conf\s*(\d+)%/)
+    if (match) return { headline: `${match[2].toUpperCase()} signal generated for ${match[1]}`, detail: `AI confidence: ${match[3]}%. Signal saved and sent to Telegram. Waiting for price to reach entry level.`, type: 'action' }
+  }
+  if (agent === 'orchestrator' && msg.includes('insufficient')) {
+    return { headline: `Skipping — not enough historical data`, detail: msg + '. Need at least 30 hourly candles for reliable indicator calculation.', type: 'analysis' }
+  }
+
+  // Risk Manager
+  if (agent === 'risk-manager' && msg.includes('approved')) {
+    const match = msg.match(/(\w+\/?\w*):.*?(\w+)\s+conf:(\d+)%\s+R:R:([0-9.]+)/)
+    if (match) return { headline: `Risk approved: ${match[2].toUpperCase()} ${match[1]}`, detail: `Confidence ${match[3]}%, Risk:Reward ${match[4]}x. Position size within limits, stop loss acceptable.`, type: 'decision' }
+  }
+  if (agent === 'risk-manager' && msg.includes('rejected')) {
+    return { headline: `Trade rejected by risk manager`, detail: msg.replace(/.*?:/, '').trim() + ' — protecting capital from unfavorable setup.', type: 'decision' }
+  }
+
+  // Market Analyst
+  if (agent === 'market-analyst') {
+    const match = msg.match(/(\w+\/?\w*): (\w+) — (.+)/)
+    if (match) return { headline: `${match[1]} sentiment: ${match[2].toUpperCase()}`, detail: `AI analysis: "${match[3]}"`, type: 'analysis' }
+  }
+
+  // Polymarket
+  if (agent === 'polymarket-scanner' && msg.includes('Scanning')) {
+    return { headline: 'Scanning prediction markets', detail: 'AI is analyzing Polymarket events for mispriced probabilities where our model disagrees with the market.', type: 'action' }
+  }
+  if (agent === 'polymarket-scanner' && msg.includes('Found')) {
+    return { headline: msg, detail: 'Filtering for markets with >$10K volume, between 5%-95% probability. Only betting when AI edge > 15%.', type: 'analysis' }
+  }
+  if (agent === 'polymarket-scanner' && msg.includes('Scan complete')) {
+    const match = msg.match(/(\d+) markets.*?(\d+) bets/)
+    if (match) return { headline: `Polymarket scan done: ${match[1]} markets, ${match[2]} bets`, detail: match[2] === '0' ? 'No markets with sufficient AI edge (>15%) found. Preserving capital.' : `Placed ${match[2]} bets where AI probability differs significantly from market.`, type: 'result' }
+  }
+  if (agent === 'polymarket-scanner' && msg.includes('Market:')) {
+    const match = msg.match(/"(.+?)"\s+Market:(\d+)%\s+AI:(\d+)%\s+Edge:([0-9.]+)%/)
+    if (match) {
+      const edge = parseFloat(match[4])
+      const action = edge >= 15 ? 'BETTING — edge is significant!' : edge >= 8 ? 'Watching — close to threshold' : 'Skipping — edge too small'
+      return { headline: `"${match[1]}"`, detail: `Market says ${match[2]}%, AI estimates ${match[3]}% — Edge: ${match[4]}%. ${action}`, type: 'analysis' }
+    }
+  }
+  if (agent === 'polymarket-scanner' && msg.includes('BET:')) {
+    return { headline: 'Bet placed on Polymarket!', detail: msg.replace('BET: ', ''), type: 'action' }
+  }
+
+  // Default
+  return {
+    headline: msg.slice(0, 80),
+    detail: msg.length > 80 ? msg.slice(80) : '',
+    type: level === 'error' ? 'decision' : level === 'ok' ? 'result' : 'analysis'
+  }
+}
+
+function LiveBlog({ logs }: { logs: Array<Record<string, unknown>> }) {
+  const typeStyles = {
+    action:   { bg: 'bg-[rgba(0,204,255,0.04)]', border: 'border-l-[#00ccff]', label: 'ACTION', labelBg: 'bg-[rgba(0,204,255,0.12)] text-[#00ccff]' },
+    analysis: { bg: 'bg-transparent',              border: 'border-l-[#44446a]', label: 'ANALIZA', labelBg: 'bg-[#141428] text-[#7878aa]' },
+    decision: { bg: 'bg-[rgba(255,204,0,0.03)]',   border: 'border-l-[#ffcc00]', label: 'ODLUKA', labelBg: 'bg-[rgba(255,204,0,0.1)] text-[#ffcc00]' },
+    result:   { bg: 'bg-[rgba(0,255,163,0.03)]',   border: 'border-l-[#00ffa3]', label: 'REZULTAT', labelBg: 'bg-[rgba(0,255,163,0.1)] text-[#00ffa3]' },
+  }
+
   return (
     <div>
-      {logs.slice(0, 30).map((log, i) => (
-        <div key={i} className="flex items-start gap-1.5 px-2 py-1 border-b border-[#0f0f1e] hover:bg-[#0f0f1e]">
-          <div className={cn('w-1.5 h-1.5 rounded-full mt-1 flex-shrink-0', dotColor[String(log.level)] ?? 'bg-[#44446a]')} />
-          <span className="text-[8px] text-[#44446a] mono w-10 flex-shrink-0">
-            {log.created_at ? new Date(String(log.created_at)).toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit' }) : ''}
-          </span>
-          <span className={cn('text-[8px] font-bold flex-shrink-0 w-6', tagColor[String(log.agent)] ?? 'text-[#44446a]')}>
-            {String(log.agent ?? '').split('-').map((w: string) => w[0]?.toUpperCase() ?? '').join('')}
-          </span>
-          <span className="text-[9px] text-[#7878aa] leading-tight">{String(log.message ?? '').slice(0, 100)}</span>
+      {logs.slice(0, 40).map((log, i) => {
+        const agent = String(log.agent ?? '')
+        const level = String(log.level ?? 'info')
+        const message = String(log.message ?? '')
+        const meta = AGENT_META[agent] ?? { icon: '⚡', name: agent, color: '#44446a', desc: '' }
+        const { headline, detail, type } = narratize(agent, level, message)
+        const style = typeStyles[type]
+        const time = log.created_at
+          ? new Date(String(log.created_at)).toLocaleTimeString('en', { timeZone: 'Asia/Dubai', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+          : ''
+
+        return (
+          <div key={i} className={cn('flex gap-3 px-4 py-2.5 border-b border-[#0f0f1e] border-l-2 transition-colors hover:bg-[#0a0a16]', style.bg, style.border)}>
+            {/* Timeline dot + time */}
+            <div className="flex flex-col items-center gap-0.5 flex-shrink-0 w-16">
+              <span className="text-[9px] mono text-[#44446a]">{time}</span>
+              <span className="text-sm">{meta.icon}</span>
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 mb-0.5">
+                <span className="text-[8px] font-bold tracking-wider" style={{ color: meta.color }}>{meta.name}</span>
+                <span className={cn('text-[7px] font-black px-1.5 py-0.5 rounded tracking-wider', style.labelBg)}>{style.label}</span>
+                {level === 'error' && <span className="text-[7px] font-black px-1.5 py-0.5 rounded bg-[rgba(255,51,102,0.15)] text-[#ff3366]">ERROR</span>}
+              </div>
+              <div className="text-[11px] font-semibold text-[#e2e2f5] leading-snug">{headline}</div>
+              {detail && <div className="text-[10px] text-[#7878aa] leading-snug mt-0.5">{detail}</div>}
+            </div>
+          </div>
+        )
+      })}
+      {logs.length === 0 && (
+        <div className="flex items-center justify-center py-8 text-[#44446a]">
+          <div className="text-center">
+            <div className="text-xl mb-2">📡</div>
+            <div className="text-[11px] font-bold">Live Blog</div>
+            <div className="text-[10px] mt-1">Waiting for agent activity... Cron runs every 30 min.</div>
+          </div>
         </div>
-      ))}
-      {logs.length === 0 && <div className="text-center py-4 text-[#44446a] text-[9px]">Cekam agent aktivnost...</div>}
+      )}
     </div>
   )
 }
@@ -527,16 +634,16 @@ function Terminal() {
       </div>
 
       {/* ═══ MAIN GRID ═══ */}
-      <div className="flex-1 flex flex-col xl:grid xl:grid-cols-[1fr_340px] xl:grid-rows-[1fr_280px] gap-px bg-[#1a1a2e]/50 overflow-auto xl:overflow-hidden min-h-0">
+      <div className="flex-1 flex flex-col xl:grid xl:grid-cols-[1fr_320px] xl:grid-rows-[1fr_1fr] gap-px bg-[#1a1a2e]/50 overflow-auto xl:overflow-hidden min-h-0">
 
-        {/* CHART PANEL */}
-        <div className="bg-[#07070f] overflow-hidden min-h-[300px] xl:min-h-0">
+        {/* CHART PANEL (top-left) */}
+        <div className="bg-[#07070f] overflow-hidden min-h-[280px] xl:min-h-0">
           <CandlestickChart candles={candles} symbol={selectedSym} />
         </div>
 
-        {/* RIGHT SIDEBAR: Market Data + Signals */}
-        <div className="grid grid-rows-[auto_1fr] gap-px bg-[#1a1a2e]/50 overflow-hidden min-h-[300px] xl:min-h-0">
-          <Panel title="Market Data" icon="📊" badge={Object.keys(prices).length} className="max-h-[240px]">
+        {/* RIGHT TOP: Market Data + Signals */}
+        <div className="grid grid-rows-[auto_1fr] gap-px bg-[#1a1a2e]/50 overflow-hidden min-h-[260px] xl:min-h-0">
+          <Panel title="Market Data" icon="📊" badge={Object.keys(prices).length} className="max-h-[200px]">
             <MarketTable prices={prices} selected={selectedSym} onSelect={setSelectedSym} />
           </Panel>
           <Panel title="AI Signali" icon="🎯" badge={signals.length}>
@@ -544,20 +651,20 @@ function Terminal() {
           </Panel>
         </div>
 
-        {/* BOTTOM-LEFT: Demo + Polymarket */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-px bg-[#1a1a2e]/50 overflow-hidden min-h-[200px] xl:min-h-0">
+        {/* BOTTOM-LEFT: LIVE BLOG (full narrative feed) */}
+        <Panel title="Live Blog — What's Happening" icon="📡" badge="LIVE" className="min-h-[280px] xl:min-h-0">
+          <LiveBlog logs={agentLogs as unknown as Array<Record<string, unknown>>} />
+        </Panel>
+
+        {/* BOTTOM-RIGHT: Simulacija + Polymarket stacked */}
+        <div className="grid grid-rows-2 gap-px bg-[#1a1a2e]/50 overflow-hidden min-h-[280px] xl:min-h-0">
           <Panel title="Simulacija" icon="🧪" badge={`${demoOpenCount} open`}>
             <DemoPanel demoData={demoData} />
           </Panel>
-          <Panel title="Polymarket" icon="🎲" badge={polyBets.length > 0 ? `${polyBets.length} bets` : undefined}>
+          <Panel title="Polymarket" icon="🔮" badge={polyBets.length > 0 ? `${polyBets.length} bets` : undefined}>
             <PolyCompact bets={polyBets} markets={polyMarkets} />
           </Panel>
         </div>
-
-        {/* BOTTOM-RIGHT: Agent Logs */}
-        <Panel title="Agent Aktivnost" icon="🤖" badge={agentLogs.length} className="min-h-[200px] xl:min-h-0">
-          <AgentLog logs={agentLogs as unknown as Array<Record<string, unknown>>} />
-        </Panel>
       </div>
     </div>
   )

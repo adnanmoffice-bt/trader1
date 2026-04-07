@@ -1,7 +1,7 @@
 import { createServiceSupabase } from '@/lib/supabase'
 import type { Signal, DemoSession } from '@/types'
 
-const AED_USD = 3.6725
+// All values in USD
 const TEAM = ['Sachin', 'Adnan', 'Mohammad']
 const GREETINGS = [
   `What's up ${TEAM.join(', ')}! 🤝`,
@@ -349,23 +349,22 @@ Better safe than sorry with your money! 💰
 export async function notifyWarRoomScan(data: {
   totalScanned: number; triggersFound: number;
   instruments: { symbol: string; status: string }[];
+  budgetSpent?: number; budgetRemaining?: number;
 }, userId?: string) {
-  if (data.triggersFound === 0) return false
-
   const lines = data.instruments
     .filter(i => i.status !== 'no trigger')
-    .map(i => `  📌 ${i.symbol}: ${i.status}`)
+    .map(i => `  ${i.symbol}: ${i.status}`)
     .join('\n')
 
-  const msg = `🔍 *MARKET SCAN COMPLETE*
-━━━━━━━━━━━━━━━━━━
-${TEAM.join(', ')} — just scanned ${data.totalScanned} markets.
+  const budget = data.budgetSpent != null
+    ? `\nBudget: $${data.budgetSpent.toFixed(2)} spent / $${data.budgetRemaining?.toFixed(2)} left`
+    : ''
 
-🎯 Triggers found: ${data.triggersFound}
-${lines}
+  const time = new Date().toLocaleTimeString('en', { timeZone: 'Asia/Dubai', hour: '2-digit', minute: '2-digit' })
 
-${data.triggersFound > 0 ? 'Opening War Room debates now... 🏛️' : 'Markets quiet. Staying patient for you. 😎'}
-— APEX AI`
+  const msg = data.triggersFound > 0
+    ? `SCAN ${time} | ${data.totalScanned} markets | ${data.triggersFound} triggers found\n${lines}\nDebating now...${budget}`
+    : `SCAN ${time} | ${data.totalScanned} markets | All quiet${budget}`
 
   return sendGroupMessage(msg, userId)
 }
@@ -407,17 +406,15 @@ export async function notifyTradeClosed(trade: {
   const won = trade.pnl >= 0
   const icon = won ? '✅' : '❌'
   const label = trade.reason === 'take_profit' ? 'TAKE PROFIT HIT' : trade.reason === 'stop_loss' ? 'STOP LOSS HIT' : 'TRADE CLOSED'
-  const pnlAed = trade.pnl * AED_USD
-
   const winMsg = [
-    `${TEAM.join(', ')} — cha-ching! 🎉💰`,
-    `Money in the bank, gentlemen! 🏦`,
-    `Another W for the team! ${TEAM[0]}, ${TEAM[1]}, ${TEAM[2]} 🔥`,
+    `${TEAM.join(', ')} — cha-ching!`,
+    `Money in the bank, gentlemen!`,
+    `Another W for the team! ${TEAM[0]}, ${TEAM[1]}, ${TEAM[2]}`,
   ]
   const lossMsg = [
-    `Took an L on this one, team. Part of the game. 💪`,
-    `Loss today, lessons learned. We bounce back. 📈`,
-    `Small setback. Trust the process, ${TEAM.join(', ')}. 🛡️`,
+    `Took an L on this one, team. Part of the game.`,
+    `Loss today, lessons learned. We bounce back.`,
+    `Small setback. Trust the process, ${TEAM.join(', ')}.`,
   ]
   const comment = won
     ? winMsg[Math.floor(Math.random() * winMsg.length)]
@@ -428,10 +425,9 @@ export async function notifyTradeClosed(trade: {
 ${comment}
 
 ${trade.direction.toUpperCase()} ${trade.instrument}
-📍 Entry: $${f(trade.entry_price)} → Exit: $${f(trade.exit_price)}
-💰 P&L: ${won ? '+' : ''}$${f(trade.pnl)} (${won ? '+' : ''}${trade.pnl_pct.toFixed(2)}%)
-💵 P&L AED: ${won ? '+' : ''}${pnlAed.toFixed(0)} AED
-⏰ ${new Date().toLocaleTimeString('en', { timeZone: 'Asia/Dubai' })} UAE`
+Entry: $${f(trade.entry_price)} → Exit: $${f(trade.exit_price)}
+P&L: ${won ? '+' : ''}$${f(trade.pnl)} (${won ? '+' : ''}${trade.pnl_pct.toFixed(2)}%)
+${new Date().toLocaleTimeString('en', { timeZone: 'Asia/Dubai' })} UAE`
 
   return sendGroupMessage(msg, userId)
 }
@@ -453,7 +449,7 @@ export async function notifyPositionAlert(
 
   const msg = `${icon} *${label} — ${instrument}*
 ━━━━━━━━━━━━━━━━━━
-💰 P&L: ${pnl >= 0 ? '+' : ''}AED ${Math.abs(pnl).toLocaleString()} (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%)
+P&L: ${pnl >= 0 ? '+' : ''}$${Math.abs(pnl).toLocaleString()} (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%)
 ⏰ ${new Date().toLocaleTimeString('en', { timeZone: 'Asia/Dubai' })} UAE`
 
   return sendGroupMessage(msg, userId)
@@ -480,8 +476,8 @@ export async function notifyMorningBriefing(portfolio: {
 Good morning ${TEAM.join(', ')}! ☕
 Your AI has been scanning markets all night. Here's what I found:
 
-💼 Portfolio: AED ${portfolio.capital.toLocaleString()}
-📈 Total P&L: ${portfolio.totalPnl >= 0 ? '+' : ''}AED ${portfolio.totalPnl.toLocaleString()}
+Portfolio: $${portfolio.capital.toLocaleString()}
+Total P&L: ${portfolio.totalPnl >= 0 ? '+' : ''}$${portfolio.totalPnl.toLocaleString()}
 🔓 Open positions: ${portfolio.openPositions}
 
 🎯 *Top Signals:*
@@ -515,8 +511,8 @@ ${TEAM.join(', ')} — here's your end-of-day update:
 
 🔄 Trades: ${summary.total_trades} (${summary.wins}W / ${summary.losses}L)
 📊 Win Rate: ${summary.win_rate.toFixed(1)}%
-💰 Daily P&L: ${summary.daily_pnl >= 0 ? '+' : ''}${summary.daily_pnl.toFixed(0)} AED
-🏦 Capital: ${summary.capital.toLocaleString()} AED
+Daily P&L: ${summary.daily_pnl >= 0 ? '+' : ''}$${summary.daily_pnl.toFixed(0)}
+Capital: $${summary.capital.toLocaleString()}
 
 ${endOfDay}
 — APEX AI 🤖`
@@ -560,9 +556,9 @@ export async function notifyDemoReport(session: DemoSession, userId?: string) {
 ${TEAM.join(', ')} — simulation complete! Here's how I performed with your strategy:
 
 📅 ${session.start_date} → ${session.end_date}
-💰 Capital: AED ${session.initial_capital.toLocaleString()}
-💵 Final: AED ${(session.final_capital ?? session.initial_capital).toLocaleString()}
-📊 P&L: ${pnl >= 0 ? '+' : ''}AED ${Math.abs(pnl).toLocaleString()} (${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%)
+Capital: $${session.initial_capital.toLocaleString()}
+Final: $${(session.final_capital ?? session.initial_capital).toLocaleString()}
+P&L: ${pnl >= 0 ? '+' : ''}$${Math.abs(pnl).toLocaleString()} (${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%)
 
 🔄 Trades: ${session.total_trades} (${session.win_count}W / ${session.loss_count}L)`
 
@@ -587,12 +583,12 @@ export async function notifyProfitAllocation(alloc: {
 ━━━━━━━━━━━━━━━━━━
 ${TEAM.join(', ')} — here's how I'm splitting the profits:
 
-💰 Total Profit: AED ${alloc.totalProfit.toFixed(0)}
+Total Profit: $${alloc.totalProfit.toFixed(0)}
 
-📊 Split:
-  🔄 Reinvest: ${alloc.reinvestPct}% (AED ${alloc.reinvestAmt.toFixed(0)})
-  💵 Payout: ${alloc.payoutPct}% (AED ${alloc.payoutAmt.toFixed(0)})
-  🛡️ Reserve: ${alloc.reservePct}% (AED ${alloc.reserveAmt.toFixed(0)})
+Split:
+  Reinvest: ${alloc.reinvestPct}% ($${alloc.reinvestAmt.toFixed(0)})
+  Payout: ${alloc.payoutPct}% ($${alloc.payoutAmt.toFixed(0)})
+  Reserve: ${alloc.reservePct}% ($${alloc.reserveAmt.toFixed(0)})
 
 ${alloc.payoutReady ? `✅ Payout ready! ${TEAM.join(', ')} — time to enjoy the fruits! 🍾` : '⏳ Building capital — patience pays off, gentlemen. 💎'}
 📋 ${alloc.reason.slice(0, 200)}
@@ -642,8 +638,8 @@ ${TEAM.join(', ')} — your weekly performance review:
 
 🔄 Trades: ${data.totalTrades} (${data.wins}W / ${data.losses}L)
 📊 Win Rate: ${data.winRate.toFixed(1)}%
-💰 Weekly P&L: ${data.weeklyPnl >= 0 ? '+' : ''}${data.weeklyPnl.toFixed(0)} AED
-🏦 Capital: ${data.capital.toLocaleString()} AED
+Weekly P&L: ${data.weeklyPnl >= 0 ? '+' : ''}$${data.weeklyPnl.toFixed(0)}
+Capital: $${data.capital.toLocaleString()}
 ${data.sharpe ? `📐 Sharpe: ${data.sharpe.toFixed(2)}` : ''}
 
 🏆 Best: ${data.bestTrade}

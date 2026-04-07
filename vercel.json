@@ -4,7 +4,7 @@
     { "path": "/api/cron/market-data",       "schedule": "*/2 * * * *" },
     { "path": "/api/cron/signals",           "schedule": "*/15 * * * *" },
     { "path": "/api/cron/positions",         "schedule": "*/2 * * * *" },
-    { "path": "/api/cron/polymarket",        "schedule": "0 6 * * *", "_note": "disabled: was throwing 400 errors, runs once daily at 6AM UTC for minimal check" },
+    { "path": "/api/cron/polymarket",        "schedule": "0 6 * * *" },
     { "path": "/api/cron/demo",              "schedule": "*/15 * * * *" },
     { "path": "/api/cron/meta-agent",        "schedule": "0 2 * * *" },
     { "path": "/api/cron/meta-weekly",       "schedule": "0 4 * * 0" },

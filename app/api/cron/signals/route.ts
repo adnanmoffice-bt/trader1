@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { runWarRoom } from '@/agents/war-room'
+import { createServiceSupabase } from '@/lib/supabase'
 
 export const runtime = 'nodejs'
 export const maxDuration = 300
@@ -11,6 +12,16 @@ export async function GET(req: NextRequest) {
   }
 
   const t0 = Date.now()
+  const db = createServiceSupabase()
+
+  // Auto-expire stale signals (>12h old and still "active")
+  const expireCutoff = new Date(Date.now() - 12 * 3600_000).toISOString()
+  const { data: expired } = await db.from('signals')
+    .update({ status: 'expired' })
+    .eq('status', 'active')
+    .lt('created_at', expireCutoff)
+    .select('id')
+  const expiredCount = expired?.length ?? 0
 
   try {
     const timeout = new Promise<never>((_, reject) =>
@@ -21,6 +32,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       success: true,
       mode: 'war-room',
+      expired_signals: expiredCount,
       duration_ms: Date.now() - t0,
       timestamp: new Date().toISOString(),
     })
@@ -28,6 +40,7 @@ export async function GET(req: NextRequest) {
     console.error('[cron/signals] War Room error:', err)
     return NextResponse.json({
       error: String(err).slice(0, 200),
+      expired_signals: expiredCount,
       duration_ms: Date.now() - t0,
     }, { status: 500 })
   }

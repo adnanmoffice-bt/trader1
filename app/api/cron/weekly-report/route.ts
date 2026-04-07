@@ -16,23 +16,23 @@ export async function GET(req: NextRequest) {
 
   // All trades closed this week (real + demo)
   const { data: weekTrades } = await db.from('trades')
-    .select('instrument, direction, pnl_usd, pnl_aed, pnl_pct, status')
+    .select('instrument, direction, pnl, status')
     .gte('closed_at', weekAgo)
     .eq('status', 'closed')
 
   const { data: weekDemo } = await db.from('demo_trades')
-    .select('instrument, direction, pnl_usd, pnl_aed, pnl_pct, exit_reason')
+    .select('instrument, direction, pnl, exit_reason')
     .gte('exit_time', weekAgo)
     .not('exit_time', 'is', null)
 
   const allTrades = [
     ...(weekTrades ?? []).map(t => ({
       instrument: t.instrument, direction: t.direction,
-      pnl: +(t.pnl_usd ?? t.pnl_aed ?? 0),
+      pnl: +(t.pnl ?? 0),
     })),
     ...(weekDemo ?? []).map(t => ({
       instrument: t.instrument, direction: t.direction,
-      pnl: +(t.pnl_usd ?? t.pnl_aed ?? 0),
+      pnl: +(t.pnl ?? 0),
     })),
   ]
 

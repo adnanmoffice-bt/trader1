@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { after } from 'next/server'
 import { createServiceSupabase } from '@/lib/supabase'
 import { fetchAllMarketData, fetchBinanceKlines, fetchFearGreed } from '@/lib/price-fetcher'
 
@@ -48,24 +47,9 @@ export async function GET(req: NextRequest) {
     results.market = `error: ${String(e).slice(0, 80)}`
   }
 
-  // Signals, demo, polymarket run on their own Vercel cron schedules.
+  // All crons (signals, demo, polymarket) run on their own Vercel schedules.
   // No dispatch here — avoids double-execution and wasted AI tokens.
-  const baseUrl = process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : process.env.NEXT_PUBLIC_APP_URL || 'https://trader1-nu.vercel.app'
-  const headers = { Authorization: `Bearer ${process.env.CRON_SECRET}` }
-
-  after(async () => {
-    try {
-      await Promise.allSettled([
-        fetch(`${baseUrl}/api/cron/demo`, { headers }).catch(() => {}),
-      ])
-    } catch {
-      console.error('[run-all] dispatch error')
-    }
-  })
-
-  results.dispatched = 'demo only (signals+polymarket on own cron)'
+  results.dispatched = 'none (all crons on own schedule)'
 
   return NextResponse.json({
     success: true,

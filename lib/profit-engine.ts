@@ -1,7 +1,6 @@
 import { createServiceSupabase } from '@/lib/supabase'
 
-const USD_AED = 3.6725
-const MIN_PAYOUT_AED = 100
+const MIN_PAYOUT_USD = 100
 const MIN_PORTFOLIO_GROWTH = 0.20  // 20% growth before any payout
 const MIN_TRADES_FOR_PAYOUT = 30
 
@@ -112,15 +111,15 @@ export async function calculateAllocation(): Promise<AllocationResult> {
   }
 
   const payoutAmt = totalPnl * (payout / 100)
-  const payoutReady = payoutAmt >= MIN_PAYOUT_AED
+  const payoutReady = payoutAmt >= MIN_PAYOUT_USD
 
   let reason = ''
   if (onStreak) reason = `Win streak detected (${recentWins}/5). `
   if (maxDD > 0.10) reason += `High drawdown (${(maxDD * 100).toFixed(1)}%). `
   reason += `Performance score: ${performanceScore.toFixed(0)}. `
   reason += payoutReady
-    ? `Payout of AED ${payoutAmt.toFixed(0)} ready for withdrawal.`
-    : `Payout AED ${payoutAmt.toFixed(0)} below minimum (${MIN_PAYOUT_AED}).`
+    ? `Payout of $${payoutAmt.toFixed(0)} ready for withdrawal.`
+    : `Payout $${payoutAmt.toFixed(0)} below minimum ($${MIN_PAYOUT_USD}).`
 
   return {
     totalProfit: totalPnl,
@@ -138,7 +137,7 @@ export async function logAllocation(alloc: AllocationResult): Promise<void> {
   await db.from('agent_logs').insert({
     agent: 'profit-engine',
     level: alloc.payoutReady ? 'ok' : 'info',
-    message: `PROFIT ALLOCATION: Total ${alloc.totalProfit.toFixed(0)} AED → Reinvest ${alloc.reinvestPct}% (${alloc.reinvestAmt.toFixed(0)}) | Payout ${alloc.payoutPct}% (${alloc.payoutAmt.toFixed(0)}) | Reserve ${alloc.reservePct}% (${alloc.reserveAmt.toFixed(0)}) | ${alloc.reason}`,
+    message: `PROFIT ALLOCATION: Total $${alloc.totalProfit.toFixed(0)} → Reinvest ${alloc.reinvestPct}% ($${alloc.reinvestAmt.toFixed(0)}) | Payout ${alloc.payoutPct}% ($${alloc.payoutAmt.toFixed(0)}) | Reserve ${alloc.reservePct}% ($${alloc.reserveAmt.toFixed(0)}) | ${alloc.reason}`,
     metadata: alloc as unknown as Record<string, unknown>,
   })
 }

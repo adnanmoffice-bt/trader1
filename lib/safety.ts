@@ -44,7 +44,7 @@ export async function checkSafety(userId?: string): Promise<SafetyStatus> {
     .eq('is_demo', false)
     .single()
 
-  const initialCapital = 5000  // AED default
+  const initialCapital = 5000  // USD default
   const currentCapital = portfolio?.capital ?? initialCapital
   const realizedPnl = portfolio?.realized_pnl ?? 0
 
@@ -61,11 +61,11 @@ export async function checkSafety(userId?: string): Promise<SafetyStatus> {
 
   const { data: todayTrades } = await db
     .from('trades')
-    .select('pnl_aed')
+    .select('pnl')
     .gte('closed_at', todayStart.toISOString())
     .eq('is_demo', false)
 
-  const todayPnl = todayTrades?.reduce((s, t) => s + (Number(t.pnl_aed) || 0), 0) ?? 0
+  const todayPnl = todayTrades?.reduce((s, t) => s + (Number(t.pnl) || 0), 0) ?? 0
   const dailyLossPct = todayPnl < 0 ? Math.abs(todayPnl) / currentCapital : 0
   const dailyLossOk = dailyLossPct < DAILY_LOSS_LIMIT_PCT
 

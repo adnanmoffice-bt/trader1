@@ -60,7 +60,7 @@ export async function runWarRoom(): Promise<void> {
   const db = createServiceSupabase()
 
   // ── BUDGET GATE — hard stop when daily AI spend is exhausted ──
-  const budget = getDailyBudgetStatus()
+  const budget = await getDailyBudgetStatus()
   if (budget.exhausted) {
     await say(db, crypto.randomUUID(), null, {
       agent: 'orchestrator', role: 'alert',
@@ -91,16 +91,21 @@ export async function runWarRoom(): Promise<void> {
   const { data: recentDebates } = await db.from('war_room_messages')
     .select('instrument, created_at')
     .eq('role', 'decision')
+    .eq('agent', 'orchestrator')
     .gte('created_at', new Date(Date.now() - COOLDOWN_MIN * 60_000).toISOString())
   const coolingDown = new Set((recentDebates ?? []).map(d => d.instrument))
 
   const scanResults: { symbol: string; status: string }[] = []
   let meetingsHeld = 0
 
-  for (const instrument of ALL_INSTRUMENTS) {
+  // Rotate scan order so tail instruments aren't always starved by meeting cap
+  const rotateIdx = new Date().getUTCHours() % ALL_INSTRUMENTS.length
+  const rotatedInstruments = [...ALL_INSTRUMENTS.slice(rotateIdx), ...ALL_INSTRUMENTS.slice(0, rotateIdx)]
+
+  for (const instrument of rotatedInstruments) {
     const meetingId = crypto.randomUUID()
     try {
-      const budgetNow = getDailyBudgetStatus()
+      const budgetNow = await getDailyBudgetStatus()
       const atMeetingCap = meetingsHeld >= MAX_MEETINGS_PER_CYCLE
       const budgetLow = budgetNow.remaining < 0.30
 
@@ -117,7 +122,7 @@ export async function runWarRoom(): Promise<void> {
   }
 
   const triggersFound = scanResults.filter(s => s.status !== 'no trigger' && s.status !== 'error' && s.status !== 'cooldown' && s.status !== 'budget-capped').length
-  const budgetEnd = getDailyBudgetStatus()
+  const budgetEnd = await getDailyBudgetStatus()
   await waScan({
     totalScanned: ALL_INSTRUMENTS.length,
     triggersFound,
@@ -222,15 +227,15 @@ async function runMeeting(
   const { data: allPrices } = await db.from('market_data').select('symbol, price, change_pct_24h').limit(20)
   const priceCtx = (allPrices ?? []).map(p => `${p.symbol}: $${f(+p.price)} (${(+p.change_pct_24h) >= 0 ? '+' : ''}${(+p.change_pct_24h).toFixed(1)}%)`).join(', ')
 
-  const { data: pastTrades } = await db.from('demo_trades').select('instrument, direction, pnl_usd, pnl_aed, exit_reason')
+  const { data: pastTrades } = await db.from('demo_trades').select('instrument, direction, pnl, exit_reason')
     .not('exit_time', 'is', null).order('exit_time', { ascending: false }).limit(10)
   const tradeHist = (pastTrades ?? []).map(t => {
-    const pnl = +(t.pnl_usd ?? t.pnl_aed ?? 0)
-    return `${t.instrument} ${t.direction} → ${t.exit_reason} (${pnl >= 0 ? '+' : ''}$${pnl.toFixed(0)})`
+    const p = +(t.pnl ?? 0)
+    return `${t.instrument} ${t.direction} → ${t.exit_reason} (${p >= 0 ? '+' : ''}$${p.toFixed(0)})`
   }).join(', ') || 'No history.'
 
-  const { count: openPos } = await db.from('positions').select('*', { count: 'exact', head: true })
-  const recentLosses = (pastTrades ?? []).filter(t => +(t.pnl_usd ?? t.pnl_aed ?? 0) < 0).length
+  const { count: openPos } = await db.from('positions').select('*', { count: 'exact', head: true }).eq('is_demo', false)
+  const recentLosses = (pastTrades ?? []).filter(t => +(t.pnl ?? 0) < 0).length
 
   const { data: news } = await db.from('news').select('headline, sentiment').order('published_at', { ascending: false }).limit(5)
   const newsCtx = (news ?? []).map(n => `${n.headline} [${n.sentiment}]`).join('; ') || 'No recent news.'
@@ -327,14 +332,16 @@ async function runMeeting(
     rawDecisionText = '[JSON parse failed — defaulting to REJECT for safety]'
   }
 
-  // SAFETY: if JSON parsing failed or decision field is not exactly "EXECUTE", default to REJECT
-  const isExecute = parsed?.decision === 'EXECUTE' && (parsed?.conviction ?? 0) >= 50
+  // SAFETY: JSON parse fail → REJECT. Conviction < 50 → REJECT.
+  // Forecast contradiction (quant models strongly disagree + low conviction) → REJECT.
+  const forecastVeto = forecastContradict && (parsed?.conviction ?? 0) < 70
+  const isExecute = parsed?.decision === 'EXECUTE' && (parsed?.conviction ?? 0) >= 50 && !forecastVeto
   const decisionResponse = parsed
     ? `${parsed.decision} (conviction: ${parsed.conviction}%) — ${parsed.reasoning}`
     : rawDecisionText
 
-  const voteFor = conv.filter(m => /bullish|long|buy|support|agree|for|execute|approve/i.test(m.message) && m.agent !== 'orchestrator').length
-  const voteAgainst = conv.filter(m => /bearish|reject|against|caution|risk|wait|pass/i.test(m.message) && m.agent !== 'orchestrator').length
+  const voteFor = conv.filter(m => /\b(bullish|long\b|buy\b|support(?:s|ing)?|execute|approve)\b/i.test(m.message) && m.agent !== 'orchestrator').length
+  const voteAgainst = conv.filter(m => /\b(bearish|reject(?:ed)?|against\b|short\b|sell\b|wait\b|pass\b|veto)\b/i.test(m.message) && m.agent !== 'orchestrator').length
 
   await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'decision',
     message: decisionResponse,

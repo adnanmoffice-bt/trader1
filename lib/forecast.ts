@@ -82,7 +82,11 @@ function arimaForecast(closes: number[], stepsAhead: number): number {
 
   const a1 = (sumX2X2 * sumX1Y - sumX1X2 * sumX2Y) / det
   const a2 = (sumX1X1 * sumX2Y - sumX1X2 * sumX1Y) / det
-  const c = sumY / count - a1 * sumX1Y / (count * (sumX1Y / sumY || 1))
+
+  // OLS intercept: c = mean(Y) - a1*mean(X1) - a2*mean(X2)
+  let sumX1 = 0, sumX2 = 0
+  for (let i = 2; i < n; i++) { sumX1 += diffs[i - 1]; sumX2 += diffs[i - 2] }
+  const c = (sumY - a1 * sumX1 - a2 * sumX2) / count
 
   // Clamp coefficients to prevent explosive forecasts
   const ca1 = Math.max(-0.95, Math.min(0.95, a1))
@@ -299,8 +303,8 @@ export function generateForecast(instrument: string, candles: OHLCV[]): Forecast
   // Monte Carlo weight: 30
   combined += (mc4h.upProb - 0.5) * 60
 
-  // Seasonality weight: 15
-  combined += Math.max(-15, Math.min(15, (season.hourBias + season.dayBias) * 100))
+  // Seasonality weight: 15 (hourBias/dayBias are already in % so no extra *100)
+  combined += Math.max(-15, Math.min(15, (season.hourBias + season.dayBias) * 10))
 
   // Holt trend weight: 20
   combined += Math.max(-20, Math.min(20, holt.slope * 40))

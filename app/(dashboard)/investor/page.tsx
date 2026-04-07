@@ -93,9 +93,9 @@ export default function InvestorPage() {
           <h2 className="text-[11px] font-bold text-[var(--text-muted)] tracking-widest uppercase mb-3">Portfolio Overview</h2>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
             {[
-              { l: 'CAPITAL', v: `AED ${demoCapital.toLocaleString()}` },
-              { l: 'CURRENT', v: `AED ${Number(s?.final_capital || demoCapital).toLocaleString()}`, cls: demoPnl >= 0 ? 'text-[var(--green)]' : 'text-[var(--red)]' },
-              { l: 'TOTAL P&L', v: `${demoPnl >= 0 ? '+' : ''}AED ${Math.abs(demoPnl).toLocaleString()}`, cls: demoPnl >= 0 ? 'text-[var(--green)]' : 'text-[var(--red)]' },
+              { l: 'CAPITAL', v: `$${demoCapital.toLocaleString()}` },
+              { l: 'CURRENT', v: `$${Number(s?.final_capital || demoCapital).toLocaleString()}`, cls: demoPnl >= 0 ? 'text-[var(--green)]' : 'text-[var(--red)]' },
+              { l: 'TOTAL P&L', v: `${demoPnl >= 0 ? '+' : ''}$${Math.abs(demoPnl).toLocaleString()}`, cls: demoPnl >= 0 ? 'text-[var(--green)]' : 'text-[var(--red)]' },
               { l: 'WIN RATE', v: `${(Number(s?.win_count || 0) + Number(s?.loss_count || 0)) > 0 ? (Number(s?.win_count || 0) / (Number(s?.win_count || 0) + Number(s?.loss_count || 0)) * 100).toFixed(0) : '—'}%` },
               { l: 'TOTAL TRADES', v: `${s?.total_trades ?? 0}` },
               { l: 'OPEN', v: `${openTrades.length} positions`, cls: 'text-[var(--blue)]' },
@@ -153,7 +153,7 @@ export default function InvestorPage() {
                         <div className="text-[10px] text-[var(--text-muted)]">{String(t.signal_reason)}</div>
                       </div>
                       <div className="text-right">
-                        <div className={cn('text-lg font-black mono', isUp ? 'text-[var(--green)]' : 'text-[var(--red)]')}>{isUp ? '+' : ''}{livePnl.toFixed(0)} AED</div>
+                        <div className={cn('text-lg font-black mono', isUp ? 'text-[var(--green)]' : 'text-[var(--red)]')}>{isUp ? '+' : ''}${livePnl.toFixed(0)}</div>
                         <div className={cn('text-[11px] mono', isUp ? 'text-[var(--green)]' : 'text-[var(--red)]')}>{isUp ? '+' : ''}{livePct.toFixed(2)}%</div>
                       </div>
                     </div>
@@ -213,9 +213,9 @@ export default function InvestorPage() {
             <h2 className="text-[11px] font-bold text-[var(--text-muted)] tracking-widest uppercase mb-3 mt-6">How to Fund</h2>
             <div className="rounded-xl border border-[var(--border)] p-5 space-y-3 text-[12px] text-[var(--text-secondary)] leading-relaxed" style={{ background: 'var(--bg-panel)', boxShadow: 'var(--shadow)' }}>
               <div className="flex gap-3"><span className="text-[var(--green)] font-bold">1.</span><span>Create a <b className="text-[var(--text-primary)]">Binance account</b> and verify identity (KYC)</span></div>
-              <div className="flex gap-3"><span className="text-[var(--green)] font-bold">2.</span><span>Deposit AED via bank transfer or card, buy <b className="text-[var(--text-primary)]">USDT</b></span></div>
+              <div className="flex gap-3"><span className="text-[var(--green)] font-bold">2.</span><span>Deposit USD via bank transfer or card, buy <b className="text-[var(--text-primary)]">USDT</b></span></div>
               <div className="flex gap-3"><span className="text-[var(--green)] font-bold">3.</span><span>Create API key (<b className="text-[var(--text-primary)]">NO withdrawal permission</b>) — bot can only trade, never withdraw</span></div>
-              <div className="flex gap-3"><span className="text-[var(--green)] font-bold">4.</span><span>To withdraw: manually sell USDT for AED in Binance app, transfer to bank</span></div>
+              <div className="flex gap-3"><span className="text-[var(--green)] font-bold">4.</span><span>To withdraw: manually sell USDT in Binance app, transfer to bank</span></div>
               <div className="mt-2 p-3 rounded-lg border text-[11px]" style={{ borderColor: 'var(--green)', background: 'var(--green)', color: 'white' }}>
                 Your money stays on YOUR Binance account. The bot only has API access for trading, never withdrawal.
               </div>

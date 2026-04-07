@@ -84,11 +84,11 @@ export async function checkDailyLossLimit(capitalUsd: number): Promise<RiskCheck
 
   const { data: closedToday } = await db
     .from('trades')
-    .select('pnl_usd, pnl_aed')
+    .select('pnl')
     .gte('closed_at', `${today}T00:00:00`)
     .eq('is_demo', false)
 
-  const dailyPnl = (closedToday ?? []).reduce((s, t) => s + Number(t.pnl_usd ?? t.pnl_aed ?? 0), 0)
+  const dailyPnl = (closedToday ?? []).reduce((s, t) => s + Number(t.pnl ?? 0), 0)
   const limit = capitalUsd * DAILY_LOSS_LIMIT_PCT
 
   if (dailyPnl < -limit) {

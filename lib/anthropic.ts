@@ -75,58 +75,91 @@ export async function callAgent<T = string>(opts: CallAgentOptions): Promise<T> 
   }
 }
 
-// ─── Daily budget tracking (in-memory, resets on cold start / new day) ────────
+// ─── Daily budget tracking (persisted to Supabase, survives cold starts) ──────
 
 const DAILY_BUDGET_USD = parseFloat(process.env.AI_DAILY_BUDGET ?? '5.00')
-
-let dayKey = ''
-let dailySpend = 0
-let dailyCalls = 0
 
 function todayKey() {
   return new Date().toISOString().slice(0, 10)
 }
 
-const alertsSent = new Set<string>()
-
 function trackDailySpend(usage: TokenUsage) {
-  const today = todayKey()
-  if (dayKey !== today) {
-    dayKey = today
-    dailySpend = 0
-    dailyCalls = 0
-    alertsSent.clear()
-  }
-  dailySpend += usage.estimatedCost
-  dailyCalls++
-  checkBudgetAlerts()
+  // Fire-and-forget: log cost to DB so getDailyBudgetStatus can sum it
+  import('@/lib/supabase').then(({ createServiceSupabase }) => {
+    const db = createServiceSupabase()
+    db.from('agent_logs').insert({
+      agent: 'budget-tracker',
+      level: 'info',
+      message: `AI call: ${usage.model} ${usage.inputTokens}in/${usage.outputTokens}out $${usage.estimatedCost.toFixed(4)}`,
+      metadata: {
+        input_tokens: usage.inputTokens,
+        output_tokens: usage.outputTokens,
+        model: usage.model,
+        cost_usd: usage.estimatedCost,
+        date: todayKey(),
+      },
+    }).then(() => {
+      checkBudgetAlerts(usage.estimatedCost)
+    })
+  }).catch(() => {})
 }
 
-async function checkBudgetAlerts() {
-  const pct = dailySpend / DAILY_BUDGET_USD
-  const thresholds = [
-    { level: 0.5, label: '50%' },
-    { level: 0.8, label: '80%' },
-    { level: 1.0, label: '100%' },
-  ]
-  for (const t of thresholds) {
-    if (pct >= t.level && !alertsSent.has(t.label)) {
-      alertsSent.add(t.label)
-      const msg = `⚠️ AI BUDGET ${t.label}: $${dailySpend.toFixed(2)} / $${DAILY_BUDGET_USD.toFixed(2)} (${dailyCalls} calls)`
-      console.warn(`[budget-alert] ${msg}`)
-      try {
-        const { sendBudgetAlert } = await import('@/lib/telegram')
-        await sendBudgetAlert(msg).catch(() => {})
-      } catch { /* telegram not configured */ }
+// In-memory accumulator for alert dedup within a single invocation
+const alertsSent = new Set<string>()
+let invocationSpend = 0
+
+async function checkBudgetAlerts(costJustAdded: number) {
+  invocationSpend += costJustAdded
+  try {
+    const status = await getDailyBudgetStatus()
+    const pct = status.spent / DAILY_BUDGET_USD
+    const thresholds = [
+      { level: 0.5, label: '50%' },
+      { level: 0.8, label: '80%' },
+      { level: 1.0, label: '100%' },
+    ]
+    for (const t of thresholds) {
+      if (pct >= t.level && !alertsSent.has(t.label)) {
+        alertsSent.add(t.label)
+        const msg = `AI BUDGET ${t.label}: $${status.spent.toFixed(2)} / $${DAILY_BUDGET_USD.toFixed(2)} (${status.calls} calls)`
+        console.warn(`[budget-alert] ${msg}`)
+        try {
+          const { sendBudgetAlert } = await import('@/lib/telegram')
+          await sendBudgetAlert(msg).catch(() => {})
+        } catch { /* telegram not configured */ }
+      }
     }
-  }
+  } catch { /* DB query failed, alerts skipped */ }
 }
 
-export function getDailyBudgetStatus() {
-  const today = todayKey()
-  if (dayKey !== today) return { spent: 0, remaining: DAILY_BUDGET_USD, budget: DAILY_BUDGET_USD, calls: 0, exhausted: false }
-  const remaining = Math.max(0, DAILY_BUDGET_USD - dailySpend)
-  return { spent: +dailySpend.toFixed(4), remaining: +remaining.toFixed(4), budget: DAILY_BUDGET_USD, calls: dailyCalls, exhausted: remaining <= 0 }
+export async function getDailyBudgetStatus(): Promise<{
+  spent: number; remaining: number; budget: number; calls: number; exhausted: boolean
+}> {
+  try {
+    const { createServiceSupabase } = await import('@/lib/supabase')
+    const db = createServiceSupabase()
+    const today = todayKey()
+
+    const { data } = await db.from('agent_logs')
+      .select('metadata')
+      .eq('agent', 'budget-tracker')
+      .gte('created_at', `${today}T00:00:00Z`)
+
+    let spent = 0
+    let calls = 0
+    for (const row of data ?? []) {
+      const meta = row.metadata as Record<string, unknown> | null
+      if (meta?.cost_usd) {
+        spent += Number(meta.cost_usd)
+        calls++
+      }
+    }
+
+    const remaining = Math.max(0, DAILY_BUDGET_USD - spent)
+    return { spent: +spent.toFixed(4), remaining: +remaining.toFixed(4), budget: DAILY_BUDGET_USD, calls, exhausted: remaining <= 0 }
+  } catch {
+    return { spent: 0, remaining: DAILY_BUDGET_USD, budget: DAILY_BUDGET_USD, calls: 0, exhausted: false }
+  }
 }
 
 export { client as anthropic }

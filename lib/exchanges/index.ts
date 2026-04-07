@@ -16,7 +16,6 @@ import { MEXCExchange } from './mexc'
 export { EXCHANGE_CONFIGS } from './types'
 export type { IExchange, ExchangeId, ExchangeCredentials, ExchangeTicker, ExchangeOHLCV, KlineInterval } from './types'
 
-const USD_AED = 3.6725
 
 /**
  * Create an exchange instance by ID
@@ -251,7 +250,6 @@ export function calculatePositionSize(capitalUsd: number, entryPrice: number, st
 
 export const MAX_RISK_PCT = 0.05
 export const MAX_POSITIONS = 3
-export { USD_AED }
 
 /**
  * All supported exchange IDs for iteration

@@ -165,7 +165,7 @@ export async function buildMacroContext(): Promise<MacroSnapshot> {
       fetchYahooQuote('^VIX'),
       fetchYahooQuote('DX-Y.NYB'),
       fetchYahooQuote('^TNX'),
-      fetchYahooQuote('^IRX'),
+      fetchYahooQuote('^TWO'),
       fetchYahooQuote('GC=F'),
       fetchYahooQuote('CL=F'),
       fetchYahooQuote('SPY'),

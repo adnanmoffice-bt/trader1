@@ -31,7 +31,7 @@ export async function GET(req: NextRequest) {
     .order('confidence', { ascending: false })
     .limit(3)
 
-  const budget = getDailyBudgetStatus()
+  const budget = await getDailyBudgetStatus()
 
   // Macro snapshot for the briefing
   let macroSummary = ''

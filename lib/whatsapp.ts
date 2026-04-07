@@ -131,12 +131,13 @@ export async function sendMessage(chatId: string, message: string, userId?: stri
     console.error('[whatsapp] sendMessage SKIPPED: no config available')
     return false
   }
+  return sendWithConfig(config, chatId, message)
+}
+
+async function sendWithConfig(config: WhatsAppConfig, chatId: string, message: string): Promise<boolean> {
   try {
     const result = await greenApiCall(config, 'sendMessage', { chatId, message })
-    if (result.idMessage) {
-      console.log('[whatsapp] Message sent OK, id:', result.idMessage)
-      return true
-    }
+    if (result.idMessage) return true
     console.error('[whatsapp] sendMessage: no idMessage in response:', JSON.stringify(result).slice(0, 200))
     return false
   } catch (err) {
@@ -152,10 +153,10 @@ export async function sendGroupMessage(message: string, userId?: string): Promis
     return false
   }
   if (!config.groupId) {
-    console.error('[whatsapp] sendGroupMessage SKIPPED: config found but no groupId set. Instance:', config.instanceId)
+    console.error('[whatsapp] sendGroupMessage SKIPPED: no groupId set')
     return false
   }
-  return sendMessage(config.groupId, message, userId)
+  return sendWithConfig(config, config.groupId, message)
 }
 
 export async function getGroups(instanceId: string, apiToken: string): Promise<{ id: string; name: string }[]> {

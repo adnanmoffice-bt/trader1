@@ -18,19 +18,18 @@ export async function GET(req: NextRequest) {
 
   // Trades closed today
   const { data: todayTrades } = await db.from('trades')
-    .select('pnl_usd, pnl_aed, pnl_pct, status')
+    .select('pnl, status')
     .gte('closed_at', `${today}T00:00:00`)
     .eq('status', 'closed')
 
-  // Also check demo_trades
   const { data: demoTrades } = await db.from('demo_trades')
-    .select('pnl_usd, pnl_aed, pnl_pct, exit_reason')
+    .select('pnl, exit_reason')
     .gte('exit_time', `${today}T00:00:00`)
     .not('exit_time', 'is', null)
 
   const allTrades = [
-    ...(todayTrades ?? []).map(t => ({ pnl: +(t.pnl_usd ?? t.pnl_aed ?? 0) })),
-    ...(demoTrades ?? []).map(t => ({ pnl: +(t.pnl_usd ?? t.pnl_aed ?? 0) })),
+    ...(todayTrades ?? []).map(t => ({ pnl: +(t.pnl ?? 0) })),
+    ...(demoTrades ?? []).map(t => ({ pnl: +(t.pnl ?? 0) })),
   ]
 
   const wins = allTrades.filter(t => t.pnl > 0).length
@@ -64,7 +63,7 @@ export async function GET(req: NextRequest) {
   })
 
   // Follow-up with system stats
-  const budget = getDailyBudgetStatus()
+  const budget = await getDailyBudgetStatus()
   const statsMsg = `📊 System stats today:
 ${signalsToday ?? 0} signals generated | ${meetingsToday ?? 0} War Room meetings
 AI spend: $${budget.spent.toFixed(2)} / $${budget.budget.toFixed(2)} (${budget.calls} calls)

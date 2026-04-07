@@ -40,9 +40,9 @@ export default function SimulationPage() {
           {/* Stats cards */}
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 mb-6">
             {[
-              { l: 'Starting Capital', v: `AED ${cap.toLocaleString()}` },
-              { l: 'Current Value', v: `AED ${(cap + pnl).toLocaleString()}`, cls: pnl >= 0 ? 'text-[var(--green)]' : 'text-[var(--red)]' },
-              { l: 'Total P&L', v: `${pnl >= 0 ? '+' : ''}${pnl.toFixed(0)} AED`, cls: pnl >= 0 ? 'text-[var(--green)]' : 'text-[var(--red)]' },
+              { l: 'Starting Capital', v: `$${cap.toLocaleString()}` },
+              { l: 'Current Value', v: `$${(cap + pnl).toLocaleString()}`, cls: pnl >= 0 ? 'text-[var(--green)]' : 'text-[var(--red)]' },
+              { l: 'Total P&L', v: `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(0)}`, cls: pnl >= 0 ? 'text-[var(--green)]' : 'text-[var(--red)]' },
               { l: 'Win Rate', v: `${wr.toFixed(0)}%` },
               { l: 'Wins / Losses', v: `${wins} / ${losses}` },
               { l: 'Total Trades', v: `${s.total_trades ?? 0}` },
@@ -99,7 +99,7 @@ export default function SimulationPage() {
                           <span className="font-bold text-[var(--text-primary)]">{t.instrument}</span>
                           <span className={cn('text-[9px] font-black px-1.5 py-0.5 rounded', dir === 'long' ? 'bg-green-50 text-[var(--green)]' : 'bg-red-50 text-[var(--red)]')}>{dir.toUpperCase()}</span>
                         </div>
-                        <span className={cn('font-black mono', up ? 'text-[var(--green)]' : 'text-[var(--red)]')}>{up ? '+' : ''}{lp.toFixed(0)} AED ({up ? '+' : ''}{lpct.toFixed(2)}%)</span>
+                        <span className={cn('font-black mono', up ? 'text-[var(--green)]' : 'text-[var(--red)]')}>{up ? '+' : ''}${lp.toFixed(0)} ({up ? '+' : ''}{lpct.toFixed(2)}%)</span>
                       </div>
                       <div className="grid grid-cols-3 gap-2 text-[10px]">
                         <div><span className="text-[var(--text-muted)]">Entry:</span> <span className="mono">{fmt(entry)}</span></div>

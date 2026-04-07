@@ -108,9 +108,9 @@ function Dashboard() {
           <div className="p-2" style={{ background: 'var(--bg-1)' }}>
             <div className="flex justify-between items-center mb-1">
               <span className="text-[9px] font-bold" style={{ color: 'var(--text-3)' }}>PORTFOLIO</span>
-              <span className="text-[11px] font-bold" style={{ color: pnl >= 0 ? 'var(--green)' : 'var(--red)' }}>{pnl >= 0 ? '+' : ''}{pnl.toFixed(0)} AED</span>
+              <span className="text-[11px] font-bold" style={{ color: pnl >= 0 ? 'var(--green)' : 'var(--red)' }}>{pnl >= 0 ? '+' : ''}${pnl.toFixed(0)}</span>
             </div>
-            <div className="text-[16px] font-black" style={{ color: 'var(--text-0)' }}>AED {(cap + pnl).toLocaleString()}</div>
+            <div className="text-[16px] font-black" style={{ color: 'var(--text-0)' }}>${(cap + pnl).toLocaleString()}</div>
             <div className="grid grid-cols-4 gap-1 mt-1">
               {[{ l: 'CAP', v: cap.toLocaleString() }, { l: 'W/L', v: `${wins}/${losses}` }, { l: 'WR', v: `${wins + losses > 0 ? (wins / (wins + losses) * 100).toFixed(0) : '—'}%` }, { l: 'DD', v: ss?.max_drawdown ? `${(+ss.max_drawdown * 100).toFixed(1)}%` : '—' }].map(x => (
                 <div key={x.l} className="text-center p-1 rounded" style={{ background: 'var(--bg-2)' }}>

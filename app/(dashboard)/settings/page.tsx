@@ -74,7 +74,7 @@ interface SafetyData {
   reason?: string
 }
 
-const AED_USD = 3.6725
+// All values displayed in USD
 
 function Section({ title, icon, children, badge }: { title: string; icon: string; children: React.ReactNode; badge?: React.ReactNode }) {
   return (
@@ -396,7 +396,7 @@ export default function SettingsPage() {
               <div className="text-[11px] mt-1" style={{ color: 'var(--text-secondary)' }}>
                 {isLive
                   ? `AI trguje na ${EXCHANGES.find(e => e.id === settings?.primary_exchange)?.name || 'exchange-u'} sa pravim sredstvima`
-                  : `Virtualni kapital: ${riskForm.initial_capital.toLocaleString()} AED`
+                  : `Virtualni kapital: $${riskForm.initial_capital.toLocaleString()}`
                 }
               </div>
             </div>
@@ -569,7 +569,7 @@ export default function SettingsPage() {
                       ${wallet.summary.usdt_free.toFixed(2)}
                     </div>
                     <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                      {(wallet.summary.usdt_free * AED_USD).toFixed(0)} AED
+                      ${wallet.summary.usdt_free.toFixed(0)} USD
                     </div>
                   </div>
                   <div className="p-3 rounded-lg text-center" style={{ background: 'var(--bg-secondary)' }}>
@@ -660,7 +660,7 @@ export default function SettingsPage() {
             <div className="flex items-center justify-between gap-4 pt-2">
               <div>
                 <div className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>Početni Kapital</div>
-                <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Početna vrijednost portfolia u AED</div>
+                <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Početna vrijednost portfolia u USD</div>
               </div>
               <input
                 type="number"
@@ -890,9 +890,9 @@ export default function SettingsPage() {
               <div className="grid grid-cols-2 gap-3">
                 {[
                   { label: 'Drawdown', value: `${(safety.drawdownPct * 100).toFixed(1)}%`, ok: safety.drawdownPct < 0.15 },
-                  { label: 'Današnji P&L', value: `${safety.todayPnl >= 0 ? '+' : ''}${safety.todayPnl.toFixed(0)} AED`, ok: safety.todayPnl >= 0 },
+                  { label: 'Današnji P&L', value: `${safety.todayPnl >= 0 ? '+' : ''}$${safety.todayPnl.toFixed(0)}`, ok: safety.todayPnl >= 0 },
                   { label: 'Otvorene Pozicije', value: `${safety.openPositions} / ${safety.maxPositions}`, ok: safety.openPositions < safety.maxPositions },
-                  { label: 'Kapital', value: `${safety.currentCapital.toLocaleString()} AED`, ok: true },
+                  { label: 'Kapital', value: `$${safety.currentCapital.toLocaleString()}`, ok: true },
                 ].map(s => (
                   <div key={s.label} className="p-3 rounded-lg" style={{ background: 'var(--bg-secondary)' }}>
                     <div className="text-[10px] font-bold" style={{ color: 'var(--text-muted)' }}>{s.label}</div>

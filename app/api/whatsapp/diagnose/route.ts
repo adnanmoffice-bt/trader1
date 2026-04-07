@@ -95,5 +95,27 @@ export async function GET(req: NextRequest) {
   checks.problems = problems
   checks.would_work = problems.length === 0
 
+  // Test send if requested
+  const sendTest = req.nextUrl.searchParams.get('send') === 'true'
+  if (sendTest && instanceId && apiToken) {
+    const groupId = process.env.GREEN_API_GROUP_ID
+    if (groupId) {
+      try {
+        const sendUrl = `https://7107.api.greenapi.com/waInstance${instanceId}/sendMessage/${apiToken}`
+        const sendRes = await fetch(sendUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chatId: groupId, message: `APEX HEARTBEAT - System alive. Budget: $5.00 remaining. ${new Date().toISOString()}` }),
+        })
+        const sendData = await sendRes.json()
+        checks.test_send = { status: sendRes.status, response: sendData }
+      } catch (e) {
+        checks.test_send = { error: e instanceof Error ? e.message : String(e) }
+      }
+    } else {
+      checks.test_send = { error: 'No GROUP_ID configured' }
+    }
+  }
+
   return NextResponse.json(checks)
 }

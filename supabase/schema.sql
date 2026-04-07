@@ -349,6 +349,7 @@ CREATE TABLE IF NOT EXISTS user_settings (
   whatsapp_instance_id  TEXT,
   whatsapp_api_token    TEXT,
   whatsapp_group_id     TEXT,
+  whatsapp_group_name   TEXT,
   whatsapp_enabled      BOOLEAN DEFAULT false,
   notifications_enabled BOOLEAN DEFAULT true,
   -- Risk controls

@@ -20,11 +20,11 @@ export async function POST(req: NextRequest) {
 
   if (body.action === 'deactivate') {
     await deactivateKillSwitch()
-    await waKillSwitch(false).catch(() => {})
+    await waKillSwitch(false).catch(e => console.error('[kill-switch] WhatsApp error:', e))
     return NextResponse.json({ success: true, message: 'Kill switch deactivated' })
   }
 
   await activateKillSwitch()
-  await waKillSwitch(true, 'Manually activated from Settings').catch(() => {})
+  await waKillSwitch(true, 'Manually activated from Settings').catch(e => console.error('[kill-switch] WhatsApp error:', e))
   return NextResponse.json({ success: true, message: 'Kill switch activated — trading halted' })
 }

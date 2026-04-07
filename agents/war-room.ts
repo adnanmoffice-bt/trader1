@@ -1,26 +1,56 @@
-import { callAgent } from '@/lib/anthropic'
+import { callAgent, getDailyBudgetStatus } from '@/lib/anthropic'
 import { computeIndicators, technicalScore, detectBBSqueeze, detectEMACross, detectRSIExtreme, detectMACDCross, detectVolumeSpike, detectEMA50Breakout, quickBacktest } from '@/lib/indicators'
 import { createServiceSupabase } from '@/lib/supabase'
 import { sendSignalAlert } from '@/lib/telegram'
 import { notifySignal as waSignal, notifyWarRoomDecision as waDecision, notifyWarRoomOpen as waOpen, notifyWarRoomDebate as waDebate, notifyWarRoomBlocked as waBlocked, notifyWarRoomScan as waScan } from '@/lib/whatsapp'
 import { checkSafety } from '@/lib/safety'
-import { hardRiskCheck, checkDailyLossLimit, getTradeStats, riskBasedPositionSize } from '@/lib/risk-controls'
+import { hardRiskCheck, checkDailyLossLimit, getTradeStats } from '@/lib/risk-controls'
 import { AGENT_PROMPTS, AGENT_TOKEN_LIMITS, type AgentId, type PromptContext } from '@/agents/agent-prompts'
 import { runPostMeetingBrief } from '@/agents/meta-agent'
+import { buildMacroContext, formatMacroContext, type MacroSnapshot } from '@/lib/macro-context'
+import { generateForecast, formatForecast } from '@/lib/forecast'
 import type { Instrument, OHLCV, Signal } from '@/types'
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// CONFIG
+// CONFIG — Token Budget Controls
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// Only instruments with active price_history data. Others (XAG, BRENT, WTI,
+// EUR/USD, GBP/USD, USD/JPY, SPY, QQQ) had 0 candles and wasted scan cycles.
 const ALL_INSTRUMENTS: Instrument[] = [
   'BTC/USD', 'ETH/USD', 'SOL/USD', 'BNB/USD', 'DOGE/USD', 'AVAX/USD', 'LINK/USD',
-  'XAU/USD', 'XAG/USD', 'BRENT', 'WTI',
-  'EUR/USD', 'GBP/USD', 'USD/JPY',
-  'SPY', 'QQQ',
+  'XAU/USD',
 ]
 
+const COOLDOWN_MIN = 30
+const MAX_MEETINGS_PER_CYCLE = 2
+
+// Decision-makers get the FULL uncompressed conversation history.
+// Debate agents get a compressed digest (each prior message ≤ 150 chars).
+const FULL_CONTEXT_AGENTS: Set<AgentId> = new Set([
+  'signal-generator', 'risk-manager', 'master-agent', 'orchestrator',
+])
+
 interface Msg { agent: string; role: string; message: string; data?: Record<string, unknown> }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONVERSATION CONTEXT — compact vs full
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function fullConvo(conv: Msg[]): string {
+  return conv.map(m => `[${m.agent.toUpperCase()}]: ${m.message}`).join('\n')
+}
+
+function compactConvo(conv: Msg[]): string {
+  return conv.map(m => {
+    const text = m.message.length > 150 ? m.message.slice(0, 147) + '...' : m.message
+    return `[${m.agent.toUpperCase()}]: ${text}`
+  }).join('\n')
+}
+
+function convoFor(conv: Msg[], agentId: AgentId): string {
+  return FULL_CONTEXT_AGENTS.has(agentId) ? fullConvo(conv) : compactConvo(conv)
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // MAIN ENTRY
@@ -29,45 +59,84 @@ interface Msg { agent: string; role: string; message: string; data?: Record<stri
 export async function runWarRoom(): Promise<void> {
   const db = createServiceSupabase()
 
+  // ── BUDGET GATE — hard stop when daily AI spend is exhausted ──
+  const budget = getDailyBudgetStatus()
+  if (budget.exhausted) {
+    await say(db, crypto.randomUUID(), null, {
+      agent: 'orchestrator', role: 'alert',
+      message: `WAR ROOM PAUSED: Daily AI budget exhausted ($${budget.spent.toFixed(2)}/$${budget.budget.toFixed(2)}). Resumes tomorrow.`,
+    })
+    return
+  }
+
   const safety = await checkSafety()
   if (!safety.safe) {
     await say(db, crypto.randomUUID(), null, { agent: 'orchestrator', role: 'alert', message: `WAR ROOM BLOCKED: ${safety.reason}` })
     return
   }
 
-  const cooldownMin = 15
+  // ── MACRO CONTEXT — live world state for all agents ──
+  const macro = await buildMacroContext()
+  const macroText = formatMacroContext(macro)
+
+  // ── NO-TRADE GATE — extreme conditions block all meetings ──
+  if (macro.riskLevel === 'EXTREME' && macro.noTradeReason) {
+    await say(db, crypto.randomUUID(), null, {
+      agent: 'orchestrator', role: 'alert',
+      message: `WAR ROOM PAUSED: ${macro.noTradeReason} | VIX:${macro.vix ?? '?'} F&G:${macro.fearGreed ?? '?'} Risk:${macro.riskLevel}`,
+    })
+    return
+  }
+
   const { data: recentDebates } = await db.from('war_room_messages')
     .select('instrument, created_at')
     .eq('role', 'decision')
-    .gte('created_at', new Date(Date.now() - cooldownMin * 60_000).toISOString())
+    .gte('created_at', new Date(Date.now() - COOLDOWN_MIN * 60_000).toISOString())
   const coolingDown = new Set((recentDebates ?? []).map(d => d.instrument))
 
   const scanResults: { symbol: string; status: string }[] = []
+  let meetingsHeld = 0
 
   for (const instrument of ALL_INSTRUMENTS) {
     const meetingId = crypto.randomUUID()
     try {
-      const result = await runMeeting(db, meetingId, instrument, coolingDown.has(instrument))
+      const budgetNow = getDailyBudgetStatus()
+      const atMeetingCap = meetingsHeld >= MAX_MEETINGS_PER_CYCLE
+      const budgetLow = budgetNow.remaining < 0.30
+
+      const result = await runMeeting(db, meetingId, instrument, coolingDown.has(instrument), atMeetingCap || budgetLow, macroText, macro)
       scanResults.push({ symbol: instrument, status: result })
+
+      if (result !== 'no trigger' && result !== 'cooldown' && result !== 'error' && result !== 'budget-capped') {
+        meetingsHeld++
+      }
     } catch (err) {
       await say(db, meetingId, instrument, { agent: 'orchestrator', role: 'alert', message: `Error: ${String(err).slice(0, 150)}` })
       scanResults.push({ symbol: instrument, status: 'error' })
     }
   }
 
-  const triggersFound = scanResults.filter(s => s.status !== 'no trigger' && s.status !== 'error' && s.status !== 'cooldown').length
+  const triggersFound = scanResults.filter(s => s.status !== 'no trigger' && s.status !== 'error' && s.status !== 'cooldown' && s.status !== 'budget-capped').length
+  const budgetEnd = getDailyBudgetStatus()
   await waScan({
     totalScanned: ALL_INSTRUMENTS.length,
     triggersFound,
     instruments: scanResults,
-  }).catch(() => {})
+    budgetSpent: budgetEnd.spent,
+    budgetRemaining: budgetEnd.remaining,
+  } as Parameters<typeof waScan>[0]).catch(e => console.error('[war-room] waScan WhatsApp error:', e))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // MEETING — Full 12-agent debate for triggered instruments
 // ═══════════════════════════════════════════════════════════════════════════════
 
-async function runMeeting(db: ReturnType<typeof createServiceSupabase>, meetingId: string, instrument: Instrument, onCooldown = false): Promise<string> {
+async function runMeeting(
+  db: ReturnType<typeof createServiceSupabase>,
+  meetingId: string, instrument: Instrument,
+  onCooldown = false, capReached = false,
+  macroText = '', macro: MacroSnapshot | null = null,
+): Promise<string> {
   const conv: Msg[] = []
 
   const { data: candles } = await db.from('price_history').select('*')
@@ -88,7 +157,10 @@ async function runMeeting(db: ReturnType<typeof createServiceSupabase>, meetingI
   const tech = technicalScore(ind)
   const price = ind.current_price
 
-  // Check all trigger types — first match wins (ordered by signal quality)
+  // ── Quantitative forecast: ARIMA, Monte Carlo, Seasonality, Vol regime ──
+  const forecast = generateForecast(instrument, ohlcv)
+  const forecastText = formatForecast(forecast)
+
   const rawTriggers = [
     { name: 'BB Squeeze Breakout', ...detectBBSqueeze(ohlcv) },
     { name: 'EMA 12/26 Cross',    ...detectEMACross(ohlcv) },
@@ -102,14 +174,6 @@ async function runMeeting(db: ReturnType<typeof createServiceSupabase>, meetingI
   const triggerDir = rawTriggers[0]?.direction ?? null
   const allTriggers = rawTriggers.map(t => t.name).join(' + ') || null
 
-  if (trigger && onCooldown) {
-    await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
-      message: `${instrument} @ $${f(price)} | ${allTriggers} detected but on cooldown (debated <15min ago). Adjourned.`,
-      data: { price, trigger: allTriggers, cooldown: true },
-    })
-    return 'cooldown'
-  }
-
   if (!trigger) {
     await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
       message: `${instrument} @ $${f(price)} | RSI:${ind.rsi.toFixed(0)} MACD:${ind.macd.histogram > 0 ? '+' : '-'}${Math.abs(ind.macd.histogram).toFixed(2)} BB:${(ind.bb.percentB * 100).toFixed(0)}% Vol:${ind.volume_ratio.toFixed(1)}x EMA:${price > ind.ema_50 ? '↑' : '↓'} | No trigger. Adjourned.`,
@@ -118,39 +182,59 @@ async function runMeeting(db: ReturnType<typeof createServiceSupabase>, meetingI
     return 'no trigger'
   }
 
+  if (onCooldown) {
+    await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
+      message: `${instrument} @ $${f(price)} | ${allTriggers} detected but on cooldown (debated <${COOLDOWN_MIN}min ago). Adjourned.`,
+      data: { price, trigger: allTriggers, cooldown: true },
+    })
+    return 'cooldown'
+  }
+
+  if (capReached) {
+    await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
+      message: `${instrument} @ $${f(price)} | ${allTriggers} detected but meeting cap reached this cycle (${MAX_MEETINGS_PER_CYCLE}/cycle) or budget low. Queued for next run.`,
+      data: { price, trigger: allTriggers, capReached: true },
+    })
+    return 'budget-capped'
+  }
+
+  // ═══ FORECAST CONTRADICT CHECK — warn if quant models disagree with trigger ═══
+  const forecastContradict =
+    (triggerDir === 'long' && forecast.combinedSignal < -20) ||
+    (triggerDir === 'short' && forecast.combinedSignal > 20)
+  const forecastNote = forecastContradict
+    ? ` ⚠️ FORECAST CONTRADICT: quant models say ${forecast.combinedLabel} (${forecast.combinedSignal}/100) vs trigger ${triggerDir?.toUpperCase()}.`
+    : ` Forecast: ${forecast.combinedLabel} (${forecast.combinedSignal}/100).`
+
   // ═══ FULL DEBATE — all 12 agents participate ═══
 
   const triggerLabel = rawTriggers.length > 1 ? `${allTriggers} (${rawTriggers.length} signals)` : trigger
   await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'open',
-    message: `MEETING: ${instrument} @ $${f(price)}. ${triggerLabel} detected → ${triggerDir?.toUpperCase()}. RSI:${ind.rsi.toFixed(0)} ATR:${ind.atr.toFixed(2)} Vol:${ind.volume_ratio.toFixed(1)}x. Calling all agents.`,
-    data: { price, rsi: ind.rsi, atr: ind.atr, trigger: allTriggers, triggerDir, triggerCount: rawTriggers.length },
+    message: `MEETING: ${instrument} @ $${f(price)}. ${triggerLabel} detected → ${triggerDir?.toUpperCase()}. RSI:${ind.rsi.toFixed(0)} ATR:${ind.atr.toFixed(2)} Vol:${ind.volume_ratio.toFixed(1)}x.${forecastNote} MC P(up 4h): ${(forecast.upProbability4h * 100).toFixed(0)}%. Calling all agents.`,
+    data: { price, rsi: ind.rsi, atr: ind.atr, trigger: allTriggers, triggerDir, triggerCount: rawTriggers.length, forecastSignal: forecast.combinedSignal, forecastContradict },
   })
 
   await waOpen({
     instrument, price, trigger: allTriggers ?? trigger, direction: triggerDir ?? 'long',
     rsi: ind.rsi, atr: ind.atr, volumeRatio: ind.volume_ratio, triggerCount: rawTriggers.length,
-  }).catch(() => {})
+  }).catch(e => console.error('[war-room] waOpen WhatsApp error:', e))
 
-  const convoStr = () => conv.map(m => `[${m.agent.toUpperCase()}]: ${m.message}`).join('\n')
-
-  // Get cross-asset context for Correlation Agent
   const { data: allPrices } = await db.from('market_data').select('symbol, price, change_pct_24h').limit(20)
   const priceCtx = (allPrices ?? []).map(p => `${p.symbol}: $${f(+p.price)} (${(+p.change_pct_24h) >= 0 ? '+' : ''}${(+p.change_pct_24h).toFixed(1)}%)`).join(', ')
 
-  // Get recent trade history for Trade Reviewer
-  const { data: pastTrades } = await db.from('demo_trades').select('instrument, direction, pnl_aed, exit_reason')
+  const { data: pastTrades } = await db.from('demo_trades').select('instrument, direction, pnl_usd, pnl_aed, exit_reason')
     .not('exit_time', 'is', null).order('exit_time', { ascending: false }).limit(10)
-  const tradeHist = (pastTrades ?? []).map(t => `${t.instrument} ${t.direction} → ${t.exit_reason} (${+t.pnl_aed >= 0 ? '+' : ''}${(+t.pnl_aed).toFixed(0)})`).join(', ') || 'No history.'
+  const tradeHist = (pastTrades ?? []).map(t => {
+    const pnl = +(t.pnl_usd ?? t.pnl_aed ?? 0)
+    return `${t.instrument} ${t.direction} → ${t.exit_reason} (${pnl >= 0 ? '+' : ''}$${pnl.toFixed(0)})`
+  }).join(', ') || 'No history.'
 
-  // Get open positions
   const { count: openPos } = await db.from('positions').select('*', { count: 'exact', head: true })
-  const recentLosses = (pastTrades ?? []).filter(t => +t.pnl_aed < 0).length
+  const recentLosses = (pastTrades ?? []).filter(t => +(t.pnl_usd ?? t.pnl_aed ?? 0) < 0).length
 
-  // Get news context
   const { data: news } = await db.from('news').select('headline, sentiment').order('published_at', { ascending: false }).limit(5)
   const newsCtx = (news ?? []).map(n => `${n.headline} [${n.sentiment}]`).join('; ') || 'No recent news.'
 
-  // Build shared prompt context for all agents
   const promptCtx: PromptContext = {
     instrument, triggerDir, price,
     rsi: ind.rsi, atr: ind.atr, bbPercentB: ind.bb.percentB,
@@ -160,51 +244,51 @@ async function runMeeting(db: ReturnType<typeof createServiceSupabase>, meetingI
     openPositions: openPos ?? 0, recentLosses, trigger: allTriggers ?? trigger,
   }
 
-  // ── 1. MACRO AGENT ──
+  // ── Macro context header — every agent sees the live world state ──
+  const macroHeader = macroText ? `\n\n${macroText}\n` : ''
+  const riskNote = macro?.riskLevel === 'HIGH' ? '\n⚠️ ELEVATED MACRO RISK — apply extra scrutiny to this trade.\n' : ''
+
+  // ── 1–7: DEBATE AGENTS — get compact context to save tokens ──
+
   await agentSpeak(db, meetingId, instrument, conv, 'macro-agent', promptCtx,
-    `${convoStr()}\n\nCurrent date: ${new Date().toLocaleDateString('en')}. Asset: ${instrument}. Direction: ${triggerDir}.`)
+    `${convoFor(conv, 'macro-agent')}${macroHeader}\nCurrent date: ${new Date().toLocaleDateString('en')}. Asset: ${instrument}. Direction: ${triggerDir}. Analyze the LIVE world state above and its impact on this trade.`)
 
-  // ── 2. CORRELATION AGENT ──
   await agentSpeak(db, meetingId, instrument, conv, 'correlation-agent', promptCtx,
-    `${convoStr()}\n\nAll asset prices right now: ${priceCtx}\n\nDoes cross-asset data support ${triggerDir} on ${instrument}?`)
+    `${convoFor(conv, 'correlation-agent')}${riskNote}\nAll asset prices: ${priceCtx}\nVIX:${macro?.vix ?? '?'} DXY:${macro?.dxy ?? '?'} US10Y:${macro?.us10y ?? '?'}% Oil:$${macro?.oilWTI ?? '?'}\n\nDoes cross-asset and macro data support ${triggerDir} on ${instrument}?`)
 
-  // ── 3. BULL AGENT (ICT) ──
   await agentSpeak(db, meetingId, instrument, conv, 'bull-agent', promptCtx,
-    `${convoStr()}\n\nMake the case FOR ${triggerDir?.toUpperCase()} ${instrument} at $${f(price)}. RSI:${ind.rsi.toFixed(0)} ATR:${ind.atr.toFixed(2)} BB%B:${(ind.bb.percentB * 100).toFixed(0)}% EMA20:${ind.ema_20.toFixed(2)} EMA50:${ind.ema_50.toFixed(2)} EMA200:${ind.ema_200.toFixed(2)} MACD:${ind.macd.histogram > 0 ? '+' : ''}${ind.macd.histogram.toFixed(2)} Vol:${ind.volume_ratio.toFixed(1)}x`)
+    `${convoFor(conv, 'bull-agent')}${riskNote}\nMake the case FOR ${triggerDir?.toUpperCase()} ${instrument} at $${f(price)}. RSI:${ind.rsi.toFixed(0)} ATR:${ind.atr.toFixed(2)} BB%B:${(ind.bb.percentB * 100).toFixed(0)}% EMA20:${ind.ema_20.toFixed(2)} EMA50:${ind.ema_50.toFixed(2)} EMA200:${ind.ema_200.toFixed(2)} MACD:${ind.macd.histogram > 0 ? '+' : ''}${ind.macd.histogram.toFixed(2)} Vol:${ind.volume_ratio.toFixed(1)}x`)
 
-  // ── 4. BEAR AGENT (Wyckoff) ──
   await agentSpeak(db, meetingId, instrument, conv, 'bear-agent', promptCtx,
-    `${convoStr()}\n\nStress-test this trade. RSI:${ind.rsi.toFixed(0)} ATR:${ind.atr.toFixed(2)} BB%B:${(ind.bb.percentB * 100).toFixed(0)}% EMA20:${ind.ema_20.toFixed(2)} EMA50:${ind.ema_50.toFixed(2)} EMA200:${ind.ema_200.toFixed(2)} Vol:${ind.volume_ratio.toFixed(1)}x. What could go wrong?`)
+    `${convoFor(conv, 'bear-agent')}\n\nStress-test this trade. RSI:${ind.rsi.toFixed(0)} ATR:${ind.atr.toFixed(2)} BB%B:${(ind.bb.percentB * 100).toFixed(0)}% EMA20:${ind.ema_20.toFixed(2)} EMA50:${ind.ema_50.toFixed(2)} EMA200:${ind.ema_200.toFixed(2)} Vol:${ind.volume_ratio.toFixed(1)}x. What could go wrong?`)
 
-  // ── 5. SCALPER AGENT ──
   await agentSpeak(db, meetingId, instrument, conv, 'scalper-agent', promptCtx,
-    `${convoStr()}\n\nIs there a scalp opportunity on ${instrument} at $${f(price)} right now? RSI:${ind.rsi.toFixed(0)} ATR:${ind.atr.toFixed(2)} BB%B:${(ind.bb.percentB * 100).toFixed(0)}%`)
+    `${convoFor(conv, 'scalper-agent')}\n\nIs there a scalp opportunity on ${instrument} at $${f(price)} right now? RSI:${ind.rsi.toFixed(0)} ATR:${ind.atr.toFixed(2)} BB%B:${(ind.bb.percentB * 100).toFixed(0)}%`)
 
-  // ── 6. TREND AGENT ──
   await agentSpeak(db, meetingId, instrument, conv, 'trend-agent', promptCtx,
-    `${convoStr()}\n\nEMA20:${ind.ema_20.toFixed(2)} EMA50:${ind.ema_50.toFixed(2)} EMA200:${ind.ema_200.toFixed(2)} Price:$${f(price)} RSI:${ind.rsi.toFixed(0)} MACD hist:${ind.macd.histogram.toFixed(2)}. Trend picture for ${instrument}?`)
+    `${convoFor(conv, 'trend-agent')}\n\nEMA20:${ind.ema_20.toFixed(2)} EMA50:${ind.ema_50.toFixed(2)} EMA200:${ind.ema_200.toFixed(2)} Price:$${f(price)} RSI:${ind.rsi.toFixed(0)} MACD hist:${ind.macd.histogram.toFixed(2)}. Trend picture for ${instrument}?`)
 
-  // ── 7. MARKET ANALYST ──
+  const liveHeadlines = macro?.headlines?.length ? `\nLIVE HEADLINES: ${macro.headlines.join(' | ')}` : ''
   await agentSpeak(db, meetingId, instrument, conv, 'market-analyst', promptCtx,
-    `${convoStr()}\n\nRecent news: ${newsCtx}\n\nSentiment assessment for ${instrument}?`)
+    `${convoFor(conv, 'market-analyst')}\n\nRecent news: ${newsCtx}${liveHeadlines}\nEconomic calendar: ${macro?.upcomingEvents?.map(e => `${e.impact === 'high' ? 'HIGH' : e.impact} ${e.country} ${e.title}`).join(', ') || 'No events'}\n\nSentiment assessment for ${instrument}?`)
 
-  // ── 8. SIGNAL GENERATOR ──
+  // ── 8–10: DECISION AGENTS — get FULL context for quality ──
+
   await agentSpeak(db, meetingId, instrument, conv, 'signal-generator', promptCtx,
-    `${convoStr()}\n\nGenerate the signal for ${instrument} at $${f(price)}, ATR=${ind.atr.toFixed(2)}. Full debate above — synthesize into precise trade levels.`)
+    `${convoFor(conv, 'signal-generator')}\n\n${forecastText}\nGenerate the signal for ${instrument} at $${f(price)}, ATR=${ind.atr.toFixed(2)}. Use the quantitative forecast above to validate your entry/SL/TP levels.`)
 
-  // ── 9. RISK MANAGER ──
   await agentSpeak(db, meetingId, instrument, conv, 'risk-manager', promptCtx,
-    `${convoStr()}\n\nRisk decision for ${instrument}? Open positions: ${openPos ?? 0}/3. Recent losses: ${recentLosses}/10.`)
+    `${convoFor(conv, 'risk-manager')}\n\nRisk decision for ${instrument}? Open positions: ${openPos ?? 0}/3. Recent losses: ${recentLosses}/10.\nMACRO RISK: ${macro?.riskLevel ?? '?'} | VIX:${macro?.vix ?? '?'} | Yield curve:${macro?.yieldCurve ?? '?'} | Events 24h: ${macro?.upcomingEvents?.filter(e => e.impact === 'high').length ?? 0}\nFORECAST: MC P(up 4h):${(forecast.upProbability4h * 100).toFixed(0)}% | Vol regime:${forecast.volRegime} (${forecast.volRatio}x) | Max DD:${(forecast.mcMaxDrawdown * 100).toFixed(1)}% | Signal:${forecast.combinedSignal}/100 ${forecast.combinedLabel}`)
 
-  // ── 10. TRADE REVIEWER ──
   await agentSpeak(db, meetingId, instrument, conv, 'trade-reviewer', promptCtx,
-    `${convoStr()}\n\nRecent trade history: ${tradeHist}\n\nPerformance context for ${instrument}?`)
+    `${convoFor(conv, 'trade-reviewer')}\n\nRecent trade history: ${tradeHist}\n\nPerformance context for ${instrument}?`)
 
-  // ── 11. MASTER AGENT ──
+  // ── 11: MASTER AGENT — full context for final synthesis ──
+
   await agentSpeak(db, meetingId, instrument, conv, 'master-agent', promptCtx,
-    `${convoStr()}\n\nSummarize the full debate. List each agent's stance. Tally the votes. Give your weighted recommendation.`)
+    `${convoFor(conv, 'master-agent')}\n\n${forecastText}\nSummarize the full debate AND the quantitative forecast. Do the models agree with the agents? Tally votes. Give your weighted recommendation.`)
 
-  // ── WhatsApp: Send debate summary to the team ──
+  // ── WhatsApp: Send debate summary ──
   const debateAgents = conv
     .filter(m => m.role === 'speak' && m.agent !== 'orchestrator')
     .map(m => {
@@ -213,30 +297,71 @@ async function runMeeting(db: ReturnType<typeof createServiceSupabase>, meetingI
       const stance = bullish && !bearish ? 'bullish' as const : bearish && !bullish ? 'bearish' as const : 'neutral' as const
       return { name: m.agent, stance, summary: m.message.slice(0, 80) }
     })
-  await waDebate({ instrument, agents: debateAgents }).catch(() => {})
+  await waDebate({ instrument, agents: debateAgents }).catch(e => console.error('[war-room] waDebate WhatsApp error:', e))
 
-  // ── 12. ORCHESTRATOR FINAL DECISION ──
+  // ── 12: ORCHESTRATOR FINAL DECISION — structured JSON, no regex ──
   const orchDbPrompt = await getActivePrompt(db, 'orchestrator')
   const orchDefaultPrompt = AGENT_PROMPTS['orchestrator'](promptCtx)
-  const decisionResponse = await callAgent<string>({
-    system: orchDbPrompt ?? orchDefaultPrompt,
-    user: `${convoStr()}\n\nFinal decision for ${instrument}. You have heard all 11 agents. Make your call.`,
-    maxTokens: AGENT_TOKEN_LIMITS['orchestrator'],
-    timeoutMs: 30000,
-  })
 
-  const isExecute = /execut|approv|proceed|go ahead|take the trade/i.test(decisionResponse)
+  interface OrchestratorDecision {
+    decision: 'EXECUTE' | 'REJECT'
+    conviction: number
+    reasoning: string
+    dissent?: string
+    reversal_trigger?: string
+  }
 
-  // Count votes from the conversation
+  let parsed: OrchestratorDecision | null = null
+  let rawDecisionText = ''
+  try {
+    const result = await callAgent<OrchestratorDecision>({
+      system: orchDbPrompt ?? orchDefaultPrompt,
+      user: `${fullConvo(conv)}${macroHeader}\n${forecastText}\nFinal decision for ${instrument}. You have heard all 11 agents. Consider the LIVE WORLD STATE and QUANTITATIVE FORECAST above. If the forecast contradicts the agent consensus, explain why you trust one over the other. Respond with JSON only.`,
+      maxTokens: AGENT_TOKEN_LIMITS['orchestrator'],
+      timeoutMs: 45000,
+      expectJson: true,
+    })
+    parsed = result
+    rawDecisionText = JSON.stringify(result)
+  } catch {
+    rawDecisionText = '[JSON parse failed — defaulting to REJECT for safety]'
+  }
+
+  // SAFETY: if JSON parsing failed or decision field is not exactly "EXECUTE", default to REJECT
+  const isExecute = parsed?.decision === 'EXECUTE' && (parsed?.conviction ?? 0) >= 50
+  const decisionResponse = parsed
+    ? `${parsed.decision} (conviction: ${parsed.conviction}%) — ${parsed.reasoning}`
+    : rawDecisionText
+
   const voteFor = conv.filter(m => /bullish|long|buy|support|agree|for|execute|approve/i.test(m.message) && m.agent !== 'orchestrator').length
   const voteAgainst = conv.filter(m => /bearish|reject|against|caution|risk|wait|pass/i.test(m.message) && m.agent !== 'orchestrator').length
 
   await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'decision',
     message: decisionResponse,
-    data: { execute: isExecute, trigger, direction: triggerDir, votesFor: voteFor, votesAgainst: voteAgainst, agentCount: 12 },
+    data: {
+      execute: isExecute, trigger, direction: triggerDir,
+      votesFor: voteFor, votesAgainst: voteAgainst, agentCount: 12,
+      conviction: parsed?.conviction ?? 0,
+      structured: !!parsed,
+      dissent: parsed?.dissent,
+    },
   })
 
-  // Build agent stances for meta-agent brief
+  // Audit log: every decision gets a permanent record
+  try {
+    await db.from('agent_logs').insert({
+      agent: 'orchestrator', level: isExecute ? 'ok' : 'info',
+      message: `[DECISION] ${instrument} ${triggerDir} → ${isExecute ? 'EXECUTE' : 'REJECT'} (conviction: ${parsed?.conviction ?? '?'}%)`,
+      metadata: {
+        meeting_id: meetingId, instrument, direction: triggerDir, trigger: allTriggers,
+        decision: parsed?.decision, conviction: parsed?.conviction,
+        reasoning: parsed?.reasoning, dissent: parsed?.dissent,
+        votes: { for: voteFor, against: voteAgainst },
+        structured_json: !!parsed,
+      },
+    })
+  } catch (e) { console.error('[war-room] audit log insert error:', e) }
+
   const agentStances = conv
     .filter(m => m.role === 'speak' && m.agent !== 'orchestrator')
     .map(m => {
@@ -245,7 +370,6 @@ async function runMeeting(db: ReturnType<typeof createServiceSupabase>, meetingI
       return { agent: m.agent, stance: (b && !br ? 'bull' : br && !b ? 'bear' : 'neutral') as 'bull' | 'bear' | 'neutral' }
     })
 
-  // Execute if approved — but must pass hard risk checks first
   if (isExecute && triggerDir) {
     const slMult = 2.5
     const tpMult = trigger === 'BB Squeeze Breakout' ? 4 : 5
@@ -256,52 +380,51 @@ async function runMeeting(db: ReturnType<typeof createServiceSupabase>, meetingI
     const tp = triggerDir === 'long' ? entry + tpDist : entry - tpDist
     const rr = Math.round((tpDist / slDist) * 100) / 100
 
-    // ── HARD RISK GATE — same rules as runRiskManager in agents/index.ts ──
     const riskCheck = hardRiskCheck(rr, entry, sl, openPos ?? 0)
     if (!riskCheck.allowed) {
-      await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'decision',
-        message: `HARD REJECT: ${riskCheck.reason}`,
-      })
-      await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
-        message: `BLOCKED by risk rules: ${riskCheck.reason}. Meeting closed.`,
-      })
-      await waBlocked({ instrument, reason: riskCheck.reason, blocker: 'Risk Manager' }).catch(() => {})
+      await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'decision', message: `HARD REJECT: ${riskCheck.reason}` })
+      await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close', message: `BLOCKED by risk rules: ${riskCheck.reason}. Meeting closed.` })
+      await waBlocked({ instrument, reason: riskCheck.reason, blocker: 'Risk Manager' }).catch(e => console.error('[war-room] waBlocked error:', e))
       await runPostMeetingBrief({ instrument, decision: 'blocked', votesFor: voteFor, votesAgainst: voteAgainst, trigger: allTriggers ?? trigger, agentStances }).catch(() => {})
       return 'blocked'
     }
 
-    // ── DAILY LOSS LIMIT CHECK ──
     const { data: portfolio } = await db.from('portfolio').select('capital').eq('is_demo', false).single()
-    const capitalAed = portfolio?.capital ?? 5000
-    const dailyCheck = await checkDailyLossLimit(capitalAed)
+    const capitalUsd = portfolio?.capital ?? 5000
+    const dailyCheck = await checkDailyLossLimit(capitalUsd)
     if (!dailyCheck.allowed) {
-      await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'decision',
-        message: `DAILY LIMIT: ${dailyCheck.reason}`,
-      })
-      await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
-        message: `BLOCKED by daily loss limit. Meeting closed.`,
-      })
-      await waBlocked({ instrument, reason: dailyCheck.reason, blocker: 'Daily Loss Limit' }).catch(() => {})
+      await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'decision', message: `DAILY LIMIT: ${dailyCheck.reason}` })
+      await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close', message: `BLOCKED by daily loss limit. Meeting closed.` })
+      await waBlocked({ instrument, reason: dailyCheck.reason, blocker: 'Daily Loss Limit' }).catch(e => console.error('[war-room] waBlocked error:', e))
       await runPostMeetingBrief({ instrument, decision: 'blocked', votesFor: voteFor, votesAgainst: voteAgainst, trigger: allTriggers ?? trigger, agentStances }).catch(() => {})
       return 'blocked'
     }
 
-    // ── QUICK BACKTEST — reject if strategy fails on recent data ──
     const strategyType = trigger === 'BB Squeeze Breakout' ? 'BB_SQUEEZE' as const : 'EMA_CROSS' as const
     const bt = quickBacktest(ohlcv, strategyType, slMult, tpMult)
     if (!bt.passed) {
       await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'decision',
         message: `BACKTEST FAIL: ${strategyType} win rate ${(bt.winRate * 100).toFixed(0)}% (${bt.wins}W/${bt.losses}L) on recent data — below 35% threshold`,
       })
-      await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
-        message: `BLOCKED by backtest validation. Meeting closed.`,
-      })
-      await waBlocked({ instrument, reason: `Backtest failed: ${bt.wins}W/${bt.losses}L (${(bt.winRate * 100).toFixed(0)}%)`, blocker: 'Backtest Validation' }).catch(() => {})
+      await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close', message: `BLOCKED by backtest validation. Meeting closed.` })
+      await waBlocked({ instrument, reason: `Backtest failed: ${bt.wins}W/${bt.losses}L (${(bt.winRate * 100).toFixed(0)}%)`, blocker: 'Backtest Validation' }).catch(e => console.error('[war-room] waBlocked error:', e))
       await runPostMeetingBrief({ instrument, decision: 'blocked', votesFor: voteFor, votesAgainst: voteAgainst, trigger: allTriggers ?? trigger, agentStances }).catch(() => {})
       return 'blocked'
     }
 
-    // ── KELLY-WEIGHTED CONFIDENCE ──
+    // ── SIGNAL DEDUPLICATION — prevent duplicate signals for same instrument/direction ──
+    const { count: recentSignalCount } = await db.from('signals')
+      .select('*', { count: 'exact', head: true })
+      .eq('instrument', instrument).eq('direction', triggerDir)
+      .gte('created_at', new Date(Date.now() - 60 * 60_000).toISOString())
+    if ((recentSignalCount ?? 0) > 0) {
+      await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
+        message: `DUPLICATE: ${triggerDir} ${instrument} signal already exists from last 60 min. Skipped.`,
+      })
+      await runPostMeetingBrief({ instrument, decision: 'blocked', votesFor: voteFor, votesAgainst: voteAgainst, trigger: allTriggers ?? trigger, agentStances }).catch(() => {})
+      return 'blocked'
+    }
+
     const stats = await getTradeStats()
     const dynamicConf = stats.totalTrades >= 10
       ? Math.round(80 * (0.5 + stats.winRate * 0.5))
@@ -318,8 +441,8 @@ async function runMeeting(db: ReturnType<typeof createServiceSupabase>, meetingI
     }).select().single()
 
     if (saved) {
-      await sendSignalAlert(saved as Signal).catch(() => {})
-      await waSignal(saved as Signal).catch(() => {})
+      await sendSignalAlert(saved as Signal).catch(e => console.error('[war-room] Telegram error:', e))
+      await waSignal(saved as Signal).catch(e => console.error('[war-room] waSignal WhatsApp error:', e))
     }
 
     await waDecision({
@@ -329,7 +452,7 @@ async function runMeeting(db: ReturnType<typeof createServiceSupabase>, meetingI
       trigger: allTriggers ?? undefined,
       backtestWins: bt.wins, backtestLosses: bt.losses,
       kelly: stats.kellyFraction,
-    }).catch(() => {})
+    }).catch(e => console.error('[war-room] waDecision WhatsApp error:', e))
 
     await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
       message: `EXECUTED: ${triggerDir.toUpperCase()} ${instrument} @ $${f(entry)} | SL:$${f(sl)} TP:$${f(tp)} R:R ${rr}x | Vote: ${voteFor}-${voteAgainst} | BT:${bt.wins}W/${bt.losses}L | Kelly:${(stats.kellyFraction * 100).toFixed(1)}%. Meeting closed.`,
@@ -341,7 +464,7 @@ async function runMeeting(db: ReturnType<typeof createServiceSupabase>, meetingI
       instrument, decision: decisionResponse, execute: false,
       votesFor: voteFor, votesAgainst: voteAgainst,
       trigger: allTriggers ?? undefined,
-    }).catch(() => {})
+    }).catch(e => console.error('[war-room] waDecision WhatsApp error:', e))
 
     await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
       message: `REJECTED: No trade on ${instrument}. Vote: ${voteFor} for, ${voteAgainst} against. Meeting closed.`,
@@ -373,7 +496,7 @@ async function agentSpeak(
     const dbPrompt = await getActivePrompt(db, agentId)
     const defaultPrompt = AGENT_PROMPTS[agentId](promptCtx)
     const system = dbPrompt ?? defaultPrompt
-    const maxTokens = AGENT_TOKEN_LIMITS[agentId] ?? 1200
+    const maxTokens = AGENT_TOKEN_LIMITS[agentId] ?? 800
     const response = await callAgent<string>({ system, user: userMsg, maxTokens, timeoutMs: 30000 })
     await speak(db, meetingId, instrument, conv, { agent: agentId, role: 'speak', message: response })
   } catch (err) {
@@ -406,5 +529,4 @@ function f(n: number): string {
   return n >= 10000 ? n.toLocaleString('en', { maximumFractionDigits: 0 }) : n >= 100 ? n.toFixed(2) : n.toFixed(2)
 }
 
-// Re-export for backwards compat
 export { runWarRoom as runOrchestrator }

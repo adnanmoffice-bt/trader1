@@ -53,7 +53,9 @@ export async function GET() {
       whatsapp_instance_id: data.whatsapp_instance_id ?? '',
       whatsapp_configured: Boolean(data.whatsapp_instance_id && data.whatsapp_api_token),
       whatsapp_enabled: data.whatsapp_enabled ?? false,
+      whatsapp_api_token_set: Boolean(data.whatsapp_api_token),
       whatsapp_group_id: data.whatsapp_group_id ?? '',
+      whatsapp_group_name: data.whatsapp_group_name ?? '',
       max_drawdown_pct: Number(data.max_drawdown_pct),
       daily_loss_limit_pct: Number(data.daily_loss_limit_pct),
       max_positions: data.max_positions,
@@ -97,6 +99,7 @@ export async function POST(req: NextRequest) {
   if (body.whatsapp_instance_id !== undefined) updateFields.whatsapp_instance_id = body.whatsapp_instance_id || null
   if (body.whatsapp_api_token !== undefined) updateFields.whatsapp_api_token = body.whatsapp_api_token || null
   if (body.whatsapp_group_id !== undefined) updateFields.whatsapp_group_id = body.whatsapp_group_id || null
+  if (body.whatsapp_group_name !== undefined) updateFields.whatsapp_group_name = body.whatsapp_group_name || null
 
   if (body.trading_mode === 'live') {
     const { data: existing } = await db

@@ -34,7 +34,7 @@ export async function runDailyReview(): Promise<{ actions: string[]; insights: s
     .order('created_at', { ascending: true })
 
   if (!recentDecisions?.length) {
-    await sendGroupMessage('🧬 META AGENT — Daily Review\n\nNo War Room sessions in the last 24h. Nothing to analyze.').catch(() => {})
+    await sendGroupMessage('🧬 META AGENT — Daily Review\n\nNo War Room sessions in the last 24h. Nothing to analyze.').catch(e => console.error('[meta-agent] WhatsApp error:', e))
     return { actions: ['no sessions'], insights: [] }
   }
 
@@ -232,7 +232,7 @@ RULES:
         `📉 Accuracy was: ${worstAccuracy}% (${agentScores[worstAgent].correct}/${agentScores[worstAgent].total})\n` +
         `📝 Version: v${currentVersion} → v${currentVersion + 1}\n` +
         `💡 Reason: ${metaAnalysis.slice(0, 200)}...`
-      ).catch(() => {})
+      ).catch(e => console.error('[meta-agent] WhatsApp error:', e))
     }
   }
 
@@ -244,7 +244,7 @@ RULES:
     `${actions.length > 0 ? `\n🔧 Changes made:\n${actions.map(a => `  • ${a}`).join('\n')}` : '✅ No prompt changes needed'}\n\n` +
     `💡 Insight:\n${metaAnalysis.slice(0, 400)}${metaAnalysis.length > 400 ? '...' : ''}`
 
-  await sendGroupMessage(summaryMsg).catch(() => {})
+  await sendGroupMessage(summaryMsg).catch(e => console.error('[meta-agent] WhatsApp error:', e))
 
   return { actions, insights }
 }
@@ -394,7 +394,7 @@ Improve the prompt to be more accurate. Keep the methodology but add rigor. Outp
     `${actions.length > 0 ? `🔧 Prompts Updated:\n${actions.map(a => `  • ${a}`).join('\n')}\n\n` : ''}` +
     `📝 Analysis:\n${weeklyReport.slice(0, 600)}${weeklyReport.length > 600 ? '...' : ''}`
 
-  await sendGroupMessage(waMsg).catch(() => {})
+  await sendGroupMessage(waMsg).catch(e => console.error('[meta-agent] WhatsApp error:', e))
 
   return { actions, report: weeklyReport }
 }
@@ -473,5 +473,5 @@ export async function runPostMeetingBrief(outcome: MeetingOutcome): Promise<void
       `⚡ Trigger: ${outcome.trigger ?? 'N/A'}`
   }
 
-  await sendGroupMessage(msg).catch(() => {})
+  await sendGroupMessage(msg).catch(e => console.error('[meta-agent] WhatsApp error:', e))
 }

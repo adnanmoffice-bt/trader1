@@ -40,6 +40,7 @@ interface Settings {
   whatsapp_enabled: boolean
   whatsapp_group_id?: string
   whatsapp_group_name?: string
+  whatsapp_api_token_set?: boolean
   max_drawdown_pct: number
   daily_loss_limit_pct: number
   max_positions: number
@@ -116,8 +117,10 @@ export default function SettingsPage() {
   const [walletLoading, setWalletLoading] = useState(false)
 
   // Exchange form
+  const [selectedExchange, setSelectedExchange] = useState<ExchangeId>('binance')
   const [apiKey, setApiKey] = useState('')
   const [secretKey, setSecretKey] = useState('')
+  const [passphrase, setPassphrase] = useState('')
   const [testResult, setTestResult] = useState<{ success: boolean; message: string; warning?: string } | null>(null)
   const [testing, setTesting] = useState(false)
 
@@ -180,8 +183,8 @@ export default function SettingsPage() {
   }, [router, loadSettings])
 
   useEffect(() => {
-    if (settings?.binance_configured) loadWallet()
-  }, [settings?.binance_configured, loadWallet])
+    if (settings?.binance_configured || (settings?.configured_exchanges?.length ?? 0) > 0) loadWallet()
+  }, [settings?.binance_configured, settings?.configured_exchanges?.length, loadWallet])
 
   async function saveField(fields: Record<string, unknown>) {
     setSaving(true)
@@ -202,43 +205,61 @@ export default function SettingsPage() {
     setTimeout(() => setSaveMsg(''), 3000)
   }
 
-  async function testBinance() {
+  const currentExMeta = EXCHANGES.find(e => e.id === selectedExchange)!
+
+  async function testExchange() {
     if (!apiKey || !secretKey) { setTestResult({ success: false, message: 'Unesi oba ključa' }); return }
+    if (currentExMeta.needsPassphrase && !passphrase) { setTestResult({ success: false, message: 'Unesi Passphrase' }); return }
     setTesting(true)
     setTestResult(null)
     try {
       const res = await fetch('/api/settings/test-exchange', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey, secretKey }),
+        body: JSON.stringify({ exchange: selectedExchange, apiKey, secretKey, passphrase: passphrase || undefined }),
       })
       const data = await res.json()
       if (data.success) {
         setTestResult({
           success: true,
-          message: `Povezano! USDT: $${data.usdtBalance.toFixed(2)} | Trading: ${data.canTrade ? 'DA' : 'NE'}`,
+          message: `${data.exchangeName} povezan! ${data.quoteAsset}: $${data.quoteBalance.toFixed(2)} | Trading: ${data.canTrade ? 'DA' : 'NE'}`,
           warning: data.warning,
         })
       } else {
         setTestResult({ success: false, message: data.error })
       }
-    } catch (err) {
+    } catch {
       setTestResult({ success: false, message: 'Greška pri testiranju' })
     }
     setTesting(false)
   }
 
-  async function saveBinanceKeys() {
-    await saveField({ binance_api_key: apiKey, binance_secret_key: secretKey })
+  async function saveExchangeKeys() {
+    if (selectedExchange === 'binance') {
+      await saveField({ binance_api_key: apiKey, binance_secret_key: secretKey })
+    } else {
+      await saveField({
+        [`exchange_${selectedExchange}_api_key`]: apiKey,
+        [`exchange_${selectedExchange}_secret_key`]: secretKey,
+        ...(passphrase ? { [`exchange_${selectedExchange}_passphrase`]: passphrase } : {}),
+      })
+    }
     setApiKey('')
     setSecretKey('')
+    setPassphrase('')
     loadWallet()
   }
 
+  async function setPrimaryExchange(id: ExchangeId) {
+    await saveField({ primary_exchange: id })
+  }
+
+  const anyExchangeConfigured = (settings?.configured_exchanges?.length ?? 0) > 0 || settings?.binance_configured
+
   async function toggleTradingMode() {
     const newMode = settings?.trading_mode === 'live' ? 'demo' : 'live'
-    if (newMode === 'live' && !settings?.binance_configured) {
-      setSaveMsg('Prvo konfiguriši Binance ključeve!')
+    if (newMode === 'live' && !anyExchangeConfigured) {
+      setSaveMsg('Prvo konfiguriši barem jedan exchange!')
       setTimeout(() => setSaveMsg(''), 3000)
       return
     }
@@ -306,20 +327,27 @@ export default function SettingsPage() {
   async function saveWhatsApp() {
     const instId = waInstanceId || settings?.whatsapp_instance_id
     const groupId = waSelectedGroup || settings?.whatsapp_group_id
+    if (!waApiToken) {
+      setWaTestResult({ success: false, message: 'Unesi API Token prije čuvanja!' })
+      return
+    }
+    const groupName = waGroups.find(g => g.id === waSelectedGroup)?.name
     await saveField({
       whatsapp_instance_id: instId,
-      whatsapp_api_token: waApiToken || undefined,
+      whatsapp_api_token: waApiToken,
       whatsapp_group_id: groupId,
+      whatsapp_group_name: groupName || undefined,
       whatsapp_enabled: true,
     })
-    setWaApiToken('')
+    setWaTestResult({ success: true, message: 'WhatsApp konfiguracija sačuvana! Token je u bazi.' })
   }
 
   async function sendTestWaMessage() {
     const instId = waInstanceId || settings?.whatsapp_instance_id || ''
     const token = waApiToken
     const groupId = waSelectedGroup || settings?.whatsapp_group_id || ''
-    if (!instId || !token || !groupId) { setWaTestResult({ success: false, message: 'Sačuvaj konfiguraciju prvo' }); return }
+    if (!instId || !groupId) { setWaTestResult({ success: false, message: 'Sačuvaj konfiguraciju prvo (Instance ID + Grupa)' }); return }
+    if (!token) { setWaTestResult({ success: false, message: 'Unesi API Token za slanje test poruke' }); return }
     setWaTesting(true)
     try {
       const res = await fetch('/api/settings/test-whatsapp', {
@@ -367,7 +395,7 @@ export default function SettingsPage() {
               </div>
               <div className="text-[11px] mt-1" style={{ color: 'var(--text-secondary)' }}>
                 {isLive
-                  ? 'AI trguje sa pravim sredstvima na Binance-u'
+                  ? `AI trguje na ${EXCHANGES.find(e => e.id === settings?.primary_exchange)?.name || 'exchange-u'} sa pravim sredstvima`
                   : `Virtualni kapital: ${riskForm.initial_capital.toLocaleString()} AED`
                 }
               </div>
@@ -387,57 +415,113 @@ export default function SettingsPage() {
           </div>
           {isLive && (
             <div className="mt-3 p-3 rounded-lg text-[11px] font-bold" style={{ background: 'rgba(255,51,102,0.08)', color: 'var(--red)', border: '1px solid var(--red)' }}>
-              UPOZORENJE: Svi AI signali se izvršavaju sa pravim novcem. Kill switch je dostupan ispod.
+              UPOZORENJE: AI signali se izvršavaju sa pravim novcem na {EXCHANGES.find(e => e.id === settings?.primary_exchange)?.name || 'exchange-u'}. Kill switch ispod.
             </div>
           )}
         </Section>
 
-        {/* ─── EXCHANGE CONNECTION ────────────────────────────────────── */}
-        <Section title="Binance Exchange" icon="🏦"
-          badge={<Badge text={settings?.binance_configured ? 'POVEZAN' : 'NIJE KONFIGURISAN'} ok={!!settings?.binance_configured} />}
+        {/* ─── EXCHANGE CONNECTIONS ─────────────────────────────────── */}
+        <Section title="Exchange Konekcije" icon="🏦"
+          badge={<Badge text={anyExchangeConfigured ? `${(settings?.configured_exchanges?.length ?? 0) + (settings?.binance_configured ? 1 : 0)} POVEZAN` : 'NIJEDAN'} ok={!!anyExchangeConfigured} />}
         >
-          {settings?.binance_configured && (
-            <div className="mb-4 p-3 rounded-lg flex items-center gap-3" style={{ background: 'rgba(0,255,163,0.06)', border: '1px solid rgba(0,255,163,0.2)' }}>
-              <StatusDot ok />
-              <div>
-                <div className="text-[11px] font-bold" style={{ color: 'var(--green)' }}>API Povezan</div>
-                <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Key: {settings.binance_api_key_masked}</div>
-              </div>
+          {/* Connected exchanges */}
+          {(settings?.binance_configured || (settings?.configured_exchanges?.length ?? 0) > 0) && (
+            <div className="mb-4 space-y-2">
+              <div className="text-[10px] font-bold mb-2" style={{ color: 'var(--text-muted)' }}>POVEZANI EXCHANGE-OVI</div>
+              {settings?.binance_configured && (
+                <div className="p-2.5 rounded-lg flex items-center justify-between" style={{ background: 'rgba(0,255,163,0.06)', border: '1px solid rgba(0,255,163,0.15)' }}>
+                  <div className="flex items-center gap-2">
+                    <StatusDot ok />
+                    <span className="text-sm">🟡</span>
+                    <span className="text-[11px] font-bold" style={{ color: 'var(--green)' }}>Binance</span>
+                    <span className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>{settings.binance_api_key_masked}</span>
+                  </div>
+                  <button onClick={() => setPrimaryExchange('binance')}
+                    className={cn('text-[9px] font-bold px-2 py-0.5 rounded-full',
+                      settings?.primary_exchange === 'binance' ? 'bg-[var(--amber)] text-black' : 'text-[var(--text-muted)]'
+                    )} style={settings?.primary_exchange !== 'binance' ? { border: '1px solid var(--border)' } : {}}
+                  >
+                    {settings?.primary_exchange === 'binance' ? 'PRIMARNI' : 'POSTAVI KAO PRIMARNI'}
+                  </button>
+                </div>
+              )}
+              {(settings?.configured_exchanges ?? []).map(ex => {
+                const meta = EXCHANGES.find(e => e.id === ex.id)
+                return (
+                  <div key={ex.id} className="p-2.5 rounded-lg flex items-center justify-between" style={{ background: 'rgba(0,255,163,0.06)', border: '1px solid rgba(0,255,163,0.15)' }}>
+                    <div className="flex items-center gap-2">
+                      <StatusDot ok />
+                      <span className="text-sm">{meta?.logo}</span>
+                      <span className="text-[11px] font-bold" style={{ color: 'var(--green)' }}>{meta?.name}</span>
+                      <span className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>{ex.masked_key}</span>
+                    </div>
+                    <button onClick={() => setPrimaryExchange(ex.id)}
+                      className={cn('text-[9px] font-bold px-2 py-0.5 rounded-full',
+                        settings?.primary_exchange === ex.id ? 'bg-[var(--amber)] text-black' : 'text-[var(--text-muted)]'
+                      )} style={settings?.primary_exchange !== ex.id ? { border: '1px solid var(--border)' } : {}}
+                    >
+                      {settings?.primary_exchange === ex.id ? 'PRIMARNI' : 'POSTAVI KAO PRIMARNI'}
+                    </button>
+                  </div>
+                )
+              })}
             </div>
           )}
 
+          {/* Exchange selector */}
+          <div className="mb-3">
+            <label className="text-[10px] font-bold block mb-2" style={{ color: 'var(--text-muted)' }}>DODAJ EXCHANGE</label>
+            <div className="grid grid-cols-4 gap-2">
+              {EXCHANGES.map(ex => (
+                <button key={ex.id} onClick={() => { setSelectedExchange(ex.id); setTestResult(null); setApiKey(''); setSecretKey(''); setPassphrase('') }}
+                  className={cn('p-2 rounded-lg text-center transition-all',
+                    selectedExchange === ex.id ? 'ring-2 ring-[var(--amber)]' : ''
+                  )}
+                  style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}
+                >
+                  <div className="text-lg">{ex.logo}</div>
+                  <div className="text-[10px] font-bold mt-0.5" style={{ color: selectedExchange === ex.id ? 'var(--amber)' : 'var(--text-primary)' }}>{ex.name}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="space-y-3">
             <div>
-              <label className="text-[10px] font-bold block mb-1" style={{ color: 'var(--text-muted)' }}>API KEY</label>
-              <input
-                type="password"
-                value={apiKey}
-                onChange={e => setApiKey(e.target.value)}
-                placeholder={settings?.binance_configured ? 'Unesi novi za promjenu...' : 'Unesi Binance API Key'}
+              <label className="text-[10px] font-bold block mb-1" style={{ color: 'var(--text-muted)' }}>{currentExMeta.name} API KEY</label>
+              <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
+                placeholder={`Unesi ${currentExMeta.name} API Key`}
                 className="w-full px-3 py-2 text-sm rounded-lg font-mono"
                 style={{ background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
               />
             </div>
             <div>
-              <label className="text-[10px] font-bold block mb-1" style={{ color: 'var(--text-muted)' }}>SECRET KEY</label>
-              <input
-                type="password"
-                value={secretKey}
-                onChange={e => setSecretKey(e.target.value)}
-                placeholder={settings?.binance_configured ? 'Unesi novi za promjenu...' : 'Unesi Binance Secret Key'}
+              <label className="text-[10px] font-bold block mb-1" style={{ color: 'var(--text-muted)' }}>{currentExMeta.name} SECRET KEY</label>
+              <input type="password" value={secretKey} onChange={e => setSecretKey(e.target.value)}
+                placeholder={`Unesi ${currentExMeta.name} Secret Key`}
                 className="w-full px-3 py-2 text-sm rounded-lg font-mono"
                 style={{ background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
               />
             </div>
+            {currentExMeta.needsPassphrase && (
+              <div>
+                <label className="text-[10px] font-bold block mb-1" style={{ color: 'var(--amber)' }}>PASSPHRASE (obavezno za {currentExMeta.name})</label>
+                <input type="password" value={passphrase} onChange={e => setPassphrase(e.target.value)}
+                  placeholder={`Unesi ${currentExMeta.name} Passphrase`}
+                  className="w-full px-3 py-2 text-sm rounded-lg font-mono"
+                  style={{ background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--amber)' }}
+                />
+              </div>
+            )}
 
             <div className="flex gap-2 pt-1">
-              <button onClick={testBinance} disabled={testing || !apiKey || !secretKey}
+              <button onClick={testExchange} disabled={testing || !apiKey || !secretKey}
                 className="px-4 py-2 text-[11px] font-bold rounded-lg transition-colors disabled:opacity-30"
                 style={{ border: '1px solid var(--cyan)', color: 'var(--cyan)' }}
               >
-                {testing ? 'TESTIRAM...' : 'TESTIRAJ KONEKCIJU'}
+                {testing ? 'TESTIRAM...' : `TESTIRAJ ${currentExMeta.name.toUpperCase()}`}
               </button>
-              <button onClick={saveBinanceKeys} disabled={saving || !apiKey || !secretKey}
+              <button onClick={saveExchangeKeys} disabled={saving || !apiKey || !secretKey}
                 className="px-4 py-2 text-[11px] font-bold rounded-lg transition-colors disabled:opacity-30"
                 style={{ background: 'var(--green)', color: '#000' }}
               >
@@ -458,13 +542,14 @@ export default function SettingsPage() {
           </div>
 
           <div className="mt-4 p-3 rounded-lg text-[10px]" style={{ background: 'var(--bg-secondary)', color: 'var(--text-muted)' }}>
-            <strong>Kako dobiti ključeve:</strong> Binance → Settings → API Management → Create API
+            <strong>Setup:</strong> {currentExMeta.website} → Settings → API Management → Create API
             <br />Uključi samo <strong>&quot;Enable Spot Trading&quot;</strong>. NIKADA ne uključuj Withdrawal.
+            {currentExMeta.needsPassphrase && <><br /><span style={{ color: 'var(--amber)' }}>⚠️ {currentExMeta.name} zahtijeva Passphrase koji se postavlja pri kreiranju API ključa.</span></>}
           </div>
         </Section>
 
         {/* ─── WALLET ─────────────────────────────────────────────── */}
-        {settings?.binance_configured && (
+        {anyExchangeConfigured && (
           <Section title="Novčanik" icon="💰"
             badge={
               <button onClick={loadWallet} disabled={walletLoading}
@@ -687,8 +772,19 @@ export default function SettingsPage() {
                   <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
                     Instance: {settings.whatsapp_instance_id}
                     {settings.whatsapp_group_name && ` | Grupa: ${settings.whatsapp_group_name}`}
+                    {settings.whatsapp_group_id && !settings.whatsapp_group_name && ` | Grupa: ${settings.whatsapp_group_id}`}
+                  </div>
+                  <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                    Token: {settings.whatsapp_api_token_set ? '✅ u bazi' : '❌ NIJE SAČUVAN'}
+                    {' | '}Enabled: {settings.whatsapp_enabled ? '✅' : '❌ OFF'}
+                    {' | '}Grupa: {settings.whatsapp_group_id ? '✅' : '❌ NEMA'}
                   </div>
                 </div>
+              </div>
+            )}
+            {!settings?.whatsapp_configured && settings?.whatsapp_instance_id && (
+              <div className="mb-3 p-3 rounded-lg text-[11px] font-bold" style={{ background: 'rgba(255,204,0,0.08)', color: 'var(--amber)', border: '1px solid var(--amber)' }}>
+                Instance ID postoji ali API Token NEDOSTAJE u bazi. Unesi token i klikni Sačuvaj.
               </div>
             )}
 
@@ -859,7 +955,7 @@ export default function SettingsPage() {
           </div>
           {settings?.auto_trade_enabled && isLive && (
             <div className="mt-3 p-3 rounded-lg text-[11px] font-bold" style={{ background: 'rgba(255,51,102,0.08)', color: 'var(--red)', border: '1px solid var(--red)' }}>
-              Auto-trading je AKTIVAN sa PRAVIM novcem. Svaki AI signal se automatski izvršava na Binance-u.
+              Auto-trading je AKTIVAN sa PRAVIM novcem. AI signali se izvršavaju na {EXCHANGES.find(e => e.id === settings?.primary_exchange)?.name || 'primarnom exchange-u'}.
             </div>
           )}
         </Section>

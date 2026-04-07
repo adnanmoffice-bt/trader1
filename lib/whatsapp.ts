@@ -24,31 +24,47 @@ async function getConfig(userId?: string): Promise<WhatsAppConfig | null> {
   const db = createServiceSupabase()
 
   if (userId) {
-    const { data } = await db
+    const { data, error } = await db
       .from('user_settings')
       .select('whatsapp_instance_id, whatsapp_api_token, whatsapp_group_id, whatsapp_enabled')
       .eq('user_id', userId)
       .single()
 
-    if (data?.whatsapp_instance_id && data?.whatsapp_api_token && data?.whatsapp_enabled) {
+    if (error) {
+      console.warn('[whatsapp] getConfig user lookup error:', error.message)
+    } else if (data?.whatsapp_instance_id && data?.whatsapp_api_token && data?.whatsapp_enabled) {
+      console.log('[whatsapp] Config loaded for user', userId.slice(0, 8))
       return {
         apiUrl: 'https://7107.api.greenapi.com',
         instanceId: data.whatsapp_instance_id,
         apiToken: data.whatsapp_api_token,
         groupId: data.whatsapp_group_id,
       }
+    } else if (data) {
+      console.warn('[whatsapp] User found but config incomplete:', {
+        hasInstanceId: !!data.whatsapp_instance_id,
+        hasToken: !!data.whatsapp_api_token,
+        enabled: data.whatsapp_enabled,
+      })
     }
   }
 
-  // Fallback: try any user with WhatsApp enabled, or env vars
-  const { data: anyUser } = await db
+  // Fallback 1: any user with WhatsApp enabled + complete config
+  const { data: anyUser, error: fallbackErr } = await db
     .from('user_settings')
-    .select('whatsapp_instance_id, whatsapp_api_token, whatsapp_group_id')
+    .select('whatsapp_instance_id, whatsapp_api_token, whatsapp_group_id, whatsapp_enabled')
     .eq('whatsapp_enabled', true)
+    .not('whatsapp_api_token', 'is', null)
+    .not('whatsapp_instance_id', 'is', null)
     .limit(1)
-    .single()
+    .maybeSingle()
+
+  if (fallbackErr) {
+    console.warn('[whatsapp] getConfig fallback query error:', fallbackErr.message)
+  }
 
   if (anyUser?.whatsapp_instance_id && anyUser?.whatsapp_api_token) {
+    console.log('[whatsapp] Config loaded via fallback (enabled user found)')
     return {
       apiUrl: 'https://7107.api.greenapi.com',
       instanceId: anyUser.whatsapp_instance_id,
@@ -57,15 +73,39 @@ async function getConfig(userId?: string): Promise<WhatsAppConfig | null> {
     }
   }
 
+  // Fallback 2: any user with WhatsApp credentials (even if toggle is off)
+  const { data: anyConfig } = await db
+    .from('user_settings')
+    .select('whatsapp_instance_id, whatsapp_api_token, whatsapp_group_id')
+    .not('whatsapp_api_token', 'is', null)
+    .not('whatsapp_instance_id', 'is', null)
+    .limit(1)
+    .maybeSingle()
+
+  if (anyConfig?.whatsapp_instance_id && anyConfig?.whatsapp_api_token) {
+    console.warn('[whatsapp] Config found but whatsapp_enabled is OFF — sending anyway from cron context')
+    return {
+      apiUrl: 'https://7107.api.greenapi.com',
+      instanceId: anyConfig.whatsapp_instance_id,
+      apiToken: anyConfig.whatsapp_api_token,
+      groupId: anyConfig.whatsapp_group_id,
+    }
+  }
+
+  // Fallback 3: environment variables
   const instanceId = process.env.GREEN_API_INSTANCE_ID
   const apiToken = process.env.GREEN_API_TOKEN
-  if (!instanceId || !apiToken) return null
-
-  return {
-    apiUrl: process.env.GREEN_API_URL || 'https://7107.api.greenapi.com',
-    instanceId, apiToken,
-    groupId: process.env.GREEN_API_GROUP_ID,
+  if (instanceId && apiToken) {
+    console.log('[whatsapp] Config loaded from env vars')
+    return {
+      apiUrl: process.env.GREEN_API_URL || 'https://7107.api.greenapi.com',
+      instanceId, apiToken,
+      groupId: process.env.GREEN_API_GROUP_ID,
+    }
   }
+
+  console.error('[whatsapp] NO CONFIG FOUND — checked: user_settings (enabled), user_settings (any), env vars. All empty.')
+  return null
 }
 
 async function greenApiCall(config: WhatsAppConfig, method: string, body?: Record<string, unknown>) {
@@ -75,6 +115,11 @@ async function greenApiCall(config: WhatsAppConfig, method: string, body?: Recor
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
     body: body ? JSON.stringify(body) : undefined,
   })
+  if (!res.ok) {
+    const text = await res.text().catch(() => 'no body')
+    console.error(`[whatsapp] greenApiCall ${method} HTTP ${res.status}:`, text)
+    throw new Error(`Green API ${method} failed: HTTP ${res.status}`)
+  }
   return res.json()
 }
 
@@ -82,10 +127,18 @@ async function greenApiCall(config: WhatsAppConfig, method: string, body?: Recor
 
 export async function sendMessage(chatId: string, message: string, userId?: string): Promise<boolean> {
   const config = await getConfig(userId)
-  if (!config) return false
+  if (!config) {
+    console.error('[whatsapp] sendMessage SKIPPED: no config available')
+    return false
+  }
   try {
     const result = await greenApiCall(config, 'sendMessage', { chatId, message })
-    return !!result.idMessage
+    if (result.idMessage) {
+      console.log('[whatsapp] Message sent OK, id:', result.idMessage)
+      return true
+    }
+    console.error('[whatsapp] sendMessage: no idMessage in response:', JSON.stringify(result).slice(0, 200))
+    return false
   } catch (err) {
     console.error('[whatsapp] sendMessage error:', err)
     return false
@@ -94,7 +147,14 @@ export async function sendMessage(chatId: string, message: string, userId?: stri
 
 export async function sendGroupMessage(message: string, userId?: string): Promise<boolean> {
   const config = await getConfig(userId)
-  if (!config?.groupId) return false
+  if (!config) {
+    console.error('[whatsapp] sendGroupMessage SKIPPED: no config')
+    return false
+  }
+  if (!config.groupId) {
+    console.error('[whatsapp] sendGroupMessage SKIPPED: config found but no groupId set. Instance:', config.instanceId)
+    return false
+  }
   return sendMessage(config.groupId, message, userId)
 }
 

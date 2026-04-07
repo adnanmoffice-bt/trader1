@@ -77,8 +77,8 @@ export async function GET(req: NextRequest) {
       })
     } catch { /* RPC may not exist yet */ }
 
-    await sendPositionAlert(pos.instrument, reason, pnlAed, pnlPct).catch(() => {})
-    await waPositionAlert(pos.instrument, reason, pnlAed, pnlPct).catch(() => {})
+    await sendPositionAlert(pos.instrument, reason, pnlAed, pnlPct).catch(e => console.error('[positions] Telegram error:', e))
+    await waPositionAlert(pos.instrument, reason, pnlAed, pnlPct).catch(e => console.error('[positions] WhatsApp error:', e))
 
     closed.push(`${pos.instrument} ${reason} P&L: ${pnlAed.toFixed(0)} AED`)
   }

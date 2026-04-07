@@ -231,7 +231,7 @@ async function processInstrument(
     if (exchange.isConfigured() && enhancedSignal.entry_price && enhancedSignal.stop_loss) {
       try {
         const primaryEx = exchange.getPrimaryExchange()
-        const capitalUsd = (portfolio?.available_capital ?? 5000) / exchange.USD_AED
+        const capitalUsd = portfolio?.available_capital ?? 5000
         const stats = await getTradeStats()
         const sizing = riskBasedPositionSize(capitalUsd, enhancedSignal.entry_price, enhancedSignal.stop_loss, stats)
         const userId = 'auto-trader'

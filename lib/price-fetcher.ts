@@ -1,4 +1,5 @@
 import type { MarketData, OHLCV } from '@/types'
+import { ExchangeManager, type KlineInterval } from '@/lib/exchanges'
 
 const BINANCE_REST = 'https://api.binance.com/api/v3'
 const COINGECKO    = 'https://api.coingecko.com/api/v3'
@@ -362,4 +363,45 @@ export async function fetchAllMarketData(): Promise<MarketData[]> {
   })
 
   return results
+}
+
+// ─── Multi-Exchange Ticker (best price across configured exchanges) ──────────
+
+export async function fetchMultiExchangeTicker(symbol: string): Promise<MarketData | null> {
+  const mgr = new ExchangeManager()
+  const ticker = await mgr.getBestTicker(symbol)
+  if (!ticker) return fetchBinanceTicker(symbol)
+
+  return {
+    id:             crypto.randomUUID(),
+    symbol:         ticker.symbol,
+    price:          ticker.price,
+    change_24h:     ticker.change24h,
+    change_pct_24h: ticker.changePct24h,
+    volume_24h:     ticker.volume24h,
+    high_24h:       ticker.high24h,
+    low_24h:        ticker.low24h,
+    open_24h:       ticker.open24h,
+    market_cap:     null,
+    source:         'multi-exchange',
+    fetched_at:     new Date().toISOString(),
+  }
+}
+
+// ─── Multi-Exchange Klines ───────────────────────────────────────────────────
+
+export async function fetchMultiExchangeKlines(
+  symbol: string,
+  interval: string,
+  limit = 200
+): Promise<OHLCV[]> {
+  const mgr = new ExchangeManager()
+  const klines = await mgr.getKlines(symbol, interval as KlineInterval, limit)
+  if (klines.length > 0) {
+    return klines.map(k => ({
+      timestamp: k.timestamp,
+      open: k.open, high: k.high, low: k.low, close: k.close, volume: k.volume,
+    }))
+  }
+  return fetchKlines(symbol, interval, limit)
 }

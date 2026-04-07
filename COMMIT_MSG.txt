@@ -1,0 +1,14 @@
+fix: critical trade execution bug + budget controls + forecast engine + macro context
+
+CRITICAL: Orchestrator regex bug caused trades when AI said REJECT. Now uses
+structured JSON output. Parse failure defaults to REJECT.
+
+- Daily $5 budget cap with Telegram alerts at 50/80/100%
+- Quantitative forecast: ARIMA, Monte Carlo, Seasonality, Vol regime
+- Live macro context: VIX, DXY, Bonds, Econ calendar, News
+- Elder Triple Screen, Van Tharp sizing, Murphy intermarket in agents
+- Signal deduplication, audit logs, meeting cap (2/cycle)
+- Cron: signals */15, polymarket /2h, removed run-all duplication
+- Model: Claude Opus 4, instruments: 16 to 8 (removed empty)
+- Currency: AED to USD throughout
+- New: /api/budget, lib/forecast.ts, lib/macro-context.ts

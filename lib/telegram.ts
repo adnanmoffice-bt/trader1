@@ -160,3 +160,7 @@ export async function sendDemoReport(session: DemoSession) {
 
   await send(text)
 }
+
+export async function sendBudgetAlert(message: string) {
+  await send(message)
+}

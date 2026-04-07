@@ -8,7 +8,7 @@ export const runtime = 'nodejs'
 export const maxDuration = 60
 
 const DEMO_INSTRUMENTS = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'BNB/USD', 'XAU/USD'] as const
-const USD_AED = 3.6725
+// All values in USD — no currency conversion needed
 const RISK_PER_TRADE = 0.03
 const MIN_SCORE = 55
 const SESSION_CAPITAL = 5000
@@ -101,7 +101,7 @@ export async function GET(req: NextRequest) {
         pnl_pct:     result.pnlPct,
         pnl_aed:     result.pnlAed,
       }).eq('id', trade.id)
-      actions.push(`${sym}: ${result.reason} @ $${result.exitPrice.toFixed(2)} P&L: ${result.pnlAed.toFixed(0)} AED`)
+      actions.push(`${sym}: ${result.reason} @ $${result.exitPrice.toFixed(2)} P&L: $${result.pnlAed.toFixed(0)}`)
       continue
     }
 
@@ -123,7 +123,7 @@ export async function GET(req: NextRequest) {
           pnl_pct:     wickResult.pnlPct,
           pnl_aed:     wickResult.pnlAed,
         }).eq('id', trade.id)
-        actions.push(`${sym}: ${wickResult.reason} (wick) @ $${wickResult.exitPrice.toFixed(2)} P&L: ${wickResult.pnlAed.toFixed(0)} AED`)
+        actions.push(`${sym}: ${wickResult.reason} (wick) @ $${wickResult.exitPrice.toFixed(2)} P&L: $${wickResult.pnlAed.toFixed(0)}`)
         continue
       }
     }
@@ -136,7 +136,7 @@ export async function GET(req: NextRequest) {
       const qty = Number(trade.quantity)
       const pnl = dir === 'long' ? (price - entry) * qty : (entry - price) * qty
       const pnlPct = (pnl / (entry * qty)) * 100
-      const pnlAed = pnl * USD_AED
+      const pnlUsd = pnl
 
       await db.from('demo_trades').update({
         exit_price:  price,
@@ -144,7 +144,7 @@ export async function GET(req: NextRequest) {
         exit_reason: 'timeout',
         pnl, pnl_pct: pnlPct, pnl_aed: pnlAed,
       }).eq('id', trade.id)
-      actions.push(`${sym}: TIMEOUT (48h) @ $${price.toFixed(2)} P&L: ${pnlAed.toFixed(0)} AED`)
+      actions.push(`${sym}: TIMEOUT (48h) @ $${price.toFixed(2)} P&L: $${pnlUsd.toFixed(0)}`)
     }
   }
 
@@ -229,7 +229,7 @@ export async function GET(req: NextRequest) {
 
     const riskAmt = currentCapital * RISK_PER_TRADE
     const riskPerUnit = slDist
-    const qty = riskAmt / (riskPerUnit * USD_AED)
+    const qty = riskAmt / riskPerUnit
 
     if (qty <= 0) continue
 
@@ -279,9 +279,8 @@ function checkTradeExit(
   const exitPrice = hitSL ? sl : tp
   const pnl = dir === 'long' ? (exitPrice - entry) * qty : (entry - exitPrice) * qty
   const pnlPct = (pnl / (entry * qty)) * 100
-  const pnlAed = pnl * USD_AED
 
-  return { exitPrice, reason: hitSL ? 'stop_loss' : 'take_profit', pnl, pnlPct, pnlAed }
+  return { exitPrice, reason: hitSL ? 'stop_loss' : 'take_profit', pnl, pnlPct, pnlAed: pnl }
 }
 
 function checkTradeExitWick(
@@ -298,15 +297,13 @@ function checkTradeExitWick(
   const hitSL = (dir === 'long' && candleLow <= sl) || (dir === 'short' && candleHigh >= sl)
   const hitTP = (dir === 'long' && candleHigh >= tp) || (dir === 'short' && candleLow <= tp)
 
-  // SL takes priority (worst case first)
   if (!hitSL && !hitTP) return null
 
   const exitPrice = hitSL ? sl : tp
   const pnl = dir === 'long' ? (exitPrice - entry) * qty : (entry - exitPrice) * qty
   const pnlPct = (pnl / (entry * qty)) * 100
-  const pnlAed = pnl * USD_AED
 
-  return { exitPrice, reason: hitSL ? 'stop_loss' : 'take_profit', pnl, pnlPct, pnlAed }
+  return { exitPrice, reason: hitSL ? 'stop_loss' : 'take_profit', pnl, pnlPct, pnlAed: pnl }
 }
 
 async function updateSessionStats(

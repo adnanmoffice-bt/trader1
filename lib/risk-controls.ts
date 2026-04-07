@@ -1,7 +1,6 @@
 import { createServiceSupabase } from '@/lib/supabase'
 import { kellyFraction } from '@/lib/indicators'
 
-const USD_AED = 3.6725
 const DAILY_LOSS_LIMIT_PCT = 0.03   // 3% — aligned with safety.ts
 const MAX_SINGLE_TRADE_PCT = 0.10   // 10% of capital per position
 const MAX_POSITIONS = 3
@@ -79,24 +78,24 @@ export function hardRiskCheck(
   return { allowed: true, reason: `R:R ${rr.toFixed(2)} SL:${slPct.toFixed(1)}% Pos:${openPositions}/${MAX_POSITIONS}` }
 }
 
-export async function checkDailyLossLimit(capitalAed: number): Promise<RiskCheck> {
+export async function checkDailyLossLimit(capitalUsd: number): Promise<RiskCheck> {
   const db = createServiceSupabase()
   const today = new Date().toISOString().split('T')[0]
 
   const { data: closedToday } = await db
     .from('trades')
-    .select('pnl_aed')
+    .select('pnl_usd')
     .gte('closed_at', `${today}T00:00:00`)
     .eq('is_demo', false)
 
-  const dailyPnl = (closedToday ?? []).reduce((s, t) => s + Number(t.pnl_aed ?? 0), 0)
-  const limit = capitalAed * DAILY_LOSS_LIMIT_PCT
+  const dailyPnl = (closedToday ?? []).reduce((s, t) => s + Number(t.pnl_usd ?? t.pnl_aed ?? 0), 0)
+  const limit = capitalUsd * DAILY_LOSS_LIMIT_PCT
 
   if (dailyPnl < -limit) {
-    return { allowed: false, reason: `Daily loss limit hit: AED ${Math.abs(dailyPnl).toFixed(0)} lost (limit: AED ${limit.toFixed(0)})` }
+    return { allowed: false, reason: `Daily loss limit hit: $${Math.abs(dailyPnl).toFixed(0)} lost (limit: $${limit.toFixed(0)})` }
   }
 
-  return { allowed: true, reason: `Daily P&L: AED ${dailyPnl.toFixed(0)} (limit: -AED ${limit.toFixed(0)})` }
+  return { allowed: true, reason: `Daily P&L: $${dailyPnl.toFixed(0)} (limit: -$${limit.toFixed(0)})` }
 }
 
 export async function checkPositionLimit(): Promise<RiskCheck> {
@@ -113,22 +112,22 @@ export async function checkPositionLimit(): Promise<RiskCheck> {
   return { allowed: true, reason: `Open positions: ${count ?? 0}/${MAX_POSITIONS}` }
 }
 
-export function checkTradeSize(tradeAmountAed: number, capitalAed: number): RiskCheck {
-  const maxAmount = capitalAed * MAX_SINGLE_TRADE_PCT
-  if (tradeAmountAed > maxAmount) {
-    return { allowed: false, reason: `Trade AED ${tradeAmountAed.toFixed(0)} exceeds ${(MAX_SINGLE_TRADE_PCT * 100)}% limit (AED ${maxAmount.toFixed(0)})` }
+export function checkTradeSize(tradeAmountUsd: number, capitalUsd: number): RiskCheck {
+  const maxAmount = capitalUsd * MAX_SINGLE_TRADE_PCT
+  if (tradeAmountUsd > maxAmount) {
+    return { allowed: false, reason: `Trade $${tradeAmountUsd.toFixed(0)} exceeds ${(MAX_SINGLE_TRADE_PCT * 100)}% limit ($${maxAmount.toFixed(0)})` }
   }
-  return { allowed: true, reason: `Trade size OK: AED ${tradeAmountAed.toFixed(0)} / ${maxAmount.toFixed(0)}` }
+  return { allowed: true, reason: `Trade size OK: $${tradeAmountUsd.toFixed(0)} / $${maxAmount.toFixed(0)}` }
 }
 
-export async function fullRiskCheck(capitalAed: number, tradeAmountAed: number): Promise<RiskCheck> {
-  const dailyCheck = await checkDailyLossLimit(capitalAed)
+export async function fullRiskCheck(capitalUsd: number, tradeAmountUsd: number): Promise<RiskCheck> {
+  const dailyCheck = await checkDailyLossLimit(capitalUsd)
   if (!dailyCheck.allowed) return dailyCheck
 
   const posCheck = await checkPositionLimit()
   if (!posCheck.allowed) return posCheck
 
-  const sizeCheck = checkTradeSize(tradeAmountAed, capitalAed)
+  const sizeCheck = checkTradeSize(tradeAmountUsd, capitalUsd)
   if (!sizeCheck.allowed) return sizeCheck
 
   return { allowed: true, reason: 'All risk checks passed' }
@@ -162,4 +161,4 @@ export function riskBasedPositionSize(
   return { units: cappedUnits, notionalUsd: cappedNotional, riskPct }
 }
 
-export { DAILY_LOSS_LIMIT_PCT, MAX_SINGLE_TRADE_PCT, MAX_POSITIONS, USD_AED, MIN_RR, MAX_SL_PCT }
+export { DAILY_LOSS_LIMIT_PCT, MAX_SINGLE_TRADE_PCT, MAX_POSITIONS, MIN_RR, MAX_SL_PCT }

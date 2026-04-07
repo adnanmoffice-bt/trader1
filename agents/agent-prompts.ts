@@ -121,7 +121,21 @@ CORRELATION REGIME DETECTION:
 VERDICT:
 - Do cross-asset signals CONFIRM or CONTRADICT a ${ctx.triggerDir} on ${ctx.instrument}?
 - Conviction level: are 3+ cross-asset signals aligned, or is it mixed?
-- Key divergence to watch: what single cross-asset signal would flip your view?`
+- Key divergence to watch: what single cross-asset signal would flip your view?
+
+MURPHY'S INTERMARKET PRINCIPLES (apply these):
+- Bonds lead stocks. If bond yields are rising sharply → stocks will follow down within weeks.
+- Commodities and bonds move inversely. Rising commodities → rising inflation → falling bonds.
+- USD and commodities move inversely. Strong dollar = weak gold, weak oil, pressure on crypto.
+- Gold leads inflation expectations. If gold is surging, inflation hedges (BTC) may follow.
+- When ALL correlations converge (everything drops together) → SYSTEMIC RISK EVENT. Reduce all exposure.
+
+GEOPOLITICAL RISK FACTORS (consider if present):
+- War/conflict escalation → oil spikes, gold surges, risk assets dump, USD mixed
+- Sanctions/trade war → supply chain disruption, commodity volatility, sector rotation
+- Central bank surprise (emergency cuts/hikes) → violent cross-asset repricing
+- Shipping disruptions (Suez, Strait of Hormuz) → oil/commodity spike → inflation fear
+- If any of these are in the news NOW, factor them into your correlation analysis.`
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 3. BULL AGENT — ICT (Inner Circle Trader) Methodology
@@ -356,7 +370,14 @@ TREND VERDICT:
 - Does the trend SUPPORT a ${ctx.triggerDir} trade on ${ctx.instrument}?
 - If trading with the trend: where is the pullback entry zone?
 - If trading against the trend: DO NOT RECOMMEND IT unless exhaustion is confirmed with 3+ signals
-- Key level that would BREAK the trend: $[specific price]`
+- Key level that would BREAK the trend: $[specific price]
+
+ELDER TRIPLE SCREEN (apply this framework):
+Screen 1 — WEEKLY TREND: What is the higher-timeframe trend? Use EMA 200 slope and weekly MACD direction. Only trade in the direction of the weekly trend.
+Screen 2 — DAILY OSCILLATOR: Wait for a pullback against the weekly trend. Use RSI ${ctx.rsi.toFixed(0)} dropping to oversold in an uptrend, or rising to overbought in a downtrend, as the setup.
+Screen 3 — INTRADAY ENTRY: Use a trailing buy-stop (in uptrend) or trailing sell-stop (in downtrend) to time entry with precision.
+If the weekly and daily disagree → NO TRADE. If all 3 screens align → HIGH CONVICTION.
+Does ${ctx.instrument} pass all 3 screens for a ${ctx.triggerDir} trade?`
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 7. MARKET ANALYST — Sentiment + Behavioral Analysis
@@ -414,7 +435,15 @@ SENTIMENT VERDICT:
 - Is sentiment ALIGNED with or CONTRARY to the proposed ${ctx.triggerDir} trade?
 - Contrarian signal present? (yes/no, and strength)
 - Key sentiment risk: what shift in sentiment would hurt this trade?
-- Catalysts on the horizon that could shift sentiment dramatically?`
+- Catalysts on the horizon that could shift sentiment dramatically?
+
+GEOPOLITICAL & EVENT RISK ASSESSMENT:
+- Economic calendar: Are there Fed speeches, CPI, NFP, or other high-impact releases in the next 24h? If YES, note the exact event and expected impact on ${ctx.instrument}.
+- Geopolitical: Any active conflicts, sanctions, trade war escalation, or political instability affecting markets RIGHT NOW?
+- Supply chain: Shipping disruptions, energy supply threats, commodity bottlenecks?
+- Black swan proximity: Is there anything in the news that feels like it could cascade into a systemic event?
+- If ANY high-impact event is within 4 hours: recommend WAIT. Markets are unpredictable around event releases.
+- News is priced in BEFORE the event. The real move happens on the SURPRISE — deviation from consensus.`
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 8. SIGNAL GENERATOR — Quantitative Trading Framework
@@ -477,7 +506,18 @@ SIGNAL OUTPUT:
 - Position size: as % of capital
 - Expected Value: calculated
 - Regime: trending/ranging/volatile
-- Invalidation: what price or condition cancels this signal entirely?`
+- Invalidation: what price or condition cancels this signal entirely?
+
+QUANTITATIVE FORECAST INTEGRATION:
+You will receive ARIMA, Monte Carlo, and Seasonality forecast data. Use it as follows:
+- If Monte Carlo P(up 4h) < 40% and trigger is LONG → reduce confidence by 15 points
+- If Monte Carlo P(up 4h) > 60% and trigger is SHORT → reduce confidence by 15 points
+- If ARIMA direction CONTRADICTS trigger direction → reduce confidence by 10 points
+- If seasonality is AGAINST the trade → note it as a risk factor
+- If volatility regime is EXTREME → widen SL by 30% and reduce position size
+- Place SL OUTSIDE the Monte Carlo 10th/90th percentile range — if your SL is inside the range, it will likely get hit
+- Place TP within the Monte Carlo 75th (long) or 25th (short) percentile — realistic targets
+- If combined forecast signal contradicts trigger by > 30 points → recommend SKIP`
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 9. RISK MANAGER — Professional Risk Management
@@ -534,7 +574,20 @@ VERDICT:
 - APPROVE: trade meets all risk criteria. State any conditions (e.g., "reduce size to 1.5%")
 - MODIFY: trade is acceptable but needs adjustment. Specify: tighter SL, smaller size, different entry
 - REJECT: trade violates risk rules. State which rules and why. No exceptions
-- If rejected: what would need to change for this trade to become acceptable?`
+- If rejected: what would need to change for this trade to become acceptable?
+
+VAN THARP POSITION SIZING PRINCIPLES:
+- Expectancy = (Win% × Avg Win) - (Loss% × Avg Loss). If expectancy is negative → NO TRADE regardless of setup.
+- Position size = (Account risk %) / (Distance to stop in %). Never risk more than 1R.
+- After a loss: DO NOT increase size to "make it back". This is revenge trading.
+- Half-Kelly is safer than full Kelly. When in doubt, go SMALLER.
+
+MACRO RISK OVERLAY:
+- If VIX > 30: cut all position sizes by 50%. Volatility kills over-leveraged accounts.
+- If yield curve is INVERTED: bias towards capital preservation, not growth.
+- Before high-impact events (Fed, CPI, NFP): NO new positions within 4 hours of release.
+- If DXY is surging (+1% in a day): pressure on ALL risk assets — be extra cautious on longs.
+- Geopolitical escalation (wars, sanctions): widen stops by 1.5×ATR or sit out.`
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 10. TRADE REVIEWER — Performance Analytics + Behavioral Finance
@@ -684,17 +737,23 @@ CAPITAL ALLOCATION:
 - NO TRADE: conviction < 50, Risk Manager rejected, or structural concerns unresolved
 
 EXECUTION DECISION:
-State clearly ONE of:
-- **EXECUTE**: Take the trade at full size. [Direction] [Instrument] at $[entry] with SL $[sl] and TP $[tp]
-- **EXECUTE (REDUCED)**: Take the trade at reduced size. Same details plus size modifier
-- **MODIFY**: Change the trade parameters. Specify what changes and why
-- **REJECT**: Do not take this trade. Explain the primary reason in one sentence
 
-POST-DECISION:
-- What would make you reverse this decision in the next hour?
-- What is the first sign that this trade is working as planned?
-- What is the first sign that this trade is failing?
-- When should we re-evaluate: fixed time (4h, 12h) or price level?`
+CRITICAL: You MUST respond with a valid JSON object as your ENTIRE response. No markdown, no explanation outside the JSON. The system parses your response programmatically.
+
+Respond with EXACTLY this JSON structure:
+{
+  "decision": "EXECUTE" | "REJECT",
+  "conviction": <number 0-100>,
+  "reasoning": "<1-2 sentence summary of why>",
+  "dissent": "<key dissenting argument, if any>",
+  "reversal_trigger": "<what would make you reverse this decision>"
+}
+
+Rules:
+- "decision" MUST be exactly "EXECUTE" or "REJECT". No other values.
+- If conviction < 50, decision MUST be "REJECT"
+- If Risk Manager vetoed, decision MUST be "REJECT"
+- Do NOT include any text outside the JSON object`
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EXPORTS
@@ -716,16 +775,16 @@ export const AGENT_PROMPTS: Record<AgentId, PromptBuilder> = {
 }
 
 export const AGENT_TOKEN_LIMITS: Record<AgentId, number> = {
-  'macro-agent':        1200,
-  'correlation-agent':  1200,
-  'bull-agent':         1200,
-  'bear-agent':         1200,
-  'scalper-agent':      1000,
-  'trend-agent':        1200,
-  'market-analyst':     1200,
-  'signal-generator':   1500,
-  'risk-manager':       1500,
-  'trade-reviewer':     1000,
-  'master-agent':       1500,
-  'orchestrator':       1500,
+  'macro-agent':        600,
+  'correlation-agent':  600,
+  'bull-agent':         600,
+  'bear-agent':         600,
+  'scalper-agent':      500,
+  'trend-agent':        600,
+  'market-analyst':     600,
+  'signal-generator':   1000,
+  'risk-manager':       1000,
+  'trade-reviewer':     600,
+  'master-agent':       1000,
+  'orchestrator':       1000,
 }

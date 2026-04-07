@@ -48,7 +48,8 @@ export async function GET(req: NextRequest) {
     results.market = `error: ${String(e).slice(0, 80)}`
   }
 
-  // ── Dispatch heavy tasks to separate function invocations ─────────────────
+  // Signals, demo, polymarket run on their own Vercel cron schedules.
+  // No dispatch here — avoids double-execution and wasted AI tokens.
   const baseUrl = process.env.VERCEL_URL
     ? `https://${process.env.VERCEL_URL}`
     : process.env.NEXT_PUBLIC_APP_URL || 'https://trader1-nu.vercel.app'
@@ -57,16 +58,14 @@ export async function GET(req: NextRequest) {
   after(async () => {
     try {
       await Promise.allSettled([
-        fetch(`${baseUrl}/api/cron/signals`, { headers }).catch(() => {}),
         fetch(`${baseUrl}/api/cron/demo`, { headers }).catch(() => {}),
-        fetch(`${baseUrl}/api/cron/polymarket`, { headers }).catch(() => {}),
       ])
     } catch {
       console.error('[run-all] dispatch error')
     }
   })
 
-  results.dispatched = 'signals, demo, polymarket'
+  results.dispatched = 'demo only (signals+polymarket on own cron)'
 
   return NextResponse.json({
     success: true,

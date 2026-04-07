@@ -358,3 +358,16 @@ All computed from OHLCV candle data:
 | 2026-04-03 | Dashboard: added Polymarket tab + Kill Switch button |
 | 2026-04-03 | Added polymarket cron to vercel.json (every 30min) |
 | 2026-04-03 | SESSION PAUSED — all code complete, waiting for API keys from user |
+| 2026-04-06 | MULTI-EXCHANGE: Added 8 exchange adapters (Binance, Bybit, OKX, Kraken, KuCoin, Bitget, Gate.io, MEXC) |
+| 2026-04-06 | Created lib/exchanges/ — unified IExchange interface + ExchangeManager |
+| 2026-04-06 | Each adapter: getBalances, getTicker, getKlines, marketBuy/Sell, SL/TP, testConnection |
+| 2026-04-06 | ExchangeManager: multi-exchange orchestration, best ticker, aggregate balance |
+| 2026-04-06 | Backwards compat: lib/exchanges/index.ts exports same API as old binance-trader.ts |
+| 2026-04-06 | Updated agents/index.ts to use exchange abstraction instead of direct Binance |
+| 2026-04-06 | Updated positions cron to use ExchangeManager for price fetching |
+| 2026-04-06 | Updated settings page: 8-exchange selector grid, per-exchange credentials, primary exchange |
+| 2026-04-06 | Updated test-exchange API: supports all 8 exchanges with passphrase support |
+| 2026-04-06 | Updated schema.sql: primary_exchange + exchange_credentials JSONB fields |
+| 2026-04-06 | Updated .env.local: API key slots for all 8 exchanges |
+| 2026-04-06 | Updated types/index.ts: ExchangeId + ExchangeInfo types |
+| 2026-04-06 | Added fetchMultiExchangeTicker + fetchMultiExchangeKlines to price-fetcher.ts |

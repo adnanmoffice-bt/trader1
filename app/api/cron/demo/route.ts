@@ -142,7 +142,7 @@ export async function GET(req: NextRequest) {
         exit_price:  price,
         exit_time:   new Date().toISOString(),
         exit_reason: 'timeout',
-        pnl, pnl_pct: pnlPct, pnl_aed: pnlAed,
+        pnl, pnl_pct: pnlPct, pnl_aed: pnlUsd,
       }).eq('id', trade.id)
       actions.push(`${sym}: TIMEOUT (48h) @ $${price.toFixed(2)} P&L: $${pnlUsd.toFixed(0)}`)
     }

@@ -413,3 +413,113 @@ FROM portfolio p
 LEFT JOIN positions pos ON pos.user_id = p.user_id AND pos.is_demo = p.is_demo
 GROUP BY p.id, p.user_id, p.capital, p.available_capital, p.realized_pnl,
          p.win_count, p.loss_count, p.is_demo;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- TRADE ANALYTICS — per-trade computed metrics (MFE, MAE, exit analysis)
+-- ═══════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS trade_analytics (
+  id                    UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  trade_id              UUID NOT NULL UNIQUE,
+  instrument            VARCHAR(20) NOT NULL,
+  direction             VARCHAR(10) NOT NULL,
+  -- MFE / MAE (price-based)
+  mfe_price             DECIMAL(18,8),
+  mfe_pct               DECIMAL(10,4),
+  mae_price             DECIMAL(18,8),
+  mae_pct               DECIMAL(10,4),
+  -- Running PnL extremes (actual dollar PnL high/low during trade)
+  running_max_pnl       DECIMAL(18,8),
+  running_min_pnl       DECIMAL(18,8),
+  -- Time analysis
+  time_in_green_mins    INTEGER DEFAULT 0,
+  time_in_red_mins      INTEGER DEFAULT 0,
+  holding_duration_mins INTEGER DEFAULT 0,
+  entry_hour            SMALLINT,
+  exit_hour             SMALLINT,
+  entry_day_of_week     SMALLINT,
+  -- Best exit analysis
+  best_exit_price       DECIMAL(18,8),
+  best_exit_pnl         DECIMAL(18,8),
+  exit_efficiency_pct   DECIMAL(10,4),
+  -- R-value (PnL / risk based on SL distance)
+  r_value               DECIMAL(10,4),
+  -- Metadata
+  computed_at           TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_ta_trade ON trade_analytics(trade_id);
+CREATE INDEX idx_ta_instrument ON trade_analytics(instrument);
+CREATE INDEX idx_ta_computed ON trade_analytics(computed_at DESC);
+
+ALTER TABLE trade_analytics ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "public_read_trade_analytics" ON trade_analytics FOR SELECT USING (true);
+CREATE POLICY "service_write_trade_analytics" ON trade_analytics FOR ALL USING (auth.role() = 'service_role');
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- TRADE JOURNAL — qualitative notes, tags, psychology tracking
+-- ═══════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS trade_journal (
+  id                UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  trade_id          UUID,
+  date              DATE,
+  type              VARCHAR(10) DEFAULT 'trade' CHECK (type IN ('trade', 'day', 'plan')),
+  tags              TEXT[] DEFAULT '{}',
+  notes             TEXT,
+  psychology_score  SMALLINT CHECK (psychology_score BETWEEN 1 AND 5),
+  setup_type        VARCHAR(50),
+  mistakes          TEXT[] DEFAULT '{}',
+  lessons           TEXT,
+  created_at        TIMESTAMPTZ DEFAULT NOW(),
+  updated_at        TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_tj_trade ON trade_journal(trade_id);
+CREATE INDEX idx_tj_date ON trade_journal(date DESC);
+CREATE INDEX idx_tj_tags ON trade_journal USING GIN(tags);
+
+ALTER TABLE trade_journal ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "public_read_trade_journal" ON trade_journal FOR SELECT USING (true);
+CREATE POLICY "service_write_trade_journal" ON trade_journal FOR ALL USING (auth.role() = 'service_role');
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- PERFORMANCE SNAPSHOTS — daily aggregate stats for equity curve & analysis
+-- ═══════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS performance_snapshots (
+  id                      UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  date                    DATE NOT NULL UNIQUE,
+  equity                  DECIMAL(18,2) NOT NULL,
+  daily_pnl               DECIMAL(18,2) DEFAULT 0,
+  cumulative_pnl          DECIMAL(18,2) DEFAULT 0,
+  trade_count             INTEGER DEFAULT 0,
+  win_count               INTEGER DEFAULT 0,
+  loss_count              INTEGER DEFAULT 0,
+  win_rate                DECIMAL(6,2) DEFAULT 0,
+  profit_factor           DECIMAL(10,4),
+  expectancy              DECIMAL(18,4),
+  avg_r_value             DECIMAL(10,4),
+  max_drawdown_pct        DECIMAL(10,4),
+  current_drawdown_pct    DECIMAL(10,4),
+  win_streak              INTEGER DEFAULT 0,
+  loss_streak             INTEGER DEFAULT 0,
+  max_win_streak          INTEGER DEFAULT 0,
+  max_loss_streak         INTEGER DEFAULT 0,
+  best_instrument         VARCHAR(20),
+  worst_instrument        VARCHAR(20),
+  avg_hold_duration_mins  INTEGER,
+  avg_mfe_pct             DECIMAL(10,4),
+  avg_mae_pct             DECIMAL(10,4),
+  avg_exit_efficiency_pct DECIMAL(10,4),
+  kelly_fraction          DECIMAL(10,6),
+  created_at              TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_ps_date ON performance_snapshots(date DESC);
+
+ALTER TABLE performance_snapshots ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "public_read_perf_snap" ON performance_snapshots FOR SELECT USING (true);
+CREATE POLICY "service_write_perf_snap" ON performance_snapshots FOR ALL USING (auth.role() = 'service_role');
+
+ALTER PUBLICATION supabase_realtime ADD TABLE trade_analytics, performance_snapshots;

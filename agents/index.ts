@@ -4,6 +4,7 @@ import { createServiceSupabase } from '@/lib/supabase'
 import { sendSignalAlert } from '@/lib/telegram'
 import { checkSafety } from '@/lib/safety'
 import { getTradeStats, riskBasedPositionSize, checkDailyLossLimit } from '@/lib/risk-controls'
+import { getPerformanceContext, formatPerformanceForPrompt, type PerformanceContext } from '@/lib/trade-analytics'
 import * as exchange from '@/lib/exchanges'
 import * as poly from '@/lib/polymarket-trader'
 import type {
@@ -103,6 +104,20 @@ async function processInstrument(
   await log(db, 'orchestrator', 'info',
     `${instrument}: ${strategyName} detected → ${strategyDir?.toUpperCase()} | RSI:${ind.rsi.toFixed(0)} ATR:${ind.atr.toFixed(2)} Vol:${ind.volume_ratio.toFixed(1)}x`)
 
+  // ── STEP 1b: Load performance context for AI self-awareness ──────────────
+  let perfCtx: PerformanceContext | null = null
+  try { perfCtx = await getPerformanceContext(instrument) } catch { /* first run, no data */ }
+
+  // Adaptive: skip instrument if historically weak and AI not highly confident
+  if (perfCtx) {
+    const instPerf = perfCtx.by_instrument[instrument]
+    if (instPerf && instPerf.trades >= 10 && instPerf.win_rate < 30) {
+      await log(db, 'orchestrator', 'warn',
+        `${instrument}: SKIPPED — historical WR only ${instPerf.win_rate.toFixed(0)}% over ${instPerf.trades} trades (performance-based filter)`)
+      return `perf-skip (WR:${instPerf.win_rate.toFixed(0)}%)`
+    }
+  }
+
   // ── STEP 2: Claude AI confirmation (acts as smart filter) ─────────────────
   const [sentiment, signalOut] = await Promise.all([
     runMarketAnalyst(db, instrument),
@@ -124,7 +139,7 @@ async function processInstrument(
       portfolio_capital:  portfolio?.available_capital ?? 5000,
       open_positions_count: openCount,
       max_positions:      3,
-    }),
+    }, perfCtx),
   ])
 
   // AI must agree with strategy direction OR have high confidence
@@ -200,7 +215,7 @@ async function processInstrument(
     news_sentiment: sentiment, fear_greed_index: 50,
     portfolio_capital: portfolio?.available_capital ?? 5000,
     open_positions_count: openCount, max_positions: 3,
-  })
+  }, perfCtx)
 
   if (!approved) {
     await log(db, 'orchestrator', 'warn', `${instrument}: rejected by risk manager`)
@@ -308,8 +323,16 @@ Analyze news headlines and return ONLY valid JSON: {"sentiment": "bullish"|"bear
 // SIGNAL GENERATOR — technical analysis → trade signal
 // ══════════════════════════════════════════════════════════════════════════════
 
-const SIGNAL_SYSTEM = `You are a professional quantitative trading signal generator.
-Analyze market data and return ONLY a JSON object with this exact structure:
+const SIGNAL_SYSTEM = `You are a professional quantitative trading signal generator with SELF-AWARENESS of your own trading performance.
+
+You will receive your recent performance stats alongside market data. USE THIS to adjust your decisions:
+- If your exit efficiency is low (<50%), consider WIDER take profits (you cut winners too short)
+- If your MAE is high (>3%), wait for better entries or use TIGHTER stop losses
+- If you're on a loss streak, INCREASE your confidence threshold (be more selective)
+- If an instrument has low win rate in your history, be MORE cautious or HOLD
+- If a time-of-day has low win rate, factor that into confidence
+
+Return ONLY a JSON object:
 {
   "direction": "long" | "short" | "hold",
   "entry_price": number | null,
@@ -318,18 +341,18 @@ Analyze market data and return ONLY a JSON object with this exact structure:
   "take_profit_2": number | null,
   "confidence": integer 0-100,
   "reasoning": "max 15 words explaining why",
-  "ai_analysis": "max 30 words with key driver"
+  "ai_analysis": "max 30 words with key driver including any performance adjustments"
 }
 
 STRICT RULES:
 - stop_loss must be within 3-5% of entry for crypto, 2-4% for commodities
 - take_profit_1 at minimum 1.5x stop distance (R:R >= 1.5)
 - take_profit_2 at minimum 2.5x stop distance
-- Return HOLD if confidence < 65
+- Return HOLD if confidence < 65 (or < 75 if on loss streak of 3+)
 - Never recommend more than 5% capital per trade
 - Only return numbers, no % symbols or $ signs in JSON`
 
-export async function runSignalGenerator(ctx: AgentContext): Promise<AgentSignalOutput> {
+export async function runSignalGenerator(ctx: AgentContext, perfCtx?: PerformanceContext | null): Promise<AgentSignalOutput> {
   const ind = {
     price:        ctx.current_price,
     rsi:          ctx.rsi,
@@ -345,9 +368,11 @@ export async function runSignalGenerator(ctx: AgentContext): Promise<AgentSignal
     open_pos:     `${ctx.open_positions_count}/${ctx.max_positions}`,
   }
 
+  const perfText = perfCtx ? `\n\n${formatPerformanceForPrompt(perfCtx, ctx.instrument)}` : ''
+
   const result = await callAgent<AgentSignalOutput>({
     system:     SIGNAL_SYSTEM,
-    user:       `Instrument: ${ctx.instrument}\nIndicators: ${JSON.stringify(ind, null, 2)}`,
+    user:       `Instrument: ${ctx.instrument}\nIndicators: ${JSON.stringify(ind, null, 2)}${perfText}`,
     maxTokens:  512,
     expectJson: true,
   })
@@ -369,7 +394,8 @@ export async function runSignalGenerator(ctx: AgentContext): Promise<AgentSignal
 
 export async function runRiskManager(
   signal: AgentSignalOutput,
-  ctx: AgentContext
+  ctx: AgentContext,
+  perfCtx?: PerformanceContext | null
 ): Promise<boolean> {
   const db = createServiceSupabase()
 
@@ -393,6 +419,51 @@ export async function runRiskManager(
     return false
   }
 
+  // ── ADAPTIVE RULES based on performance analytics ──────────────────────
+  if (perfCtx) {
+    // Loss streak protection: require higher confidence during losing streaks
+    if (perfCtx.streak_type === 'loss' && perfCtx.current_streak >= 3) {
+      const minConf = 75
+      if (signal.confidence < minConf) {
+        await log(db, 'risk-manager', 'warn',
+          `${signal.instrument}: STREAK FILTER — on ${perfCtx.current_streak}-loss streak, conf ${signal.confidence}% < ${minConf}% required — rejected`)
+        return false
+      }
+    }
+
+    // Instrument-specific win rate filter
+    const instPerf = perfCtx.by_instrument[signal.instrument]
+    if (instPerf && instPerf.trades >= 8 && instPerf.win_rate < 35) {
+      const minConf = 80
+      if (signal.confidence < minConf) {
+        await log(db, 'risk-manager', 'warn',
+          `${signal.instrument}: INSTRUMENT FILTER — WR ${instPerf.win_rate.toFixed(0)}% (${instPerf.trades} trades), conf ${signal.confidence}% < ${minConf}% — rejected`)
+        return false
+      }
+    }
+
+    // Drawdown protection: tighten during deep drawdowns
+    if (perfCtx.current_drawdown_pct > 10) {
+      const minConf = 80
+      if (signal.confidence < minConf) {
+        await log(db, 'risk-manager', 'warn',
+          `${signal.instrument}: DRAWDOWN FILTER — in ${perfCtx.current_drawdown_pct.toFixed(1)}% DD, conf ${signal.confidence}% < ${minConf}% — rejected`)
+        return false
+      }
+    }
+
+    // Log performance-aware approval
+    const perfNote = [
+      perfCtx.streak_type !== 'none' ? `streak:${perfCtx.current_streak}${perfCtx.streak_type === 'win' ? 'W' : 'L'}` : null,
+      perfCtx.avg_exit_efficiency_pct > 0 ? `exitEff:${perfCtx.avg_exit_efficiency_pct.toFixed(0)}%` : null,
+      `kelly:${(perfCtx.kelly_fraction * 100).toFixed(1)}%`,
+    ].filter(Boolean).join(' ')
+
+    await log(db, 'risk-manager', 'ok',
+      `${signal.instrument}: approved — ${signal.direction.toUpperCase()} conf:${signal.confidence}% R:R:${signal.risk_reward} [${perfNote}]`)
+    return true
+  }
+
   await log(db, 'risk-manager', 'ok',
     `${signal.instrument}: approved — ${signal.direction.toUpperCase()} conf:${signal.confidence}% R:R:${signal.risk_reward}`)
   return true
@@ -409,32 +480,51 @@ export async function runTradeReviewer(): Promise<string> {
   yesterday.setDate(yesterday.getDate() - 1)
   const yStr = yesterday.toISOString().split('T')[0]
 
-  const { data: trades } = await db
-    .from('trades')
-    .select('*')
-    .gte('closed_at', `${yStr}T00:00:00`)
-    .lt('closed_at',  `${yStr}T23:59:59`)
-    .eq('status', 'closed')
+  // Check both live trades and demo trades
+  const { data: trades } = await db.from('trades').select('*')
+    .gte('closed_at', `${yStr}T00:00:00`).lt('closed_at', `${yStr}T23:59:59`).eq('status', 'closed')
 
-  if (!trades?.length) {
+  const { data: demoTrades } = await db.from('demo_trades').select('*')
+    .gte('exit_time', `${yStr}T00:00:00`).lt('exit_time', `${yStr}T23:59:59`).not('exit_time', 'is', null)
+
+  const allTrades = [...(trades ?? []), ...(demoTrades ?? [])]
+  if (!allTrades.length) {
     await log(db, 'trade-reviewer', 'info', 'No closed trades to review yesterday')
     return 'No trades to review'
   }
 
-  const wins   = trades.filter(t => (t.pnl ?? 0) > 0).length
-  const losses = trades.filter(t => (t.pnl ?? 0) < 0).length
-  const netPnl = trades.reduce((s, t) => s + (t.pnl_aed ?? 0), 0)
-  const summary = trades.map(t =>
-    `${t.instrument} ${t.direction} entry:${t.entry_price} exit:${t.exit_price} pnl:${t.pnl_pct?.toFixed(2)}%`
-  ).join('\n')
+  const tradeIds = allTrades.map(t => t.id)
+  const { data: analytics } = await db.from('trade_analytics').select('*').in('trade_id', tradeIds)
+  const aMap = new Map((analytics ?? []).map(a => [a.trade_id, a]))
+
+  const wins = allTrades.filter(t => +(t.pnl ?? 0) > 0).length
+  const losses = allTrades.filter(t => +(t.pnl ?? 0) <= 0).length
+  const netPnl = allTrades.reduce((s, t) => s + +(t.pnl ?? 0), 0)
+
+  const summary = allTrades.map(t => {
+    const a = aMap.get(t.id)
+    const base = `${t.instrument} ${t.direction} entry:${t.entry_price} exit:${t.exit_price ?? t.exit_price} pnl:${(+(t.pnl_pct ?? t.pnl_pct ?? 0)).toFixed(2)}%`
+    if (!a) return base
+    return `${base} | MFE:${(+a.mfe_pct).toFixed(1)}% MAE:${(+a.mae_pct).toFixed(1)}% ExitEff:${(+a.exit_efficiency_pct).toFixed(0)}% R:${(+a.r_value).toFixed(2)} Hold:${a.holding_duration_mins}min BestExit:${(+a.best_exit_pnl).toFixed(2)}`
+  }).join('\n')
+
+  const perfCtx = await getPerformanceContext()
+  const perfText = formatPerformanceForPrompt(perfCtx)
 
   const review = await callAgent({
-    system: `You are a trading coach reviewing yesterday's trades. Be concise, analytical, actionable. Max 100 words.`,
-    user:   `Date: ${yStr}\nWins:${wins} Losses:${losses} Net P&L: ${netPnl.toFixed(0)} AED\n\nTrades:\n${summary}`,
-    maxTokens: 300,
+    system: `You are a trading performance coach reviewing yesterday's trades with ADVANCED ANALYTICS data.
+For each trade you have MFE (max favorable excursion), MAE (max adverse excursion), exit efficiency, R-value, and holding duration.
+Use this data to give SPECIFIC, DATA-DRIVEN feedback:
+- If exit efficiency is low, the trader cut winners too short (MFE shows how much was left on the table)
+- If MAE is high relative to SL distance, entries were poorly timed
+- If R-value is negative, risk management failed
+- Identify the BEST and WORST trade and explain why
+Be concise, analytical, actionable. Max 150 words.`,
+    user: `Date: ${yStr}\nWins:${wins} Losses:${losses} Net P&L: ${netPnl.toFixed(2)}\n\n${perfText}\n\nTrades with Analytics:\n${summary}`,
+    maxTokens: 400,
   })
 
-  await log(db, 'trade-reviewer', 'ok', `Daily review: ${wins}W/${losses}L — ${review.slice(0, 80)}...`)
+  await log(db, 'trade-reviewer', 'ok', `Daily review: ${wins}W/${losses}L — ${review.slice(0, 100)}...`)
   return review
 }
 

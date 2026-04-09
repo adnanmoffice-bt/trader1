@@ -371,3 +371,46 @@ All computed from OHLCV candle data:
 | 2026-04-06 | Updated .env.local: API key slots for all 8 exchanges |
 | 2026-04-06 | Updated types/index.ts: ExchangeId + ExchangeInfo types |
 | 2026-04-06 | Added fetchMultiExchangeTicker + fetchMultiExchangeKlines to price-fetcher.ts |
+| 2026-04-09 | TRADINGVIEW INTEGRATION — Major UI overhaul |
+| 2026-04-09 | Installed: lightweight-charts v5.1, lightweight-charts-indicators (446 indicators), react-ts-tradingview-widgets |
+| 2026-04-09 | Created components/charts/TradingChart.tsx — professional candlestick chart replacing SVG |
+| 2026-04-09 | Features: zoom, pan, crosshair, tooltips, multiple timeframes (1m/5m/15m/1h/4h/1D/1W) |
+| 2026-04-09 | Indicators: EMA(20,50), SMA(20), Bollinger Bands(20,2), RSI(14), MACD(12,26,9) as toggleable overlays |
+| 2026-04-09 | Volume histogram in separate price scale, synced panes for RSI/MACD sub-charts |
+| 2026-04-09 | Series markers: BUY/SELL signal arrows + trade entry/exit execution markers on chart |
+| 2026-04-09 | Created components/charts/MultiChart.tsx — multi-chart layout (1x1, 2x1, 2x2, 3x1) |
+| 2026-04-09 | Created components/widgets/TickerTape.tsx — TradingView scrolling ticker tape (11 symbols) |
+| 2026-04-09 | Created components/widgets/TechAnalysis.tsx — TradingView technical analysis gauge widget |
+| 2026-04-09 | Created components/widgets/CryptoHeatmap.tsx — TradingView crypto heatmap widget |
+| 2026-04-09 | Created components/widgets/EconomicCalendar.tsx — TradingView economic calendar widget |
+| 2026-04-09 | Created components/widgets/CryptoScreener.tsx — TradingView crypto screener widget |
+| 2026-04-09 | Created components/widgets/MarketOverview.tsx — TradingView market overview (Crypto/Indices/Commodities) |
+| 2026-04-09 | New page: /heatmap — full-screen crypto heatmap by market cap |
+| 2026-04-09 | New page: /calendar — economic calendar + market overview split view |
+| 2026-04-09 | New page: /multi-chart — 2x2 grid chart layout with independent symbol/timeframe per chart |
+| 2026-04-09 | New page: /screener — crypto screener sorted by market cap, performance, oscillators |
+| 2026-04-09 | Redesigned dashboard: TradingView-inspired layout (chart 9/12 cols, sidebar 3/12 cols) |
+| 2026-04-09 | Dashboard sidebar: tabbed panels (PORTFOLIO / ANALYSIS / SIGNALS) |
+| 2026-04-09 | ANALYSIS tab: embedded TradingView Technical Analysis widget per symbol |
+| 2026-04-09 | Updated NavBar: added CHARTS, HEATMAP, SCREENER, CALENDAR navigation items |
+| 2026-04-09 | Build verified: zero TypeScript errors, all 50 routes compiled successfully |
+| 2026-04-09 | TRADESVIZ-INSPIRED ANALYTICS — Performance feedback loop for AI agents |
+| 2026-04-09 | New DB tables: trade_analytics (MFE/MAE/exit efficiency/R-value per trade) |
+| 2026-04-09 | New DB tables: trade_journal (tags, notes, psychology, setup type, mistakes, lessons) |
+| 2026-04-09 | New DB tables: performance_snapshots (daily equity curve, streaks, ratios, Kelly) |
+| 2026-04-09 | Created lib/trade-analytics.ts — computeTradeAnalytics, computeDailySnapshot, getPerformanceContext, formatPerformanceForPrompt |
+| 2026-04-09 | New cron: /api/cron/analytics — computes MFE/MAE/best exit/R-value for all closed trades |
+| 2026-04-09 | New cron: /api/cron/performance — daily snapshot + weekly Performance Coach trigger |
+| 2026-04-09 | New agent: Performance Coach (agents/performance-coach.ts) — weekly AI analysis of patterns/mistakes/strengths |
+| 2026-04-09 | Enhanced Signal Generator: now receives performance context (WR by instrument, streak, exit efficiency, weaknesses) |
+| 2026-04-09 | Enhanced Risk Manager: adaptive rules — loss streak protection, instrument WR filter, drawdown filter |
+| 2026-04-09 | Enhanced Trade Reviewer: now analyses MFE/MAE/exit efficiency per trade, identifies cut-winner patterns |
+| 2026-04-09 | Orchestrator: skips instruments with historically <30% WR over 10+ trades (performance-based filter) |
+| 2026-04-09 | New API: /api/analytics (trade analytics with filters), /api/analytics/equity-curve, /api/analytics/calendar |
+| 2026-04-09 | New API: /api/analytics/performance (same context AI agents use), /api/journal (CRUD for notes/tags) |
+| 2026-04-09 | New components: EquityCurve (lightweight-charts area), TradeCalendar (PnL grid), PerformanceMetrics (11 KPIs), ExitAnalysis (efficiency viz) |
+| 2026-04-09 | New page: /analytics — full performance dashboard (overview + exit analysis + calendar tabs) |
+| 2026-04-09 | New page: /journal — trading journal with psychology scoring, tags, setup types, day plans |
+| 2026-04-09 | Dashboard sidebar: new PERF tab with real-time performance metrics from analytics engine |
+| 2026-04-09 | NavBar: added ANALYTICS, JOURNAL links |
+| 2026-04-09 | Build verified: zero TypeScript errors, all 59 routes compiled successfully |

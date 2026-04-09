@@ -4,7 +4,7 @@ import { createServiceSupabase } from '@/lib/supabase'
 import { sendSignalAlert } from '@/lib/telegram'
 import { notifySignal as waSignal, notifyWarRoomDecision as waDecision, notifyWarRoomOpen as waOpen, notifyWarRoomDebate as waDebate, notifyWarRoomBlocked as waBlocked, notifyWarRoomScan as waScan } from '@/lib/whatsapp'
 import { checkSafety } from '@/lib/safety'
-import { hardRiskCheck, checkDailyLossLimit, getTradeStats } from '@/lib/risk-controls'
+import { hardRiskCheck, checkDailyLossLimit, getTradeStats, riskBasedPositionSize } from '@/lib/risk-controls'
 import { AGENT_PROMPTS, AGENT_TOKEN_LIMITS, type AgentId, type PromptContext } from '@/agents/agent-prompts'
 import { runPostMeetingBrief } from '@/agents/meta-agent'
 import { buildMacroContext, formatMacroContext, type MacroSnapshot } from '@/lib/macro-context'
@@ -88,6 +88,38 @@ export async function runWarRoom(): Promise<void> {
     return
   }
 
+  // ── PHASE 6: MARKET REGIME FILTER ──
+
+  // Loss streak pause: if last 3 closed trades were all losses, wait 2 hours
+  const { data: recentClosedTrades } = await db.from('demo_trades')
+    .select('pnl, exit_time')
+    .not('exit_time', 'is', null)
+    .order('exit_time', { ascending: false })
+    .limit(3)
+  const lastThreeLosses = (recentClosedTrades ?? []).length >= 3
+    && recentClosedTrades!.every(t => +(t.pnl ?? 0) <= 0)
+  if (lastThreeLosses) {
+    const lastClose = recentClosedTrades![0].exit_time
+    const hoursSinceLastLoss = lastClose ? (Date.now() - new Date(lastClose).getTime()) / 3600_000 : 999
+    if (hoursSinceLastLoss < 2) {
+      await say(db, crypto.randomUUID(), null, {
+        agent: 'orchestrator', role: 'alert',
+        message: `WAR ROOM PAUSED: 3 consecutive losses. Mandatory 2h cooldown (${(2 - hoursSinceLastLoss).toFixed(1)}h remaining). Protecting capital.`,
+      })
+      return
+    }
+  }
+
+  // High-impact event proximity: no new trades within 4h of high-impact event
+  const highImpactSoon = (macro.upcomingEvents ?? []).filter(e => e.impact === 'high').length >= 2
+  if (highImpactSoon) {
+    await say(db, crypto.randomUUID(), null, {
+      agent: 'orchestrator', role: 'alert',
+      message: `WAR ROOM PAUSED: ${macro.upcomingEvents.filter(e => e.impact === 'high').length} high-impact events upcoming. Waiting for clarity.`,
+    })
+    return
+  }
+
   const { data: recentDebates } = await db.from('war_room_messages')
     .select('instrument, created_at')
     .eq('role', 'decision')
@@ -166,6 +198,34 @@ async function runMeeting(
   const forecast = generateForecast(instrument, ohlcv)
   const forecastText = formatForecast(forecast)
 
+  // ── PHASE 5: Check trigger performance — auto-disable triggers with <30% win rate ──
+  const { data: triggerStats } = await db.from('demo_trades')
+    .select('signal_reason, pnl')
+    .not('exit_time', 'is', null)
+    .gte('created_at', new Date(Date.now() - 14 * 86400_000).toISOString())
+
+  const triggerWinRates: Record<string, { wins: number; total: number }> = {}
+  for (const t of triggerStats ?? []) {
+    const reason = String(t.signal_reason ?? '')
+    for (const name of ['BB Squeeze', 'EMA 12/26', 'MACD Crossover', 'RSI Extreme', 'Volume Spike', 'EMA 50 Breakout']) {
+      if (reason.includes(name)) {
+        if (!triggerWinRates[name]) triggerWinRates[name] = { wins: 0, total: 0 }
+        triggerWinRates[name].total++
+        if (+(t.pnl ?? 0) > 0) triggerWinRates[name].wins++
+      }
+    }
+  }
+
+  const disabledTriggers = new Set<string>()
+  for (const [name, stats] of Object.entries(triggerWinRates)) {
+    if (stats.total >= 8 && (stats.wins / stats.total) < 0.30) {
+      disabledTriggers.add(name)
+    }
+  }
+  // BB Squeeze starts disabled until we have enough winning data on other triggers
+  const totalClosedTrades = (triggerStats ?? []).length
+  if (totalClosedTrades < 20) disabledTriggers.add('BB Squeeze')
+
   const rawTriggers = [
     { name: 'BB Squeeze Breakout', ...detectBBSqueeze(ohlcv) },
     { name: 'EMA 12/26 Cross',    ...detectEMACross(ohlcv) },
@@ -173,7 +233,7 @@ async function runMeeting(
     { name: 'RSI Extreme',        ...detectRSIExtreme(ohlcv) },
     { name: 'Volume Spike',       ...detectVolumeSpike(ohlcv) },
     { name: 'EMA 50 Breakout',    ...detectEMA50Breakout(ohlcv) },
-  ].filter(t => t.triggered)
+  ].filter(t => t.triggered && !disabledTriggers.has(t.name.replace(' Breakout', '')))
 
   const trigger = rawTriggers[0]?.name ?? null
   const triggerDir = rawTriggers[0]?.direction ?? null
@@ -185,6 +245,18 @@ async function runMeeting(
       data: { price, rsi: ind.rsi, macd_hist: ind.macd.histogram, bb_pctb: ind.bb.percentB, volume_ratio: ind.volume_ratio, trigger: null },
     })
     return 'no trigger'
+  }
+
+  // ── PHASE 2: TREND FILTER GATE — skip debates that fight the trend ──
+  const trendConflict =
+    (triggerDir === 'short' && forecast.smoothedTrend === 'up' && forecast.upProbability4h > 0.55) ||
+    (triggerDir === 'long' && forecast.smoothedTrend === 'down' && forecast.upProbability4h < 0.45)
+  if (trendConflict) {
+    await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
+      message: `${instrument} @ $${f(price)} | ${allTriggers} → ${triggerDir?.toUpperCase()} but trend is ${forecast.smoothedTrend.toUpperCase()} (MC ${(forecast.upProbability4h * 100).toFixed(0)}% up). Skipping — don't fight the trend.`,
+      data: { price, trigger: allTriggers, trendFilter: true, trendDir: forecast.smoothedTrend, mcUp: forecast.upProbability4h },
+    })
+    return 'trend-filtered'
   }
 
   if (onCooldown) {
@@ -378,14 +450,23 @@ async function runMeeting(
     })
 
   if (isExecute && triggerDir) {
-    const slMult = 2.5
-    const tpMult = trigger === 'BB Squeeze Breakout' ? 4 : 5
-    const slDist = ind.atr * slMult
-    const tpDist = ind.atr * tpMult
+    // ── PHASE 3: MC-based SL/TP instead of fixed ATR multiples ──
     const entry = price
-    const sl = triggerDir === 'long' ? entry - slDist : entry + slDist
-    const tp = triggerDir === 'long' ? entry + tpDist : entry - tpDist
-    const rr = Math.round((tpDist / slDist) * 100) / 100
+    let sl: number, tp: number, tp2: number
+
+    if (triggerDir === 'long') {
+      sl = Math.min(entry - ind.atr * 2.5, forecast.mc10 - ind.atr * 0.5)
+      tp = forecast.mc75 > entry ? forecast.mc75 : entry + ind.atr * 3
+      tp2 = forecast.mc90 > entry ? forecast.mc90 : entry + ind.atr * 5
+    } else {
+      sl = Math.max(entry + ind.atr * 2.5, forecast.mc90 + ind.atr * 0.5)
+      tp = forecast.mc25 < entry ? forecast.mc25 : entry - ind.atr * 3
+      tp2 = forecast.mc10 < entry ? forecast.mc10 : entry - ind.atr * 5
+    }
+
+    const slDist = Math.abs(entry - sl)
+    const tpDist = Math.abs(entry - tp)
+    const rr = slDist > 0 ? Math.round((tpDist / slDist) * 100) / 100 : 0
 
     const riskCheck = hardRiskCheck(rr, entry, sl, openPos ?? 0)
     if (!riskCheck.allowed) {
@@ -408,7 +489,7 @@ async function runMeeting(
     }
 
     const strategyType = trigger === 'BB Squeeze Breakout' ? 'BB_SQUEEZE' as const : 'EMA_CROSS' as const
-    const bt = quickBacktest(ohlcv, strategyType, slMult, tpMult)
+    const bt = quickBacktest(ohlcv, strategyType, 2.5, 5)
     if (!bt.passed) {
       await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'decision',
         message: `BACKTEST FAIL: ${strategyType} win rate ${(bt.winRate * 100).toFixed(0)}% (${bt.wins}W/${bt.losses}L) on recent data — below 35% threshold`,
@@ -419,7 +500,7 @@ async function runMeeting(
       return 'blocked'
     }
 
-    // ── SIGNAL DEDUPLICATION — prevent duplicate signals for same instrument/direction ──
+    // ── SIGNAL DEDUPLICATION ──
     const { count: recentSignalCount } = await db.from('signals')
       .select('*', { count: 'exact', head: true })
       .eq('instrument', instrument).eq('direction', triggerDir)
@@ -432,24 +513,45 @@ async function runMeeting(
       return 'blocked'
     }
 
+    // ── PHASE 4: Aggressive position sizing (3-5% risk, streak-adjusted) ──
     const stats = await getTradeStats()
+    const sizing = riskBasedPositionSize(capitalUsd, entry, sl, stats)
+
     const dynamicConf = stats.totalTrades >= 10
       ? Math.round(80 * (0.5 + stats.winRate * 0.5))
       : 80
 
+    const reasoning = `War Room 12-agent consensus (${voteFor}/${voteAgainst}) ${trigger} | BT:${bt.wins}W/${bt.losses}L Kelly:${(stats.kellyFraction * 100).toFixed(1)}% | FC:${forecast.combinedLabel}(${forecast.combinedSignal}) MC:${(forecast.upProbability4h * 100).toFixed(0)}%up`
+
     const { data: saved } = await db.from('signals').insert({
       instrument, direction: triggerDir,
       entry_price: entry, stop_loss: sl, take_profit_1: tp,
-      take_profit_2: triggerDir === 'long' ? entry + tpDist * 1.5 : entry - tpDist * 1.5,
+      take_profit_2: tp2,
       confidence: dynamicConf, risk_reward: rr,
-      reasoning: `War Room 12-agent consensus (${voteFor}/${voteAgainst}) ${trigger} | BT:${bt.wins}W/${bt.losses}L Kelly:${(stats.kellyFraction * 100).toFixed(1)}%`,
-      ai_analysis: decisionResponse, news_sentiment: 'neutral',
+      reasoning, ai_analysis: decisionResponse, news_sentiment: 'neutral',
       technical_score: tech.score, status: 'active',
     }).select().single()
 
     if (saved) {
       await sendSignalAlert(saved as Signal).catch(e => console.error('[war-room] Telegram error:', e))
       await waSignal(saved as Signal).catch(e => console.error('[war-room] waSignal WhatsApp error:', e))
+    }
+
+    // ── PHASE 1: Open demo position immediately (position lifecycle) ──
+    const { data: session } = await db.from('demo_sessions')
+      .select('id').eq('status', 'running')
+      .order('created_at', { ascending: false }).limit(1).single()
+
+    if (session && sizing.units > 0) {
+      await db.from('demo_trades').insert({
+        session_id: session.id,
+        instrument, direction: triggerDir,
+        entry_price: entry, stop_loss: sl, take_profit: tp,
+        quantity: sizing.units,
+        confidence: dynamicConf,
+        signal_reason: reasoning,
+        entry_time: new Date().toISOString(),
+      })
     }
 
     await waDecision({
@@ -462,7 +564,7 @@ async function runMeeting(
     }).catch(e => console.error('[war-room] waDecision WhatsApp error:', e))
 
     await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
-      message: `EXECUTED: ${triggerDir.toUpperCase()} ${instrument} @ $${f(entry)} | SL:$${f(sl)} TP:$${f(tp)} R:R ${rr}x | Vote: ${voteFor}-${voteAgainst} | BT:${bt.wins}W/${bt.losses}L | Kelly:${(stats.kellyFraction * 100).toFixed(1)}%. Meeting closed.`,
+      message: `EXECUTED: ${triggerDir.toUpperCase()} ${instrument} @ $${f(entry)} | SL:$${f(sl)} TP:$${f(tp)} R:R ${rr}x | Size:${sizing.units.toFixed(4)} ($${sizing.notionalUsd.toFixed(0)}) Risk:${(sizing.riskPct * 100).toFixed(1)}% | Vote: ${voteFor}-${voteAgainst} | FC:${forecast.combinedLabel}. Meeting closed.`,
     })
     await runPostMeetingBrief({ instrument, decision: 'executed', direction: triggerDir, entry, sl, tp, rr, votesFor: voteFor, votesAgainst: voteAgainst, trigger: allTriggers ?? trigger, agentStances }).catch(() => {})
     return 'executed'

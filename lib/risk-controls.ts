@@ -142,14 +142,18 @@ export function riskBasedPositionSize(
   const riskPerUnit = Math.abs(entryPrice - stopLoss)
   if (riskPerUnit <= 0) return { units: 0, notionalUsd: 0, riskPct: 0 }
 
-  const baseRiskPct = 0.02
-  const kellyRisk = stats.kellyFraction > 0 ? stats.kellyFraction : baseRiskPct
+  // Aggressive base: 3-5% risk per trade
+  const baseRiskPct = 0.035
+  const kellyRisk = stats.kellyFraction > 0 ? Math.min(stats.kellyFraction, 0.05) : baseRiskPct
 
-  let riskPct = Math.min(kellyRisk, 0.05)
+  let riskPct = stats.totalTrades >= 10 ? kellyRisk : baseRiskPct
 
-  if (stats.streak <= -3) riskPct *= 0.5
-  if (stats.streak >= 5) riskPct = Math.min(riskPct * 1.2, 0.05)
-  if (stats.totalTrades < 10) riskPct = Math.min(riskPct, 0.02)
+  // Streak-based adjustment
+  if (stats.streak <= -2) riskPct = Math.max(riskPct * 0.6, 0.02)  // 2 losses: drop to 2%
+  if (stats.streak <= -3) riskPct = Math.max(riskPct * 0.3, 0.01)  // 3 losses: drop to 1%
+  if (stats.streak >= 3) riskPct = Math.min(riskPct * 1.15, 0.05)  // 3 wins: up to 4%
+
+  riskPct = Math.min(riskPct, 0.05) // hard cap 5%
 
   const riskAmount = capitalUsd * riskPct
   const units = riskAmount / riskPerUnit

@@ -313,7 +313,7 @@ async function updateSessionStats(
 ) {
   const { data: allTrades } = await db
     .from('demo_trades')
-    .select('pnl, pnl_aed')
+    .select('pnl')
     .eq('session_id', sessionId)
     .not('exit_time', 'is', null)
 
@@ -326,13 +326,13 @@ async function updateSessionStats(
 
   const wins = allTrades.filter(t => Number(t.pnl) > 0).length
   const losses = allTrades.filter(t => Number(t.pnl) <= 0).length
-  const totalPnl = allTrades.reduce((s, t) => s + Number(t.pnl_aed || 0), 0)
+  const totalPnl = allTrades.reduce((s, t) => s + Number(t.pnl || 0), 0)
 
   let peak = initialCapital
   let maxDD = 0
   let running = initialCapital
   for (const t of allTrades) {
-    running += Number(t.pnl_aed || 0)
+    running += Number(t.pnl || 0)
     if (running > peak) peak = running
     const dd = (peak - running) / peak
     if (dd > maxDD) maxDD = dd
@@ -347,4 +347,13 @@ async function updateSessionStats(
     final_capital: initialCapital + totalPnl,
     max_drawdown:  maxDD,
   }).eq('id', sessionId)
+
+  // Sync portfolio table (used by war-room for capital + daily loss checks)
+  await db.from('portfolio').update({
+    capital: initialCapital + totalPnl,
+    available_capital: initialCapital + totalPnl,
+    realized_pnl: totalPnl,
+    win_count: wins,
+    loss_count: losses,
+  }).eq('is_demo', false).then(({ error }) => { if (error) console.error('[demo] portfolio sync error:', error.message) })
 }

@@ -3,6 +3,7 @@ import type { OHLCV } from '@/types'
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 export function avg(arr: number[]): number {
+  if (arr.length === 0) return 0
   return arr.reduce((a, b) => a + b, 0) / arr.length
 }
 
@@ -29,7 +30,7 @@ export function emaLast(prices: number[], period: number): number {
 // ─── RSI ──────────────────────────────────────────────────────────────────────
 
 export function rsi(prices: number[], period = 14): number {
-  if (prices.length < period + 1) return 50
+  if (prices.length < period + 1) return NaN
 
   const changes = prices.slice(1).map((p, i) => p - prices[i])
   const gains   = changes.map(c => (c > 0 ? c : 0))
@@ -81,9 +82,10 @@ export function bollingerBands(
   const sd     = stdDev(slice)
   const upper  = middle + multiplier * sd
   const lower  = middle - multiplier * sd
-  const width  = round((upper - lower) / middle)
+  const width  = middle > 0 ? round((upper - lower) / middle) : 0
   const last   = prices.at(-1)!
-  const percentB = round((last - lower) / (upper - lower))
+  const bandRange = upper - lower
+  const percentB = bandRange > 0 ? round((last - lower) / bandRange) : 0.5
 
   return { upper: round(upper), middle: round(middle), lower: round(lower), width, percentB }
 }
@@ -144,8 +146,9 @@ export function computeIndicators(candles: OHLCV[]): Indicators {
   const closes = candles.map(c => c.close)
   const price  = closes.at(-1)!
 
+  const rsiVal = rsi(closes)
   return {
-    rsi:          rsi(closes),
+    rsi:          isNaN(rsiVal) ? 50 : rsiVal,
     macd:         macd(closes),
     bb:           bollingerBands(closes),
     ema_20:       round(emaLast(closes, 20)),
@@ -208,13 +211,14 @@ export function detectEMACross(candles: OHLCV[]): { triggered: boolean; directio
 // ─── RSI Extreme Detection ───────────────────────────────────────────────────
 
 export function detectRSIExtreme(candles: OHLCV[]): { triggered: boolean; direction: 'long' | 'short' | null } {
-  if (candles.length < 20) return { triggered: false, direction: null }
+  if (candles.length < 30) return { triggered: false, direction: null }
   const closes = candles.map(c => c.close)
   const r = rsi(closes)
   const prevCloses = closes.slice(0, -1)
   const prevR = rsi(prevCloses)
 
-  // Trigger on RSI entering extreme zone (not already in it)
+  if (isNaN(r) || isNaN(prevR)) return { triggered: false, direction: null }
+
   if (r <= 25 && prevR > 25) return { triggered: true, direction: 'long' }
   if (r >= 75 && prevR < 75) return { triggered: true, direction: 'short' }
   return { triggered: false, direction: null }
@@ -301,8 +305,7 @@ export function technicalScore(ind: Indicators): { score: number; bias: 'long' |
   if (ind.current_price > ind.ema_20 && ind.ema_20 > ind.ema_50) bullPoints += 18
   else if (ind.current_price < ind.ema_20 && ind.ema_20 < ind.ema_50) bearPoints += 18
 
-  // EMA 12/26 cross proximity
-  const ema12 = ind.ema_20 // close proxy
+  // Price vs key EMAs
   if (ind.current_price > ind.ema_20 && ind.current_price > ind.ema_50) bullPoints += 10
   else if (ind.current_price < ind.ema_20 && ind.current_price < ind.ema_50) bearPoints += 10
 
@@ -348,24 +351,38 @@ export interface BacktestResult {
   passed: boolean
 }
 
+type BacktestStrategy = 'BB_SQUEEZE' | 'EMA_CROSS' | 'MACD_CROSS' | 'RSI_EXTREME' | 'VOLUME_SPIKE' | 'EMA50_BREAKOUT'
+
+function getDetector(strategy: BacktestStrategy) {
+  switch (strategy) {
+    case 'BB_SQUEEZE': return detectBBSqueeze
+    case 'EMA_CROSS': return detectEMACross
+    case 'MACD_CROSS': return detectMACDCross
+    case 'RSI_EXTREME': return detectRSIExtreme
+    case 'VOLUME_SPIKE': return detectVolumeSpike
+    case 'EMA50_BREAKOUT': return detectEMA50Breakout
+  }
+}
+
 export function quickBacktest(
   candles: OHLCV[],
-  strategy: 'BB_SQUEEZE' | 'EMA_CROSS',
+  strategy: BacktestStrategy,
   slMult: number,
   tpMult: number,
   minWinRate = 0.35,
 ): BacktestResult {
   const minCandles = 60
   if (candles.length < minCandles) {
-    return { totalTriggers: 0, wins: 0, losses: 0, winRate: 0, avgRR: 0, passed: true }
+    return { totalTriggers: 0, wins: 0, losses: 0, winRate: 0, avgRR: 0, passed: false }
   }
 
+  const detect = getDetector(strategy)
   let wins = 0, losses = 0
   const rrResults: number[] = []
 
   for (let i = 50; i < candles.length - 10; i++) {
     const window = candles.slice(0, i + 1)
-    const trigger = strategy === 'BB_SQUEEZE' ? detectBBSqueeze(window) : detectEMACross(window)
+    const trigger = detect(window)
     if (!trigger.triggered || !trigger.direction) continue
 
     const entryPrice = candles[i].close
@@ -390,17 +407,18 @@ export function quickBacktest(
     }
 
     if (hit === 'tp') { wins++; rrResults.push(tpDist / slDist) }
-    else if (hit === 'sl') { losses++; rrResults.push(-1) }
+    else { losses++; rrResults.push(-1) }
   }
 
   const total = wins + losses
   const winRate = total > 0 ? wins / total : 0
   const avgRR = rrResults.length > 0 ? rrResults.reduce((a, b) => a + b, 0) / rrResults.length : 0
 
+  // Require minimum 5 resolved trades to pass; insufficient data = FAIL
   return {
     totalTriggers: total,
     wins, losses, winRate, avgRR,
-    passed: total < 3 || winRate >= minWinRate,
+    passed: total >= 5 && winRate >= minWinRate,
   }
 }
 

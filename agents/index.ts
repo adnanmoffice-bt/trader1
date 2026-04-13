@@ -119,9 +119,13 @@ async function processInstrument(
   }
 
   // ── STEP 2: Claude AI confirmation (acts as smart filter) ─────────────────
-  const [sentiment, signalOut] = await Promise.all([
-    runMarketAnalyst(db, instrument),
-    runSignalGenerator({
+  const sentiment = await runMarketAnalyst(db, instrument)
+
+  // Fetch Fear & Greed from market_data if available
+  const { data: fgData } = await db.from('market_data').select('price').eq('symbol', 'FEAR_GREED').single()
+  const fearGreed = fgData ? Number(fgData.price) : 50
+
+  const signalOut = await runSignalGenerator({
       instrument,
       current_price:      ind.current_price,
       ohlcv_1h:           ohlcv.slice(-48),
@@ -134,27 +138,37 @@ async function processInstrument(
       ema_200:            ind.ema_200,
       atr:                ind.atr,
       volume_ratio:       ind.volume_ratio,
-      news_sentiment:     'neutral',
-      fear_greed_index:   50,
+      news_sentiment:     sentiment,
+      fear_greed_index:   fearGreed,
       portfolio_capital:  portfolio?.available_capital ?? 5000,
       open_positions_count: openCount,
       max_positions:      3,
-    }, perfCtx),
-  ])
+    }, perfCtx)
 
-  // AI must agree with strategy direction OR have high confidence
+  // AI must AGREE with strategy direction AND be confident — no more rubber-stamping
   const aiAgrees = signalOut.direction === strategyDir
-  const aiConfident = signalOut.confidence >= 65
+  const aiHold = signalOut.direction === 'hold'
 
-  if (!aiAgrees && !aiConfident) {
+  if (aiHold) {
+    await log(db, 'orchestrator', 'warn',
+      `${instrument}: AI recommends HOLD (conf ${signalOut.confidence}%) — SKIP`)
+    return `AI says HOLD (conf:${signalOut.confidence}%)`
+  }
+
+  if (!aiAgrees) {
     await log(db, 'orchestrator', 'warn',
       `${instrument}: ${strategyName} says ${strategyDir} but AI says ${signalOut.direction} (conf ${signalOut.confidence}%) — SKIP (AI disagrees)`)
     return `AI disagrees (${signalOut.direction} vs ${strategyDir})`
   }
 
-  // Use strategy direction, boosted by AI agreement
+  if (signalOut.confidence < 65) {
+    await log(db, 'orchestrator', 'warn',
+      `${instrument}: AI confidence too low (${signalOut.confidence}%) — SKIP`)
+    return `AI low confidence (${signalOut.confidence}%)`
+  }
+
   const finalDir = strategyDir as Direction
-  const finalConf = aiAgrees ? Math.min(signalOut.confidence + 15, 100) : signalOut.confidence
+  const finalConf = Math.min(signalOut.confidence + 10, 100)
 
   // ── STEP 3: Calculate levels using ATR (backtested optimal: 2.5x SL, 2:1 R:R) ──
   const slMult = strategyName === 'BB_SQUEEZE' ? 2.5 : 2.5
@@ -261,7 +275,7 @@ async function processInstrument(
           )
           if (result) {
             await log(db, 'orchestrator', 'ok',
-              `AUTO-EXEC [${primaryEx.config.name}]: BUY ${instrument} $${sizing.notionalUsd.toFixed(0)} @ $${result.avgPrice.toFixed(2)} (Kelly-sized)`)
+              `AUTO-EXEC [${primaryEx.config.name}]: LONG ${instrument} $${sizing.notionalUsd.toFixed(0)} @ $${result.avgPrice.toFixed(2)} (Kelly-sized)`)
             if (enhancedSignal.stop_loss && enhancedSignal.take_profit_1) {
               await exchange.setStopLossAndTakeProfit(
                 instrument, result.executedQty,
@@ -269,6 +283,9 @@ async function processInstrument(
               )
             }
           }
+        } else if (enhancedSignal.direction === 'short') {
+          await log(db, 'orchestrator', 'info',
+            `SHORT signal for ${instrument} — logged as signal only (exchange sell requires open position)`)
         }
       } catch (execErr) {
         await log(db, 'orchestrator', 'error', `AUTO-EXEC failed: ${String(execErr)}`)

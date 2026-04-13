@@ -25,35 +25,51 @@ export async function getTradeStats(lookbackDays = 30): Promise<TradeStats> {
   const db = createServiceSupabase()
   const since = new Date(Date.now() - lookbackDays * 86400_000).toISOString()
 
-  const { data: trades } = await db
+  // Check BOTH trades and demo_trades for unified risk view
+  const { data: liveTrades } = await db
     .from('trades')
-    .select('pnl_pct')
+    .select('pnl_pct, closed_at')
     .gte('closed_at', since)
-    .eq('status', 'closed')
+    .in('status', ['closed', 'stopped'])
     .not('pnl_pct', 'is', null)
+    .order('closed_at', { ascending: true })
 
-  if (!trades?.length || trades.length < 5) {
-    return { totalTrades: trades?.length ?? 0, winRate: 0.5, avgWinPct: 1, avgLossPct: 1, kellyFraction: 0.02, streak: 0 }
+  const { data: demoTrades } = await db
+    .from('demo_trades')
+    .select('pnl_pct, exit_time')
+    .not('exit_time', 'is', null)
+    .not('pnl_pct', 'is', null)
+    .gte('exit_time', since)
+    .order('exit_time', { ascending: true })
+
+  const allTrades = [
+    ...(liveTrades ?? []).map(t => ({ pnl_pct: Number(t.pnl_pct), time: t.closed_at })),
+    ...(demoTrades ?? []).map(t => ({ pnl_pct: Number(t.pnl_pct), time: t.exit_time })),
+  ].sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime())
+
+  if (!allTrades.length || allTrades.length < 5) {
+    return { totalTrades: allTrades.length, winRate: 0.5, avgWinPct: 1, avgLossPct: 1, kellyFraction: 0.02, streak: 0 }
   }
 
-  const wins = trades.filter(t => Number(t.pnl_pct) > 0)
-  const losses = trades.filter(t => Number(t.pnl_pct) <= 0)
-  const winRate = wins.length / trades.length
-  const avgWinPct = wins.length > 0 ? wins.reduce((s, t) => s + Number(t.pnl_pct), 0) / wins.length : 1
-  const avgLossPct = losses.length > 0 ? losses.reduce((s, t) => s + Math.abs(Number(t.pnl_pct)), 0) / losses.length : 1
+  const wins = allTrades.filter(t => t.pnl_pct > 0)
+  const losses = allTrades.filter(t => t.pnl_pct <= 0)
+  const winRate = wins.length / allTrades.length
+  const avgWinPct = wins.length > 0 ? wins.reduce((s, t) => s + t.pnl_pct, 0) / wins.length : 1
+  const avgLossPct = losses.length > 0 ? losses.reduce((s, t) => s + Math.abs(t.pnl_pct), 0) / losses.length : 1
 
   const kf = kellyFraction(winRate, avgWinPct, avgLossPct)
 
+  // Streak from most recent trades (chronological order guaranteed)
   let streak = 0
-  for (let i = trades.length - 1; i >= 0; i--) {
-    const pnl = Number(trades[i].pnl_pct)
-    if (i === trades.length - 1) { streak = pnl > 0 ? 1 : -1; continue }
+  for (let i = allTrades.length - 1; i >= 0; i--) {
+    const pnl = allTrades[i].pnl_pct
+    if (i === allTrades.length - 1) { streak = pnl > 0 ? 1 : -1; continue }
     if ((pnl > 0 && streak > 0) || (pnl <= 0 && streak < 0)) {
       streak += streak > 0 ? 1 : -1
     } else break
   }
 
-  return { totalTrades: trades.length, winRate, avgWinPct, avgLossPct, kellyFraction: kf, streak }
+  return { totalTrades: allTrades.length, winRate, avgWinPct, avgLossPct, kellyFraction: kf, streak }
 }
 
 export function hardRiskCheck(
@@ -80,18 +96,29 @@ export function hardRiskCheck(
 
 export async function checkDailyLossLimit(capitalUsd: number): Promise<RiskCheck> {
   const db = createServiceSupabase()
-  const today = new Date().toISOString().split('T')[0]
+  const todayStart = new Date()
+  todayStart.setUTCHours(0, 0, 0, 0)
+  const todayISO = todayStart.toISOString()
 
-  const { data: closedToday } = await db
+  // Check BOTH trades and demo_trades for unified daily loss view
+  const { data: liveToday } = await db
     .from('trades')
     .select('pnl')
-    .gte('closed_at', `${today}T00:00:00`)
-    .eq('is_demo', false)
+    .gte('closed_at', todayISO)
+    .in('status', ['closed', 'stopped'])
 
-  const dailyPnl = (closedToday ?? []).reduce((s, t) => s + Number(t.pnl ?? 0), 0)
+  const { data: demoToday } = await db
+    .from('demo_trades')
+    .select('pnl')
+    .not('exit_time', 'is', null)
+    .gte('exit_time', todayISO)
+
+  const livePnl = (liveToday ?? []).reduce((s, t) => s + Number(t.pnl ?? 0), 0)
+  const demoPnl = (demoToday ?? []).reduce((s, t) => s + Number(t.pnl ?? 0), 0)
+  const dailyPnl = livePnl + demoPnl
   const limit = capitalUsd * DAILY_LOSS_LIMIT_PCT
 
-  if (dailyPnl < -limit) {
+  if (dailyPnl <= -limit) {
     return { allowed: false, reason: `Daily loss limit hit: $${Math.abs(dailyPnl).toFixed(0)} lost (limit: $${limit.toFixed(0)})` }
   }
 
@@ -142,18 +169,18 @@ export function riskBasedPositionSize(
   const riskPerUnit = Math.abs(entryPrice - stopLoss)
   if (riskPerUnit <= 0) return { units: 0, notionalUsd: 0, riskPct: 0 }
 
-  // Aggressive base: 3-5% risk per trade
-  const baseRiskPct = 0.035
-  const kellyRisk = stats.kellyFraction > 0 ? Math.min(stats.kellyFraction, 0.05) : baseRiskPct
+  // Conservative base: 1-3% risk per trade
+  const baseRiskPct = 0.02
+  const kellyRisk = stats.kellyFraction > 0 ? Math.min(stats.kellyFraction, 0.03) : baseRiskPct
 
   let riskPct = stats.totalTrades >= 10 ? kellyRisk : baseRiskPct
 
   // Streak-based adjustment
-  if (stats.streak <= -2) riskPct = Math.max(riskPct * 0.6, 0.02)  // 2 losses: drop to 2%
-  if (stats.streak <= -3) riskPct = Math.max(riskPct * 0.3, 0.01)  // 3 losses: drop to 1%
-  if (stats.streak >= 3) riskPct = Math.min(riskPct * 1.15, 0.05)  // 3 wins: up to 4%
+  if (stats.streak <= -2) riskPct = Math.max(riskPct * 0.5, 0.005)  // 2 losses: halve risk
+  if (stats.streak <= -3) riskPct = Math.max(riskPct * 0.25, 0.005) // 3 losses: quarter risk
+  if (stats.streak >= 3) riskPct = Math.min(riskPct * 1.1, 0.03)    // 3 wins: modest increase
 
-  riskPct = Math.min(riskPct, 0.05) // hard cap 5%
+  riskPct = Math.min(riskPct, 0.03) // hard cap 3%
 
   const riskAmount = capitalUsd * riskPct
   const units = riskAmount / riskPerUnit

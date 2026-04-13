@@ -118,6 +118,7 @@ CREATE TABLE IF NOT EXISTS portfolio (
   capital          DECIMAL(18,2) NOT NULL DEFAULT 200000,
   available_capital DECIMAL(18,2) NOT NULL DEFAULT 200000,
   realized_pnl     DECIMAL(18,2) DEFAULT 0,
+  peak_capital     DECIMAL(18,2) DEFAULT 200000,
   win_count        INTEGER DEFAULT 0,
   loss_count       INTEGER DEFAULT 0,
   is_demo          BOOLEAN DEFAULT FALSE,
@@ -317,12 +318,13 @@ BEGIN
   SET
     realized_pnl     = realized_pnl + p_pnl,
     available_capital = available_capital + p_pnl,
+    peak_capital     = GREATEST(peak_capital, available_capital + p_pnl),
     win_count        = win_count + CASE WHEN p_won THEN 1 ELSE 0 END,
     loss_count       = loss_count + CASE WHEN p_won THEN 0 ELSE 1 END,
     updated_at       = NOW()
   WHERE user_id = p_user_id AND is_demo = p_is_demo;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 -- ─── Seed: Default portfolio for demo user ────────────────────────────────────
 -- Run after creating a user in Auth:

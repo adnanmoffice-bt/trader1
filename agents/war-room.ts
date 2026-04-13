@@ -207,7 +207,7 @@ async function runMeeting(
   const triggerWinRates: Record<string, { wins: number; total: number }> = {}
   for (const t of triggerStats ?? []) {
     const reason = String(t.signal_reason ?? '')
-    for (const name of ['BB Squeeze', 'EMA 12/26', 'MACD Crossover', 'RSI Extreme', 'Volume Spike', 'EMA 50 Breakout']) {
+    for (const name of ['BB Squeeze Breakout', 'EMA 12/26 Cross', 'MACD Crossover', 'RSI Extreme', 'Volume Spike', 'EMA 50 Breakout']) {
       if (reason.includes(name)) {
         if (!triggerWinRates[name]) triggerWinRates[name] = { wins: 0, total: 0 }
         triggerWinRates[name].total++
@@ -233,7 +233,16 @@ async function runMeeting(
     { name: 'RSI Extreme',        ...detectRSIExtreme(ohlcv) },
     { name: 'Volume Spike',       ...detectVolumeSpike(ohlcv) },
     { name: 'EMA 50 Breakout',    ...detectEMA50Breakout(ohlcv) },
-  ].filter(t => t.triggered && !disabledTriggers.has(t.name.replace(' Breakout', '')))
+  ].filter(t => t.triggered && !disabledTriggers.has(t.name))
+
+  // Sort by trigger strength: multi-signal confluence first, then by specificity
+  rawTriggers.sort((a, b) => {
+    const priority: Record<string, number> = {
+      'BB Squeeze Breakout': 1, 'EMA 12/26 Cross': 2, 'MACD Crossover': 3,
+      'RSI Extreme': 4, 'EMA 50 Breakout': 5, 'Volume Spike': 6,
+    }
+    return (priority[a.name] ?? 99) - (priority[b.name] ?? 99)
+  })
 
   const trigger = rawTriggers[0]?.name ?? null
   const triggerDir = rawTriggers[0]?.direction ?? null
@@ -404,16 +413,22 @@ async function runMeeting(
     rawDecisionText = '[JSON parse failed — defaulting to REJECT for safety]'
   }
 
-  // SAFETY: JSON parse fail → REJECT. Conviction < 50 → REJECT.
+  // SAFETY: JSON parse fail → REJECT. Conviction < 70 → REJECT.
   // Forecast contradiction (quant models strongly disagree + low conviction) → REJECT.
-  const forecastVeto = forecastContradict && (parsed?.conviction ?? 0) < 70
-  const isExecute = parsed?.decision === 'EXECUTE' && (parsed?.conviction ?? 0) >= 50 && !forecastVeto
+  // Vote gate: need at least 3 more bulls than bears among debate agents.
+  const forecastVeto = forecastContradict && (parsed?.conviction ?? 0) < 80
+
+  const voteFor = conv.filter(m => /\b(bullish|buy\b|support(?:s|ing)?|execute|approve)\b/i.test(m.message) && m.role === 'speak' && m.agent !== 'orchestrator').length
+  const voteAgainst = conv.filter(m => /\b(bearish|reject(?:ed)?|against\b|sell\b|wait\b|pass\b|veto)\b/i.test(m.message) && m.role === 'speak' && m.agent !== 'orchestrator').length
+  const voteMarginOk = voteFor > voteAgainst + 2
+
+  const isExecute = parsed?.decision === 'EXECUTE'
+    && (parsed?.conviction ?? 0) >= 70
+    && !forecastVeto
+    && voteMarginOk
   const decisionResponse = parsed
     ? `${parsed.decision} (conviction: ${parsed.conviction}%) — ${parsed.reasoning}`
     : rawDecisionText
-
-  const voteFor = conv.filter(m => /\b(bullish|long\b|buy\b|support(?:s|ing)?|execute|approve)\b/i.test(m.message) && m.agent !== 'orchestrator').length
-  const voteAgainst = conv.filter(m => /\b(bearish|reject(?:ed)?|against\b|short\b|sell\b|wait\b|pass\b|veto)\b/i.test(m.message) && m.agent !== 'orchestrator').length
 
   await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'decision',
     message: decisionResponse,
@@ -450,18 +465,21 @@ async function runMeeting(
     })
 
   if (isExecute && triggerDir) {
-    // ── PHASE 3: MC-based SL/TP instead of fixed ATR multiples ──
+    // ── PHASE 3: Fixed ATR SL/TP — deterministic, R:R >= 2:1 guaranteed ──
     const entry = price
+    const slMult = 1.5
+    const tpMult = 3.5
+    const tp2Mult = 5.0
     let sl: number, tp: number, tp2: number
 
     if (triggerDir === 'long') {
-      sl = Math.min(entry - ind.atr * 2.5, forecast.mc10 - ind.atr * 0.5)
-      tp = forecast.mc75 > entry ? forecast.mc75 : entry + ind.atr * 3
-      tp2 = forecast.mc90 > entry ? forecast.mc90 : entry + ind.atr * 5
+      sl = entry - ind.atr * slMult
+      tp = entry + ind.atr * tpMult
+      tp2 = entry + ind.atr * tp2Mult
     } else {
-      sl = Math.max(entry + ind.atr * 2.5, forecast.mc90 + ind.atr * 0.5)
-      tp = forecast.mc25 < entry ? forecast.mc25 : entry - ind.atr * 3
-      tp2 = forecast.mc10 < entry ? forecast.mc10 : entry - ind.atr * 5
+      sl = entry + ind.atr * slMult
+      tp = entry - ind.atr * tpMult
+      tp2 = entry - ind.atr * tp2Mult
     }
 
     const slDist = Math.abs(entry - sl)
@@ -488,8 +506,13 @@ async function runMeeting(
       return 'blocked'
     }
 
-    const strategyType = trigger === 'BB Squeeze Breakout' ? 'BB_SQUEEZE' as const : 'EMA_CROSS' as const
-    const bt = quickBacktest(ohlcv, strategyType, 2.5, 5)
+    const strategyMap: Record<string, 'BB_SQUEEZE' | 'EMA_CROSS' | 'MACD_CROSS' | 'RSI_EXTREME' | 'VOLUME_SPIKE' | 'EMA50_BREAKOUT'> = {
+      'BB Squeeze Breakout': 'BB_SQUEEZE', 'EMA 12/26 Cross': 'EMA_CROSS',
+      'MACD Crossover': 'MACD_CROSS', 'RSI Extreme': 'RSI_EXTREME',
+      'Volume Spike': 'VOLUME_SPIKE', 'EMA 50 Breakout': 'EMA50_BREAKOUT',
+    }
+    const strategyType = strategyMap[trigger] ?? 'EMA_CROSS'
+    const bt = quickBacktest(ohlcv, strategyType, slMult, tpMult)
     if (!bt.passed) {
       await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'decision',
         message: `BACKTEST FAIL: ${strategyType} win rate ${(bt.winRate * 100).toFixed(0)}% (${bt.wins}W/${bt.losses}L) on recent data — below 35% threshold`,

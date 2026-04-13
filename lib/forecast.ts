@@ -108,6 +108,24 @@ function arimaForecast(closes: number[], stepsAhead: number): number {
   return price
 }
 
+// ─── Seeded PRNG (deterministic for same data) ──────────────────────────────
+
+function seededRandom(seed: number): () => number {
+  let s = seed | 0
+  return () => {
+    s = (s * 1664525 + 1013904223) & 0x7fffffff
+    return s / 0x7fffffff
+  }
+}
+
+function dataBasedSeed(closes: number[]): number {
+  let hash = 0
+  for (let i = Math.max(0, closes.length - 20); i < closes.length; i++) {
+    hash = ((hash << 5) - hash + Math.round(closes[i] * 100)) | 0
+  }
+  return Math.abs(hash) || 42
+}
+
 // ─── Monte Carlo Simulation (Geometric Brownian Motion) ──────────────────────
 
 function monteCarloSimulation(
@@ -120,7 +138,6 @@ function monteCarloSimulation(
     return { percentiles: [last, last, last, last, last], maxDrawdown: 0, upProb: 0.5 }
   }
 
-  // Calculate log returns
   const logReturns: number[] = []
   for (let i = 1; i < closes.length; i++) {
     logReturns.push(Math.log(closes[i] / closes[i - 1]))
@@ -134,15 +151,17 @@ function monteCarloSimulation(
   const finalPrices: number[] = []
   let maxDdSum = 0
 
+  // Seeded PRNG: same candle data → same MC output (deterministic)
+  const rng = seededRandom(dataBasedSeed(closes) + stepsAhead)
+
   for (let p = 0; p < numPaths; p++) {
     let price = S0
     let peak = S0
     let maxDd = 0
 
     for (let t = 0; t < stepsAhead; t++) {
-      // Box-Muller for normal random
-      const u1 = Math.random()
-      const u2 = Math.random()
+      const u1 = Math.max(1e-10, rng())
+      const u2 = rng()
       const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2)
 
       const drift = (mu - 0.5 * variance)

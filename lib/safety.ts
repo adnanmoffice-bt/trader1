@@ -37,35 +37,51 @@ export async function checkSafety(userId?: string): Promise<SafetyStatus> {
 
   const killSwitchActive = !!killFlag
 
-  // Get portfolio capital
+  // Get portfolio capital and user settings for initial capital
   const { data: portfolio } = await db
     .from('portfolio')
     .select('capital, available_capital, realized_pnl')
     .eq('is_demo', false)
     .single()
 
-  const initialCapital = 5000  // USD default
-  const currentCapital = portfolio?.capital ?? initialCapital
+  // Try to get user's configured initial capital from settings
+  const { data: settings } = await db
+    .from('user_settings')
+    .select('initial_capital')
+    .limit(1)
+    .single()
+
+  const initialCapital = settings?.initial_capital ?? 5000
+  const currentCapital = portfolio?.available_capital ?? initialCapital
   const realizedPnl = portfolio?.realized_pnl ?? 0
 
-  // Peak capital = max(initial, current + any closed trade high-water mark)
-  const peakCapital = Math.max(initialCapital, currentCapital)
+  // True high-water mark: the highest equity ever reached
+  // Peak = initial + max cumulative realized PnL (at least initial)
+  const peakCapital = Math.max(initialCapital, initialCapital + Math.max(0, realizedPnl), currentCapital)
 
-  // Drawdown calculation
-  const drawdownPct = peakCapital > 0 ? (peakCapital - currentCapital) / peakCapital : 0
+  // Drawdown from peak
+  const drawdownPct = peakCapital > 0 ? Math.max(0, (peakCapital - currentCapital) / peakCapital) : 0
   const drawdownOk = drawdownPct < MAX_DRAWDOWN_PCT
 
-  // Daily loss: sum of today's closed trades
+  // Daily loss: sum of today's closed trades from BOTH tables
   const todayStart = new Date()
   todayStart.setUTCHours(0, 0, 0, 0)
+  const todayISO = todayStart.toISOString()
 
-  const { data: todayTrades } = await db
+  const { data: todayLiveTrades } = await db
     .from('trades')
     .select('pnl')
-    .gte('closed_at', todayStart.toISOString())
-    .eq('is_demo', false)
+    .gte('closed_at', todayISO)
+    .in('status', ['closed', 'stopped'])
 
-  const todayPnl = todayTrades?.reduce((s, t) => s + (Number(t.pnl) || 0), 0) ?? 0
+  const { data: todayDemoTrades } = await db
+    .from('demo_trades')
+    .select('pnl')
+    .not('exit_time', 'is', null)
+    .gte('exit_time', todayISO)
+
+  const todayPnl = (todayLiveTrades ?? []).reduce((s, t) => s + (Number(t.pnl) || 0), 0)
+    + (todayDemoTrades ?? []).reduce((s, t) => s + (Number(t.pnl) || 0), 0)
   const dailyLossPct = todayPnl < 0 ? Math.abs(todayPnl) / currentCapital : 0
   const dailyLossOk = dailyLossPct < DAILY_LOSS_LIMIT_PCT
 

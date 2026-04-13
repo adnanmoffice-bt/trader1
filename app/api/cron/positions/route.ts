@@ -25,13 +25,17 @@ export async function GET(req: NextRequest) {
 
   for (const pos of positions) {
     const ticker = await mgr.getBestTicker(pos.instrument)
-    if (!ticker) continue
+    if (!ticker) {
+      console.warn(`[positions] No ticker for ${pos.instrument}, skipping`)
+      continue
+    }
 
     const cur = ticker.price
 
-    await db.from('positions')
+    const { error: updateErr } = await db.from('positions')
       .update({ current_price: cur })
       .eq('id', pos.id)
+    if (updateErr) console.error(`[positions] Price update error for ${pos.instrument}:`, updateErr)
     updated.push(pos.instrument)
 
     const hitSL = pos.stop_loss && (
@@ -47,6 +51,10 @@ export async function GET(req: NextRequest) {
 
     const entryPrice = Number(pos.avg_entry_price)
     const qty = Number(pos.quantity)
+    if (entryPrice <= 0 || qty <= 0) {
+      console.error(`[positions] Invalid entry/qty for ${pos.instrument}: entry=${entryPrice} qty=${qty}`)
+      continue
+    }
     const pnl = pos.direction === 'long'
       ? (cur - entryPrice) * qty
       : (entryPrice - cur) * qty
@@ -54,9 +62,8 @@ export async function GET(req: NextRequest) {
     const pnlAed = pnl * 3.6725
     const reason = hitSL ? 'stop_loss' : 'take_profit'
 
-    await db.from('positions').delete().eq('id', pos.id)
-
-    await db.from('trades')
+    // CRITICAL: Update trade FIRST with proper user_id + is_demo filter, then delete position
+    const { error: tradeErr } = await db.from('trades')
       .update({
         status:     hitSL ? 'stopped' : 'closed',
         exit_price: cur,
@@ -66,7 +73,30 @@ export async function GET(req: NextRequest) {
         closed_at:  new Date().toISOString(),
       })
       .eq('instrument', pos.instrument)
+      .eq('user_id', pos.user_id)
+      .eq('is_demo', pos.is_demo)
       .eq('status', 'open')
+
+    if (tradeErr) {
+      console.error(`[positions] Trade close error for ${pos.instrument}:`, tradeErr)
+      continue
+    }
+
+    // Also close matching demo_trades
+    await db.from('demo_trades')
+      .update({
+        exit_price: cur,
+        exit_time: new Date().toISOString(),
+        exit_reason: reason,
+        pnl,
+        pnl_pct: pnlPct,
+        pnl_aed: pnlAed,
+      })
+      .eq('instrument', pos.instrument)
+      .is('exit_time', null)
+
+    const { error: delErr } = await db.from('positions').delete().eq('id', pos.id)
+    if (delErr) console.error(`[positions] Position delete error for ${pos.instrument}:`, delErr)
 
     try {
       await db.rpc('update_portfolio_on_close', {
@@ -75,7 +105,9 @@ export async function GET(req: NextRequest) {
         p_is_demo: pos.is_demo,
         p_won:     pnl > 0,
       })
-    } catch { /* RPC may not exist yet */ }
+    } catch (rpcErr) {
+      console.error(`[positions] Portfolio RPC error for ${pos.instrument}:`, rpcErr)
+    }
 
     await sendPositionAlert(pos.instrument, reason, pnlAed, pnlPct).catch(e => console.error('[positions] Telegram error:', e))
     await waPositionAlert(pos.instrument, reason, pnlAed, pnlPct).catch(e => console.error('[positions] WhatsApp error:', e))

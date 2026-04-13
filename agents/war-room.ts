@@ -3,7 +3,8 @@ import { computeIndicators, technicalScore, detectBBSqueeze, detectEMACross, det
 import { createServiceSupabase } from '@/lib/supabase'
 import { sendSignalAlert } from '@/lib/telegram'
 import { notifySignal as waSignal, notifyWarRoomDecision as waDecision, notifyWarRoomOpen as waOpen, notifyWarRoomDebate as waDebate, notifyWarRoomBlocked as waBlocked, notifyWarRoomScan as waScan } from '@/lib/whatsapp'
-import { checkSafety } from '@/lib/safety'
+import { checkSafety, getRecoveryMode } from '@/lib/safety'
+import type { RecoveryMode } from '@/lib/safety'
 import { hardRiskCheck, checkDailyLossLimit, getTradeStats, riskBasedPositionSize } from '@/lib/risk-controls'
 import { AGENT_PROMPTS, AGENT_TOKEN_LIMITS, type AgentId, type PromptContext } from '@/agents/agent-prompts'
 import { runPostMeetingBrief } from '@/agents/meta-agent'
@@ -76,6 +77,14 @@ export async function runWarRoom(): Promise<void> {
     return
   }
 
+  const recovery = getRecoveryMode(safety.drawdownPct)
+  if (recovery.active) {
+    await say(db, crypto.randomUUID(), null, {
+      agent: 'orchestrator', role: 'alert',
+      message: `⚠️ ${recovery.message} | Max risk: ${(recovery.maxRiskPct * 100).toFixed(1)}% | Max positions: ${recovery.maxPositions} | Min confidence: ${recovery.minConfidence}% | Min R:R: ${recovery.minRR}x`,
+    })
+  }
+
   // ── MACRO CONTEXT — live world state for all agents ──
   const macro = await buildMacroContext()
   const macroText = formatMacroContext(macro)
@@ -142,7 +151,7 @@ export async function runWarRoom(): Promise<void> {
       const atMeetingCap = meetingsHeld >= MAX_MEETINGS_PER_CYCLE
       const budgetLow = budgetNow.remaining < 0.30
 
-      const result = await runMeeting(db, meetingId, instrument, coolingDown.has(instrument), atMeetingCap || budgetLow, macroText, macro)
+      const result = await runMeeting(db, meetingId, instrument, coolingDown.has(instrument), atMeetingCap || budgetLow, macroText, macro, recovery)
       scanResults.push({ symbol: instrument, status: result })
 
       if (result !== 'no trigger' && result !== 'cooldown' && result !== 'error' && result !== 'budget-capped') {
@@ -174,6 +183,7 @@ async function runMeeting(
   meetingId: string, instrument: Instrument,
   onCooldown = false, capReached = false,
   macroText = '', macro: MacroSnapshot | null = null,
+  recovery: RecoveryMode = { active: false, drawdownPct: 0, maxRiskPct: 0.02, maxPositions: 3, minConfidence: 70, minRR: 2.0, message: 'Normal' },
 ): Promise<string> {
   const conv: Msg[] = []
 
@@ -440,8 +450,9 @@ async function runMeeting(
   const voteAgainst = conv.filter(m => /\b(bearish|reject(?:ed)?|against\b|sell\b|wait\b|pass\b|veto)\b/i.test(m.message) && m.role === 'speak' && m.agent !== 'orchestrator').length
   const voteMarginOk = voteFor > voteAgainst + 2
 
+  const minConviction = recovery.active ? recovery.minConfidence : 70
   const isExecute = parsed?.decision === 'EXECUTE'
-    && (parsed?.conviction ?? 0) >= 70
+    && (parsed?.conviction ?? 0) >= minConviction
     && !forecastVeto
     && voteMarginOk
   const decisionResponse = parsed
@@ -504,6 +515,19 @@ async function runMeeting(
     const tpDist = Math.abs(entry - tp)
     const rr = slDist > 0 ? Math.round((tpDist / slDist) * 100) / 100 : 0
 
+    // Recovery mode: enforce stricter R:R
+    if (recovery.active && rr < recovery.minRR) {
+      await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'decision', message: `RECOVERY MODE: R:R ${rr.toFixed(2)} < ${recovery.minRR} minimum in ${recovery.message}` })
+      await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close', message: `BLOCKED by recovery mode R:R requirement.` })
+      return 'blocked'
+    }
+    // Recovery mode: enforce position limit
+    if (recovery.active && (openPos ?? 0) >= recovery.maxPositions) {
+      await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'decision', message: `RECOVERY MODE: ${openPos} positions >= ${recovery.maxPositions} max in recovery mode` })
+      await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close', message: `BLOCKED by recovery mode position limit.` })
+      return 'blocked'
+    }
+
     const riskCheck = hardRiskCheck(rr, entry, sl, openPos ?? 0)
     if (!riskCheck.allowed) {
       await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'decision', message: `HARD REJECT: ${riskCheck.reason}` })
@@ -559,7 +583,18 @@ async function runMeeting(
     const dynamicConf = stats.totalTrades >= 10
       ? Math.round(80 * (0.5 + stats.winRate * 0.5))
       : 80
-    const sizing = riskBasedPositionSize(capitalUsd, entry, sl, stats, dynamicConf)
+    let sizing = riskBasedPositionSize(capitalUsd, entry, sl, stats, dynamicConf)
+
+    // Recovery mode: cap risk
+    if (recovery.active && sizing.riskPct > recovery.maxRiskPct) {
+      const cappedRisk = capitalUsd * recovery.maxRiskPct
+      const riskPerUnit = Math.abs(entry - sl)
+      if (riskPerUnit > 0) {
+        sizing.units = Math.min(sizing.units, cappedRisk / riskPerUnit)
+        sizing.notionalUsd = sizing.units * entry
+        sizing.riskPct = recovery.maxRiskPct
+      }
+    }
 
     const reasoning = `War Room 12-agent consensus (${voteFor}/${voteAgainst}) ${trigger} | BT:${bt.wins}W/${bt.losses}L Kelly:${(stats.kellyFraction * 100).toFixed(1)}% | FC:${forecast.combinedLabel}(${forecast.combinedSignal}) MC:${(forecast.upProbability4h * 100).toFixed(0)}%up`
 

@@ -111,6 +111,33 @@ export async function checkSafety(userId?: string): Promise<SafetyStatus> {
   }
 }
 
+export interface RecoveryMode {
+  active: boolean
+  drawdownPct: number
+  maxRiskPct: number
+  maxPositions: number
+  minConfidence: number
+  minRR: number
+  message: string
+}
+
+export function getRecoveryMode(drawdownPct: number): RecoveryMode {
+  // Tier 1: Normal (DD < 10%)
+  if (drawdownPct < 0.10) {
+    return { active: false, drawdownPct, maxRiskPct: 0.02, maxPositions: 3, minConfidence: 70, minRR: 2.0, message: 'Normal mode' }
+  }
+  // Tier 2: Cautious (DD 10-25%)
+  if (drawdownPct < 0.25) {
+    return { active: true, drawdownPct, maxRiskPct: 0.01, maxPositions: 2, minConfidence: 75, minRR: 2.5, message: `Cautious mode: ${(drawdownPct * 100).toFixed(0)}% drawdown — reduced risk` }
+  }
+  // Tier 3: Recovery (DD 25-50%)
+  if (drawdownPct < 0.50) {
+    return { active: true, drawdownPct, maxRiskPct: 0.005, maxPositions: 1, minConfidence: 80, minRR: 3.0, message: `Recovery mode: ${(drawdownPct * 100).toFixed(0)}% drawdown — ultra-conservative` }
+  }
+  // Tier 4: Survival (DD > 50%)
+  return { active: true, drawdownPct, maxRiskPct: 0.003, maxPositions: 1, minConfidence: 85, minRR: 3.5, message: `Survival mode: ${(drawdownPct * 100).toFixed(0)}% drawdown — minimum risk only` }
+}
+
 export async function activateKillSwitch(): Promise<void> {
   const db = createServiceSupabase()
 

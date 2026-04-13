@@ -1,5 +1,5 @@
 import { callAgent, getDailyBudgetStatus } from '@/lib/anthropic'
-import { computeIndicators, technicalScore, detectBBSqueeze, detectEMACross, detectRSIExtreme, detectMACDCross, detectVolumeSpike, detectEMA50Breakout, quickBacktest } from '@/lib/indicators'
+import { computeIndicators, technicalScore, detectBBSqueeze, detectEMACross, detectRSIExtreme, detectMACDCross, detectVolumeSpike, detectEMA50Breakout, quickBacktest, detectRegime } from '@/lib/indicators'
 import { createServiceSupabase } from '@/lib/supabase'
 import { sendSignalAlert } from '@/lib/telegram'
 import { notifySignal as waSignal, notifyWarRoomDecision as waDecision, notifyWarRoomOpen as waOpen, notifyWarRoomDebate as waDebate, notifyWarRoomBlocked as waBlocked, notifyWarRoomScan as waScan } from '@/lib/whatsapp'
@@ -9,6 +9,7 @@ import { AGENT_PROMPTS, AGENT_TOKEN_LIMITS, type AgentId, type PromptContext } f
 import { runPostMeetingBrief } from '@/agents/meta-agent'
 import { buildMacroContext, formatMacroContext, type MacroSnapshot } from '@/lib/macro-context'
 import { generateForecast, formatForecast } from '@/lib/forecast'
+import { validateOHLCV } from '@/lib/data-quality'
 import type { Instrument, OHLCV, Signal } from '@/types'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -190,8 +191,18 @@ async function runMeeting(
     open: +c.open, high: +c.high, low: +c.low, close: +c.close, volume: +c.volume,
   }))
 
+  // Data quality gate
+  const dq = validateOHLCV(ohlcv, instrument)
+  if (!dq.valid) {
+    await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
+      message: `${instrument}: DATA QUALITY FAIL — ${dq.issues.join('; ')}. Skipped.`,
+    })
+    return 'data-quality'
+  }
+
   const ind = computeIndicators(ohlcv)
   const tech = technicalScore(ind)
+  const regime = detectRegime(ohlcv)
   const price = ind.current_price
 
   // ── Quantitative forecast: ARIMA, Monte Carlo, Seasonality, Vol regime ──
@@ -247,6 +258,13 @@ async function runMeeting(
   const trigger = rawTriggers[0]?.name ?? null
   const triggerDir = rawTriggers[0]?.direction ?? null
   const allTriggers = rawTriggers.map(t => t.name).join(' + ') || null
+
+  if (regime.regime === 'ranging' && rawTriggers.length < 2) {
+    await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
+      message: `${instrument} @ $${f(price)} | ${allTriggers} detected but market is RANGING (strength:${regime.strength.toFixed(1)}). Need 2+ triggers for confluence in range-bound markets.`,
+    })
+    return 'regime-filtered'
+  }
 
   if (!trigger) {
     await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
@@ -538,11 +556,10 @@ async function runMeeting(
 
     // ── PHASE 4: Aggressive position sizing (3-5% risk, streak-adjusted) ──
     const stats = await getTradeStats()
-    const sizing = riskBasedPositionSize(capitalUsd, entry, sl, stats)
-
     const dynamicConf = stats.totalTrades >= 10
       ? Math.round(80 * (0.5 + stats.winRate * 0.5))
       : 80
+    const sizing = riskBasedPositionSize(capitalUsd, entry, sl, stats, dynamicConf)
 
     const reasoning = `War Room 12-agent consensus (${voteFor}/${voteAgainst}) ${trigger} | BT:${bt.wins}W/${bt.losses}L Kelly:${(stats.kellyFraction * 100).toFixed(1)}% | FC:${forecast.combinedLabel}(${forecast.combinedSignal}) MC:${(forecast.upProbability4h * 100).toFixed(0)}%up`
 

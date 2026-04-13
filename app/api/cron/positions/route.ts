@@ -38,6 +38,30 @@ export async function GET(req: NextRequest) {
     if (updateErr) console.error(`[positions] Price update error for ${pos.instrument}:`, updateErr)
     updated.push(pos.instrument)
 
+    // Trailing stop loss: lock in profits as position moves favorably
+    const entryPrice = Number(pos.avg_entry_price)
+    const atrEstimate = cur * 0.02
+    const profitDist = pos.direction === 'long' ? cur - entryPrice : entryPrice - cur
+
+    if (profitDist > atrEstimate * 2) {
+      const newSl = pos.direction === 'long'
+        ? cur - atrEstimate * 1.5
+        : cur + atrEstimate * 1.5
+      const currentSl = Number(pos.stop_loss)
+      const shouldTrail = pos.direction === 'long' ? newSl > currentSl : newSl < currentSl
+      if (shouldTrail) {
+        await db.from('positions').update({ stop_loss: newSl }).eq('id', pos.id)
+        pos.stop_loss = newSl
+      }
+    } else if (profitDist > atrEstimate) {
+      const currentSl = Number(pos.stop_loss)
+      const shouldMove = pos.direction === 'long' ? entryPrice > currentSl : entryPrice < currentSl
+      if (shouldMove) {
+        await db.from('positions').update({ stop_loss: entryPrice }).eq('id', pos.id)
+        pos.stop_loss = entryPrice
+      }
+    }
+
     const hitSL = pos.stop_loss && (
       (pos.direction === 'long'  && cur <= Number(pos.stop_loss)) ||
       (pos.direction === 'short' && cur >= Number(pos.stop_loss))
@@ -49,7 +73,6 @@ export async function GET(req: NextRequest) {
 
     if (!hitSL && !hitTP) continue
 
-    const entryPrice = Number(pos.avg_entry_price)
     const qty = Number(pos.quantity)
     if (entryPrice <= 0 || qty <= 0) {
       console.error(`[positions] Invalid entry/qty for ${pos.instrument}: entry=${entryPrice} qty=${qty}`)

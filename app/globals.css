@@ -24,6 +24,14 @@
   --chart-grid: #f1f5f9;
   --chart-ema: #7c3aed;
   --chart-price: #2563eb;
+  --bg-primary: #f8f9fb;
+  --bg-secondary: #ffffff;
+  --bg-panel: #ffffff;
+  --bg-hover: #f1f5f9;
+  --text-primary: #0f172a;
+  --text-secondary: #334155;
+  --text-muted: #64748b;
+  --shadow: rgba(0, 0, 0, 0.08);
 }
 
 /* ═══ Dark Theme — REAL BLOOMBERG ═══ */
@@ -48,6 +56,14 @@
   --chart-grid: #1e293b;
   --chart-ema: #a78bfa;
   --chart-price: #3b82f6;
+  --bg-primary: #0c0f14;
+  --bg-secondary: #111827;
+  --bg-panel: #111827;
+  --bg-hover: #1a2035;
+  --text-primary: #e8ecf4;
+  --text-secondary: #a0aec0;
+  --text-muted: #6b7a99;
+  --shadow: rgba(0, 0, 0, 0.4);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -67,3 +83,8 @@ html, body {
 
 @keyframes pulse-green { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 .pulse { animation: pulse-green 2s ease-in-out infinite; }
+
+@keyframes ticker-scroll {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}

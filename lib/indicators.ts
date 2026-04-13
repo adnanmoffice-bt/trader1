@@ -422,6 +422,38 @@ export function quickBacktest(
   }
 }
 
+// ─── Market Regime Detection ──────────────────────────────────────────────────
+
+export type MarketRegime = 'trending_up' | 'trending_down' | 'ranging' | 'volatile'
+
+export function detectRegime(candles: OHLCV[]): { regime: MarketRegime; strength: number } {
+  if (candles.length < 50) return { regime: 'ranging', strength: 0 }
+
+  const closes = candles.map(c => c.close)
+  const ema20 = emaLast(closes, 20)
+  const ema50 = emaLast(closes, 50)
+  const r = rsi(closes)
+  const atrVal = atr(candles)
+  const price = closes[closes.length - 1]
+
+  const avgPrice = avg(closes.slice(-20))
+  const volPct = avgPrice > 0 ? (atrVal / avgPrice) * 100 : 0
+
+  if (volPct > 4) return { regime: 'volatile', strength: Math.min(volPct / 4, 2) }
+
+  const emaSpread = ((ema20 - ema50) / ema50) * 100
+  const rsiVal = isNaN(r) ? 50 : r
+
+  if (emaSpread > 1 && rsiVal > 50 && price > ema20) {
+    return { regime: 'trending_up', strength: Math.min(emaSpread / 2, 2) }
+  }
+  if (emaSpread < -1 && rsiVal < 50 && price < ema20) {
+    return { regime: 'trending_down', strength: Math.min(Math.abs(emaSpread) / 2, 2) }
+  }
+
+  return { regime: 'ranging', strength: Math.max(0, 1 - Math.abs(emaSpread)) }
+}
+
 function round(n: number): number {
   return Math.round(n * 100) / 100
 }

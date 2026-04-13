@@ -165,15 +165,16 @@ export function riskBasedPositionSize(
   entryPrice: number,
   stopLoss: number,
   stats: TradeStats,
+  confidence = 80,
 ): { units: number; notionalUsd: number; riskPct: number } {
   const riskPerUnit = Math.abs(entryPrice - stopLoss)
   if (riskPerUnit <= 0) return { units: 0, notionalUsd: 0, riskPct: 0 }
 
-  // Conservative base: 1-3% risk per trade
-  const baseRiskPct = 0.02
-  const kellyRisk = stats.kellyFraction > 0 ? Math.min(stats.kellyFraction, 0.03) : baseRiskPct
+  // Confidence-tiered risk: scale with signal quality
+  const confRisk = confidence >= 90 ? 0.02 : confidence >= 80 ? 0.015 : confidence >= 65 ? 0.01 : 0.005
+  const kellyRisk = stats.kellyFraction > 0 ? Math.min(stats.kellyFraction, 0.03) : confRisk
 
-  let riskPct = stats.totalTrades >= 10 ? kellyRisk : baseRiskPct
+  let riskPct = stats.totalTrades >= 10 ? Math.min(kellyRisk, confRisk) : confRisk
 
   // Streak-based adjustment
   if (stats.streak <= -2) riskPct = Math.max(riskPct * 0.5, 0.005)  // 2 losses: halve risk
@@ -190,6 +191,24 @@ export function riskBasedPositionSize(
   const cappedUnits = cappedNotional / entryPrice
 
   return { units: cappedUnits, notionalUsd: cappedNotional, riskPct }
+}
+
+export function estimateSlippageAndFees(
+  notionalUsd: number,
+  instrument: string,
+): { feesUsd: number; slippageUsd: number; totalCostUsd: number } {
+  const feeRate = 0.001 // 0.1% per side
+  const feesUsd = notionalUsd * feeRate * 2 // entry + exit
+
+  const highLiquidity = ['BTC/USD', 'ETH/USD']
+  const slippageRate = highLiquidity.includes(instrument) ? 0.0005 : 0.001
+  const slippageUsd = notionalUsd * slippageRate * 2
+
+  return {
+    feesUsd: Math.round(feesUsd * 100) / 100,
+    slippageUsd: Math.round(slippageUsd * 100) / 100,
+    totalCostUsd: Math.round((feesUsd + slippageUsd) * 100) / 100,
+  }
 }
 
 export { DAILY_LOSS_LIMIT_PCT, MAX_SINGLE_TRADE_PCT, MAX_POSITIONS, MIN_RR, MAX_SL_PCT }

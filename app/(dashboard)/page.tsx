@@ -9,9 +9,9 @@ import { TechAnalysis } from '@/components/widgets/TechAnalysis'
 import { PerformanceMetrics } from '@/components/analytics/PerformanceMetrics'
 import type { OHLCV } from '@/types'
 
-const S: Record<string, string> = { 'BTC/USD': 'BTC', 'ETH/USD': 'ETH', 'SOL/USD': 'SOL', 'BNB/USD': 'BNB', 'XAU/USD': 'GOLD', 'BRENT': 'OIL', 'SPY': 'SPY', 'QQQ': 'QQQ' }
+const S: Record<string, string> = { 'BTC/USD': 'BTC', 'ETH/USD': 'ETH', 'SOL/USD': 'SOL', 'BNB/USD': 'BNB', 'DOGE/USD': 'DOGE', 'AVAX/USD': 'AVAX', 'LINK/USD': 'LINK', 'ADA/USD': 'ADA', 'DOT/USD': 'DOT', 'MATIC/USD': 'MATIC', 'NEAR/USD': 'NEAR', 'APT/USD': 'APT', 'XAU/USD': 'GOLD', 'BRENT': 'OIL', 'SPY': 'SPY', 'QQQ': 'QQQ' }
 const f = (n: number) => n >= 10000 ? n.toLocaleString('en', { maximumFractionDigits: 0 }) : n >= 100 ? n.toFixed(2) : n.toFixed(2)
-const instruments = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'BNB/USD', 'XAU/USD', 'BRENT'] as const
+const instruments = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'BNB/USD', 'DOGE/USD', 'AVAX/USD', 'LINK/USD', 'ADA/USD', 'DOT/USD', 'MATIC/USD', 'NEAR/USD', 'APT/USD', 'XAU/USD'] as const
 
 type SidePanel = 'portfolio' | 'analysis' | 'signals' | 'performance'
 

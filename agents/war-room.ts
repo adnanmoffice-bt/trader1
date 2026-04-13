@@ -21,11 +21,12 @@ import type { Instrument, OHLCV, Signal } from '@/types'
 // EUR/USD, GBP/USD, USD/JPY, SPY, QQQ) had 0 candles and wasted scan cycles.
 const ALL_INSTRUMENTS: Instrument[] = [
   'BTC/USD', 'ETH/USD', 'SOL/USD', 'BNB/USD', 'DOGE/USD', 'AVAX/USD', 'LINK/USD',
+  'ADA/USD', 'DOT/USD', 'MATIC/USD', 'NEAR/USD', 'APT/USD',
   'XAU/USD',
 ]
 
 const COOLDOWN_MIN = 30
-const MAX_MEETINGS_PER_CYCLE = 2
+const MAX_MEETINGS_PER_CYCLE = 3
 
 // Decision-makers get the FULL uncompressed conversation history.
 // Debate agents get a compressed digest (each prior message ≤ 150 chars).

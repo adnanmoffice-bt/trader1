@@ -17,16 +17,17 @@ import type { Instrument, OHLCV, Signal } from '@/types'
 // CONFIG — Token Budget Controls
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Only instruments with active price_history data. Others (XAG, BRENT, WTI,
-// EUR/USD, GBP/USD, USD/JPY, SPY, QQQ) had 0 candles and wasted scan cycles.
+// PROFITABLE instruments only — SOL and BNB blacklisted (0% win rate over 28 trades)
+// Will re-enable once system proves profitable on core instruments
 const ALL_INSTRUMENTS: Instrument[] = [
-  'BTC/USD', 'ETH/USD', 'SOL/USD', 'BNB/USD', 'DOGE/USD', 'AVAX/USD', 'LINK/USD',
+  'BTC/USD', 'ETH/USD', 'XAU/USD',
+  'DOGE/USD', 'AVAX/USD', 'LINK/USD',
   'ADA/USD', 'DOT/USD', 'MATIC/USD', 'NEAR/USD', 'APT/USD',
-  'XAU/USD',
+  // BLACKLISTED: 'SOL/USD' (0W/16L = -$1,344), 'BNB/USD' (0W/12L = -$1,284)
 ]
 
-const COOLDOWN_MIN = 30
-const MAX_MEETINGS_PER_CYCLE = 3
+const COOLDOWN_MIN = 120  // 2 hours between debates on same instrument (was 30min — too fast)
+const MAX_MEETINGS_PER_CYCLE = 2  // max 2 per scan cycle (was 3 — reduce trade frequency)
 
 // Decision-makers get the FULL uncompressed conversation history.
 // Debate agents get a compressed digest (each prior message ≤ 150 chars).
@@ -244,17 +245,18 @@ async function runMeeting(
       disabledTriggers.add(name)
     }
   }
-  // BB Squeeze starts disabled until we have enough winning data on other triggers
-  const totalClosedTrades = (triggerStats ?? []).length
-  if (totalClosedTrades < 20) disabledTriggers.add('BB Squeeze')
+
+  // HARD DISABLE: BB_SQUEEZE is catastrophic (2W/31L = -$3,211). Never use it.
+  disabledTriggers.add('BB Squeeze Breakout')
 
   const rawTriggers = [
-    { name: 'BB Squeeze Breakout', ...detectBBSqueeze(ohlcv) },
+    // BB_SQUEEZE REMOVED — 6% win rate, destroyed $3,211
     { name: 'EMA 12/26 Cross',    ...detectEMACross(ohlcv) },
     { name: 'MACD Crossover',     ...detectMACDCross(ohlcv) },
     { name: 'RSI Extreme',        ...detectRSIExtreme(ohlcv) },
-    { name: 'Volume Spike',       ...detectVolumeSpike(ohlcv) },
     { name: 'EMA 50 Breakout',    ...detectEMA50Breakout(ohlcv) },
+    // Volume Spike only if confirmed by another trigger (too noisy alone)
+    { name: 'Volume Spike',       ...detectVolumeSpike(ohlcv) },
   ].filter(t => t.triggered && !disabledTriggers.has(t.name))
 
   // Sort by trigger strength: multi-signal confluence first, then by specificity
@@ -283,6 +285,14 @@ async function runMeeting(
       data: { price, rsi: ind.rsi, macd_hist: ind.macd.histogram, bb_pctb: ind.bb.percentB, volume_ratio: ind.volume_ratio, trigger: null },
     })
     return 'no trigger'
+  }
+
+  // ── LONG-ONLY MODE — shorts have 0% win rate (0W/37L = -$3,405). Block all shorts. ──
+  if (triggerDir === 'short') {
+    await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
+      message: `${instrument} @ $${f(price)} | ${allTriggers} → SHORT blocked. LONG-ONLY mode active (0W/37L short history). Waiting for LONG setup.`,
+    })
+    return 'long-only-filter'
   }
 
   // ── PHASE 2: TREND FILTER GATE — skip debates that fight the trend ──
@@ -495,11 +505,12 @@ async function runMeeting(
     })
 
   if (isExecute && triggerDir) {
-    // ── PHASE 3: Fixed ATR SL/TP — deterministic, R:R >= 2:1 guaranteed ──
+    // ── PHASE 3: Fixed ATR SL/TP — wider SL to survive noise, R:R >= 2:1 ──
+    // Data: 1.5 ATR SL → 31 stopouts in 15min. 2 ATR gives room to breathe.
     const entry = price
-    const slMult = 1.5
-    const tpMult = 3.5
-    const tp2Mult = 5.0
+    const slMult = 2.0
+    const tpMult = 4.5
+    const tp2Mult = 6.0
     let sl: number, tp: number, tp2: number
 
     if (triggerDir === 'long') {

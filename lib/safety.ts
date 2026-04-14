@@ -1,7 +1,7 @@
 import { createServiceSupabase } from '@/lib/supabase'
 
-const MAX_DRAWDOWN_PCT = 0.15     // 15% max drawdown from peak
-const DAILY_LOSS_LIMIT_PCT = 0.03 // 3% max daily loss
+const MAX_DRAWDOWN_HARD_STOP = 0.75  // 75% — only kill switch at catastrophic level
+const DAILY_LOSS_LIMIT_PCT = 0.03    // 3% max daily loss
 const MAX_POSITIONS = 3
 
 export interface SafetyStatus {
@@ -59,9 +59,9 @@ export async function checkSafety(userId?: string): Promise<SafetyStatus> {
   // Peak = initial + max cumulative realized PnL (at least initial)
   const peakCapital = Math.max(initialCapital, initialCapital + Math.max(0, realizedPnl), currentCapital)
 
-  // Drawdown from peak
+  // Drawdown from peak — recovery mode handles throttling, only hard-stop at catastrophic levels
   const drawdownPct = peakCapital > 0 ? Math.max(0, (peakCapital - currentCapital) / peakCapital) : 0
-  const drawdownOk = drawdownPct < MAX_DRAWDOWN_PCT
+  const drawdownOk = drawdownPct < MAX_DRAWDOWN_HARD_STOP
 
   // Daily loss: sum of today's closed trades from BOTH tables
   const todayStart = new Date()
@@ -97,13 +97,13 @@ export async function checkSafety(userId?: string): Promise<SafetyStatus> {
 
   let reason: string | undefined
   if (killSwitchActive) reason = 'Kill switch is active'
-  else if (!drawdownOk) reason = `Drawdown ${(drawdownPct * 100).toFixed(1)}% exceeds ${MAX_DRAWDOWN_PCT * 100}% limit`
+  else if (!drawdownOk) reason = `Drawdown ${(drawdownPct * 100).toFixed(1)}% exceeds ${MAX_DRAWDOWN_HARD_STOP * 100}% hard stop`
   else if (!dailyLossOk) reason = `Daily loss ${(dailyLossPct * 100).toFixed(1)}% exceeds ${DAILY_LOSS_LIMIT_PCT * 100}% limit`
   else if (!positionsOk) reason = `${openPositions} open positions at max ${MAX_POSITIONS}`
 
   return {
     safe, killSwitchActive,
-    drawdownPct, drawdownLimit: MAX_DRAWDOWN_PCT, drawdownOk,
+    drawdownPct, drawdownLimit: MAX_DRAWDOWN_HARD_STOP, drawdownOk,
     dailyLossPct, dailyLossLimit: DAILY_LOSS_LIMIT_PCT, dailyLossOk,
     openPositions: openPositions ?? 0, maxPositions: MAX_POSITIONS, positionsOk,
     peakCapital, currentCapital, todayPnl,

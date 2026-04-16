@@ -321,10 +321,8 @@ async function runMeeting(
     return 'budget-capped'
   }
 
-  // ═══ FORECAST CONTRADICT CHECK — warn if quant models disagree with trigger ═══
-  const forecastContradict =
-    (triggerDir === 'long' && forecast.combinedSignal < -20) ||
-    (triggerDir === 'short' && forecast.combinedSignal > 20)
+  // ═══ FORECAST CONTRADICT CHECK — warn if quant models disagree with LONG trigger ═══
+  const forecastContradict = triggerDir === 'long' && forecast.combinedSignal < -20
   const forecastNote = forecastContradict
     ? ` ⚠️ FORECAST CONTRADICT: quant models say ${forecast.combinedLabel} (${forecast.combinedSignal}/100) vs trigger ${triggerDir?.toUpperCase()}.`
     : ` Forecast: ${forecast.combinedLabel} (${forecast.combinedSignal}/100).`

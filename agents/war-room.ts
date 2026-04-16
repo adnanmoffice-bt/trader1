@@ -295,13 +295,11 @@ async function runMeeting(
     return 'long-only-filter'
   }
 
-  // ── PHASE 2: TREND FILTER GATE — skip debates that fight the trend ──
-  const trendConflict =
-    (triggerDir === 'short' && forecast.smoothedTrend === 'up' && forecast.upProbability4h > 0.55) ||
-    (triggerDir === 'long' && forecast.smoothedTrend === 'down' && forecast.upProbability4h < 0.45)
-  if (trendConflict) {
+  // ── PHASE 2: TREND FILTER GATE — only buy in uptrends ──
+  const trendWeak = forecast.smoothedTrend === 'down' && forecast.upProbability4h < 0.45
+  if (trendWeak) {
     await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
-      message: `${instrument} @ $${f(price)} | ${allTriggers} → ${triggerDir?.toUpperCase()} but trend is ${forecast.smoothedTrend.toUpperCase()} (MC ${(forecast.upProbability4h * 100).toFixed(0)}% up). Skipping — don't fight the trend.`,
+      message: `${instrument} @ $${f(price)} | ${allTriggers} → LONG but trend is DOWN (MC ${(forecast.upProbability4h * 100).toFixed(0)}% up). Skipping — don't buy in downtrend.`,
       data: { price, trigger: allTriggers, trendFilter: true, trendDir: forecast.smoothedTrend, mcUp: forecast.upProbability4h },
     })
     return 'trend-filtered'

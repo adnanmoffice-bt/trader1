@@ -224,7 +224,7 @@ function Dashboard() {
                   </div>
                   {openT.map((t: any, i: number) => {
                     const dir = String(t.direction), entry = +t.entry_price, cur = +(t.current_price || entry)
-                    const lp = +(t.live_pnl_aed || 0), lpct = +(t.live_pnl_pct || 0), up = lp >= 0
+                    const lp = +(t.live_pnl || t.live_pnl_aed || 0), lpct = +(t.live_pnl_pct || 0), up = lp >= 0
                     const sl = +t.stop_loss, tp = +t.take_profit
                     const slD = cur > 0 ? (Math.abs(cur - sl) / cur * 100).toFixed(1) : '—'
                     const tpD = cur > 0 ? (Math.abs(tp - cur) / cur * 100).toFixed(1) : '—'

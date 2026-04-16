@@ -79,7 +79,7 @@ export async function sendPositionAlert(
   const text = [
     `${icon} <b>${label} — ${instrument}</b>`,
     '',
-    `P&L: <b>${pnl >= 0 ? '+' : ''}AED ${Math.abs(pnl).toLocaleString()}</b>  (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%)`,
+    `P&L: <b>${pnl >= 0 ? '+' : ''}$${Math.abs(pnl).toLocaleString()}</b>  (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%)`,
     `⏰ ${new Date().toLocaleTimeString('en', { timeZone: 'Asia/Dubai' })} UAE`,
   ].join('\n')
 
@@ -103,8 +103,8 @@ export async function sendMorningBriefing(
   const text = [
     `☀️ <b>APEX Morning Briefing — ${date}</b>`,
     '',
-    `💼 Portfolio: AED ${portfolio.capital.toLocaleString()}`,
-    `📈 Total P&L: ${portfolio.totalPnl >= 0 ? '+' : ''}AED ${portfolio.totalPnl.toLocaleString()}`,
+    `💼 Portfolio: $${portfolio.capital.toLocaleString()}`,
+    `📈 Total P&L: ${portfolio.totalPnl >= 0 ? '+' : ''}$${portfolio.totalPnl.toLocaleString()}`,
     `🔓 Open positions: ${portfolio.openPositions}`,
     '',
     `🎯 Today's top signals:`,
@@ -130,7 +130,7 @@ export async function sendDailyReport(
     '',
     `Trades:   ${wins + losses} (${wins}W / ${losses}L)`,
     `Win Rate: ${winRate.toFixed(1)}%`,
-    `Net P&L:  ${netPnl >= 0 ? '+' : ''}AED ${Math.abs(netPnl).toLocaleString()}`,
+    `Net P&L:  ${netPnl >= 0 ? '+' : ''}$${Math.abs(netPnl).toLocaleString()}`,
     '',
     netPnl >= 0 ? '✅ Profitable day!' : '📉 Rough day. Trust the process.',
   ].join('\n')
@@ -148,9 +148,9 @@ export async function sendDemoReport(session: DemoSession) {
     `🧪 <b>APEX 5-Day Demo Results</b>`,
     `${session.start_date} → ${session.end_date}`,
     '',
-    `Capital:     AED ${session.initial_capital.toLocaleString()}`,
-    `Final:       AED ${((session.final_capital) ?? session.initial_capital).toLocaleString()}`,
-    `Total P&L:   ${pnl >= 0 ? '+' : ''}AED ${Math.abs(pnl).toLocaleString()} (${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%)`,
+    `Capital:     $${session.initial_capital.toLocaleString()}`,
+    `Final:       $${((session.final_capital) ?? session.initial_capital).toLocaleString()}`,
+    `Total P&L:   ${pnl >= 0 ? '+' : ''}$${Math.abs(pnl).toLocaleString()} (${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%)`,
     '',
     `Trades:      ${session.total_trades} (${session.win_count}W / ${session.loss_count}L)`,
     `Win Rate:    ${((session.win_rate ?? 0) * 100).toFixed(1)}%`,

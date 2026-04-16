@@ -82,7 +82,7 @@ export async function GET(req: NextRequest) {
       ? (cur - entryPrice) * qty
       : (entryPrice - cur) * qty
     const pnlPct = (pnl / (entryPrice * qty)) * 100
-    const pnlAed = pnl * 3.6725
+    const pnlAed = pnl
     const reason = hitSL ? 'stop_loss' : 'take_profit'
 
     // CRITICAL: Update trade FIRST with proper user_id + is_demo filter, then delete position
@@ -135,7 +135,7 @@ export async function GET(req: NextRequest) {
     await sendPositionAlert(pos.instrument, reason, pnlAed, pnlPct).catch(e => console.error('[positions] Telegram error:', e))
     await waPositionAlert(pos.instrument, reason, pnlAed, pnlPct).catch(e => console.error('[positions] WhatsApp error:', e))
 
-    closed.push(`${pos.instrument} ${reason} P&L: ${pnlAed.toFixed(0)} AED`)
+    closed.push(`${pos.instrument} ${reason} P&L: $${pnlAed.toFixed(0)}`)
   }
 
   return NextResponse.json({

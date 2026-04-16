@@ -26,7 +26,7 @@ export default function SimulationPage() {
   const wins = closedT.filter((t: any) => +(t.pnl ?? 0) > 0)
   const losses = closedT.filter((t: any) => +(t.pnl ?? 0) <= 0)
   const totalPnl = closedT.reduce((s: number, t: any) => s + +(t.pnl ?? 0), 0)
-  const totalPnlAed = closedT.reduce((s: number, t: any) => s + +(t.pnl_aed ?? 0), 0)
+  const totalPnlUsd = closedT.reduce((s: number, t: any) => s + +(t.pnl ?? 0), 0)
   const wr = closedT.length > 0 ? (wins.length / closedT.length * 100) : 0
   const avgWin = wins.length > 0 ? wins.reduce((s: number, t: any) => s + +(t.pnl ?? 0), 0) / wins.length : 0
   const avgLoss = losses.length > 0 ? losses.reduce((s: number, t: any) => s + Math.abs(+(t.pnl ?? 0)), 0) / losses.length : 0
@@ -181,7 +181,7 @@ export default function SimulationPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-5">
             {openT.map((t: any, i: number) => {
               const dir = String(t.direction), entry = +t.entry_price, cur = +(t.current_price || entry)
-              const lp = +(t.live_pnl_aed || 0), lpct = +(t.live_pnl_pct || 0), up = lp >= 0
+              const lp = +(t.live_pnl || t.live_pnl_aed || 0), lpct = +(t.live_pnl_pct || 0), up = lp >= 0
               return (
                 <div key={i} className={cn('rounded-lg border p-3', dir === 'long' ? 'border-l-4 border-l-[var(--green)]' : 'border-l-4 border-l-[var(--red)]')} style={{ borderColor: 'var(--border)', background: 'var(--bg-panel)' }}>
                   <div className="flex items-center justify-between">
@@ -189,7 +189,7 @@ export default function SimulationPage() {
                       <span className="font-bold text-[var(--text-primary)]">{t.instrument}</span>
                       <span className={cn('text-[8px] font-black px-1.5 py-0.5 rounded', dir === 'long' ? 'text-[var(--green)]' : 'text-[var(--red)]')} style={{ background: dir === 'long' ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)' }}>{dir.toUpperCase()}</span>
                     </div>
-                    <span className={cn('font-black tabular-nums', up ? 'text-[var(--green)]' : 'text-[var(--red)]')}>{up ? '+' : ''}{lp.toFixed(0)} AED</span>
+                    <span className={cn('font-black tabular-nums', up ? 'text-[var(--green)]' : 'text-[var(--red)]')}>{up ? '+' : ''}${lp.toFixed(0)}</span>
                   </div>
                   <div className="flex items-center gap-3 mt-1 text-[9px] text-[var(--text-muted)]">
                     <span>Entry: <b className="text-[var(--text-primary)]">{fmt(entry)}</b></span>
@@ -237,7 +237,7 @@ export default function SimulationPage() {
       {/* Trade Cards */}
       <div className="space-y-2">
         {filtered.map((t: any) => {
-          const p = +(t.pnl ?? 0), pa = +(t.pnl_aed ?? 0), pp = +(t.pnl_pct ?? 0), w = p > 0
+          const p = +(t.pnl ?? 0), pp = +(t.pnl_pct ?? 0), w = p > 0
           const entry = +t.entry_price, exit = +t.exit_price, sl = +t.stop_loss, tp = +t.take_profit
           const slDist = Math.abs(entry - sl), tpDist = Math.abs(tp - entry)
           const plannedRR = slDist > 0 ? (tpDist / slDist).toFixed(2) : '—'
@@ -308,7 +308,7 @@ export default function SimulationPage() {
               {expanded && (
                 <div className="px-3 pb-3 pt-1 border-t" style={{ borderColor: 'var(--border)' }}>
                   <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 text-[10px]">
-                    <div><span className="text-[var(--text-muted)]">P&L AED</span><br/><span className={cn('font-bold', w ? 'text-[var(--green)]' : 'text-[var(--red)]')}>{pa >= 0 ? '+' : ''}{pa.toFixed(0)} AED</span></div>
+                    <div><span className="text-[var(--text-muted)]">P&L USD</span><br/><span className={cn('font-bold', w ? 'text-[var(--green)]' : 'text-[var(--red)]')}>{p >= 0 ? '+' : ''}${p.toFixed(0)}</span></div>
                     <div><span className="text-[var(--text-muted)]">SL Distance</span><br/><span className="font-bold text-[var(--red)]">{(slDist / entry * 100).toFixed(2)}%</span></div>
                     <div><span className="text-[var(--text-muted)]">TP Distance</span><br/><span className="font-bold text-[var(--green)]">{(tpDist / entry * 100).toFixed(2)}%</span></div>
                     <div><span className="text-[var(--text-muted)]">Planned R:R</span><br/><span className="font-bold text-[var(--blue)]">{plannedRR}x</span></div>

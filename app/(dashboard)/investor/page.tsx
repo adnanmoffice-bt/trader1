@@ -141,7 +141,7 @@ export default function InvestorPage() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {openTrades.map((t, i) => {
                 const dir = String(t.direction), entry = Number(t.entry_price), cur = Number(t.current_price || entry)
-                const livePnl = Number(t.live_pnl_aed || 0), livePct = Number(t.live_pnl_pct || 0), isUp = livePnl >= 0
+                const livePnl = Number(t.live_pnl || t.live_pnl_aed || 0), livePct = Number(t.live_pnl_pct || 0), isUp = livePnl >= 0
                 return (
                   <div key={i} className={cn('rounded-xl border border-[var(--border)] overflow-hidden', dir === 'long' ? 'border-l-4 border-l-[var(--green)]' : 'border-l-4 border-l-[var(--red)]')} style={{ background: 'var(--bg-panel)', boxShadow: 'var(--shadow)' }}>
                     <div className="flex items-center justify-between p-4">
@@ -236,7 +236,7 @@ export default function InvestorPage() {
                 </tr></thead>
                 <tbody>
                   {closedTrades.map((t, i) => {
-                    const pnl = Number(t.pnl_aed || 0), isWin = pnl > 0
+                    const pnl = Number(t.pnl || t.pnl_aed || 0), isWin = pnl > 0
                     return (
                       <tr key={i} className="border-b border-[var(--border-light)] hover:bg-[var(--bg-hover)]">
                         <td className="px-4 py-2 font-bold text-xs text-[var(--text-primary)]">{String(t.instrument)}</td>

@@ -1,8 +1,9 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { createServiceSupabase } from '@/lib/supabase'
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const db = createServiceSupabase()
+  const all = req.nextUrl.searchParams.get('all') === 'true'
 
   const { data: session } = await db
     .from('demo_sessions')
@@ -12,17 +13,13 @@ export async function GET() {
     .limit(1)
     .single()
 
-  if (!session) {
-    return NextResponse.json({ data: null, trades: [], success: true })
+  let tradesQuery = db.from('demo_trades').select('*').order('entry_time', { ascending: false })
+  if (!all && session) {
+    tradesQuery = tradesQuery.eq('session_id', session.id)
   }
 
-  const { data: trades } = await db
-    .from('demo_trades')
-    .select('*')
-    .eq('session_id', session.id)
-    .order('entry_time', { ascending: false })
+  const { data: trades } = await tradesQuery
 
-  // Get current prices for open trades
   const { data: prices } = await db
     .from('market_data')
     .select('symbol, price')
@@ -31,7 +28,6 @@ export async function GET() {
     (prices ?? []).map(p => [p.symbol, Number(p.price)])
   )
 
-  // Enrich open trades with live P&L
   const enrichedTrades = (trades ?? []).map(t => {
     if (t.exit_time) return t
     const cur = priceMap[t.instrument] ?? Number(t.entry_price)
@@ -43,14 +39,20 @@ export async function GET() {
       ...t,
       current_price: cur,
       live_pnl: livePnl,
-      live_pnl_aed: livePnl * 3.6725,
       live_pnl_pct: (livePnl / (entry * qty)) * 100,
     }
   })
 
+  // Also return all session data for full analytics
+  const { data: allSessions } = await db
+    .from('demo_sessions')
+    .select('*')
+    .order('created_at', { ascending: false })
+
   return NextResponse.json({
     data: session,
     trades: enrichedTrades,
+    sessions: allSessions ?? [],
     success: true,
   })
 }

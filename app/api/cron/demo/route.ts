@@ -1,18 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceSupabase } from '@/lib/supabase'
 import { fetchBinanceTicker } from '@/lib/price-fetcher'
-import { computeIndicators, technicalScore, detectBBSqueeze, detectEMACross } from '@/lib/indicators'
+import { computeIndicators, technicalScore, detectEMACross } from '@/lib/indicators'
 import type { OHLCV } from '@/types'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
-const DEMO_INSTRUMENTS = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'BNB/USD', 'XAU/USD'] as const
+// Same profitable instruments as war-room (SOL, BNB blacklisted — 0% win rate)
+const DEMO_INSTRUMENTS = ['BTC/USD', 'ETH/USD', 'XAU/USD'] as const
 // All values in USD — no currency conversion needed
-const RISK_PER_TRADE = 0.03
-const MIN_SCORE = 55
+const RISK_PER_TRADE = 0.015  // 1.5% (was 3% — too aggressive)
+const MIN_SCORE = 70           // was 55 — need higher conviction
 const SESSION_CAPITAL = 5000
-const MAX_OPEN_PER_SESSION = 4
+const MAX_OPEN_PER_SESSION = 2 // was 4 — reduce exposure
 const MAX_POSITION_AGE_MS = 48 * 60 * 60 * 1000 // 48 hours
 
 export async function GET(req: NextRequest) {
@@ -185,16 +186,19 @@ export async function GET(req: NextRequest) {
     const ind = computeIndicators(ohlcv)
     const { score, bias } = technicalScore(ind)
 
-    const bbSig = detectBBSqueeze(ohlcv)
+    // BB_SQUEEZE disabled — catastrophic 6% win rate. Only use EMA_CROSS.
     const emaSig = detectEMACross(ohlcv)
-    const hasSignal = bbSig.triggered || emaSig.triggered
-    const signalDir = bbSig.triggered ? bbSig.direction : emaSig.triggered ? emaSig.direction : bias
-    const stratName = bbSig.triggered ? 'BB_SQUEEZE' : emaSig.triggered ? 'EMA_CROSS' : 'TECH_SCORE'
+    const hasSignal = emaSig.triggered
+    const signalDir = emaSig.triggered ? emaSig.direction : bias
+    const stratName = emaSig.triggered ? 'EMA_CROSS' : 'TECH_SCORE'
 
     if (!hasSignal && (score < MIN_SCORE || bias === 'neutral')) continue
 
     const effectiveDir = signalDir ?? bias
     if (effectiveDir === 'neutral' || !effectiveDir) continue
+
+    // LONG-ONLY MODE — shorts had 0W/37L in history. Skip all shorts.
+    if (effectiveDir === 'short') continue
 
     const { data: recentSignal } = await db
       .from('signals')
@@ -209,8 +213,8 @@ export async function GET(req: NextRequest) {
     const effectiveScore = hasSignal ? (aiAligned ? 90 : 75) : (aiAligned ? Math.min(score + 10, 100) : score)
 
     const atrVal = ind.atr
-    const slMult = 2.5
-    const tpMult = stratName === 'BB_SQUEEZE' ? 4.0 : 5.0
+    const slMult = 2.0  // Wider SL to survive noise (was 2.5 — but noise hits)
+    const tpMult = 4.5  // R:R 2.25:1
     const slDist = atrVal * slMult
     const tpDist = atrVal * tpMult
 

@@ -33,6 +33,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Direction must be long or short' }, { status: 400 })
     }
 
+    // LONG-ONLY mode — shorts had 0W/37L historically (matches war-room.ts).
+    if (direction === 'short') {
+      return NextResponse.json({
+        error: 'Shorts blocked — system is in LONG-ONLY mode (0W/37L short history)',
+      }, { status: 400 })
+    }
+
+    // Blacklisted instruments (0% win rate): match war-room.ts
+    const BLACKLIST = ['SOL/USD', 'BNB/USD']
+    if (BLACKLIST.includes(instrument)) {
+      return NextResponse.json({
+        error: `${instrument} is blacklisted (0% win rate). Blocked.`,
+      }, { status: 400 })
+    }
+
     const slDist = Math.abs(entry_price - stop_loss)
     const tpDist = Math.abs(take_profit_1 - entry_price)
     const rr = slDist > 0 ? Math.round((tpDist / slDist) * 100) / 100 : 0

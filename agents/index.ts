@@ -1,5 +1,5 @@
 import { callAgent } from '@/lib/anthropic'
-import { computeIndicators, technicalScore, detectBBSqueeze, detectEMACross, quickBacktest } from '@/lib/indicators'
+import { computeIndicators, technicalScore, detectEMACross, quickBacktest } from '@/lib/indicators'
 import { createServiceSupabase } from '@/lib/supabase'
 import { sendSignalAlert } from '@/lib/telegram'
 import { checkSafety } from '@/lib/safety'
@@ -87,18 +87,25 @@ async function processInstrument(
   const ind = computeIndicators(ohlcv)
   const tech = technicalScore(ind)
 
-  // ── STEP 1: Backtested strategy detection (BB Squeeze + EMA Cross) ────────
-  const bbSignal = detectBBSqueeze(ohlcv)
+  // ── STEP 1: Backtested strategy detection ─────────────────────────────────
+  // BB_SQUEEZE hard-disabled (2W/31L = -$3,211 = 6% WR). EMA_CROSS only.
   const emaCross = detectEMACross(ohlcv)
 
-  const hasStrategySignal = bbSignal.triggered || emaCross.triggered
-  const strategyDir = bbSignal.triggered ? bbSignal.direction : emaCross.triggered ? emaCross.direction : null
-  const strategyName = bbSignal.triggered ? 'BB_SQUEEZE' : emaCross.triggered ? 'EMA_CROSS' : 'NONE'
+  const hasStrategySignal = emaCross.triggered
+  const strategyDir = emaCross.triggered ? emaCross.direction : null
+  const strategyName = emaCross.triggered ? 'EMA_CROSS' : 'NONE'
 
   if (!hasStrategySignal) {
     await log(db, 'orchestrator', 'info',
-      `${instrument}: No signal — BB squeeze: no, EMA cross: no | RSI:${ind.rsi.toFixed(0)} BB%B:${(ind.bb.percentB * 100).toFixed(0)}%`)
+      `${instrument}: No signal — EMA cross: no | RSI:${ind.rsi.toFixed(0)} BB%B:${(ind.bb.percentB * 100).toFixed(0)}%`)
     return `no trigger (RSI:${ind.rsi.toFixed(0)})`
+  }
+
+  // LONG-ONLY mode (matches war-room.ts): shorts had 0W/37L = -$3,405.
+  if (strategyDir === 'short') {
+    await log(db, 'orchestrator', 'info',
+      `${instrument}: ${strategyName} short signal BLOCKED — LONG-ONLY mode active.`)
+    return 'long-only filter'
   }
 
   await log(db, 'orchestrator', 'info',
@@ -170,9 +177,9 @@ async function processInstrument(
   const finalDir = strategyDir as Direction
   const finalConf = Math.min(signalOut.confidence + 10, 100)
 
-  // ── STEP 3: Calculate levels using ATR (backtested optimal: 2.5x SL, 2:1 R:R) ──
-  const slMult = strategyName === 'BB_SQUEEZE' ? 2.5 : 2.5
-  const tpMult = strategyName === 'BB_SQUEEZE' ? 4.0 : 5.0  // BB: 1.6:1 RR, EMA: 2:1 RR
+  // ── STEP 3: Calculate levels using ATR (EMA_CROSS only, R:R 2:1) ──────────
+  const slMult = 2.5
+  const tpMult = 5.0
   const slDist = ind.atr * slMult
   const tpDist = ind.atr * tpMult
 
@@ -197,7 +204,7 @@ async function processInstrument(
   }
 
   // ── STEP 3b: Quick backtest validation ──────────────────────────────────
-  const btStrategy = strategyName === 'BB_SQUEEZE' ? 'BB_SQUEEZE' as const : 'EMA_CROSS' as const
+  const btStrategy = 'EMA_CROSS' as const
   const bt = quickBacktest(ohlcv, btStrategy, slMult, tpMult)
   if (!bt.passed) {
     await log(db, 'orchestrator', 'warn',

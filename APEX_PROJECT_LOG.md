@@ -414,3 +414,8 @@ All computed from OHLCV candle data:
 | 2026-04-09 | Dashboard sidebar: new PERF tab with real-time performance metrics from analytics engine |
 | 2026-04-09 | NavBar: added ANALYTICS, JOURNAL links |
 | 2026-04-09 | Build verified: zero TypeScript errors, all 59 routes compiled successfully |
+| 2026-04-20 | AUDIT of trades since 2026-04-17 fix: 11 trades, 2W/8L, -5.43%. Fixes confirmed working (no shorts, no SOL/BNB, no BB_SQUEEZE) but TECH_SCORE fallback was buying tops |
+| 2026-04-20 | fix: demo cron blocks TECH_SCORE fallback when RSI>72 or BB%B>85 (overbought) |
+| 2026-04-20 | fix: demo cron adds 2h cooldown per instrument after SL hit — ends "3 ETH SLs in 60min" pattern |
+| 2026-04-20 | fix: /api/signals POST now rejects shorts + SOL/USD/BNB/USD to match war-room policy |
+| 2026-04-20 | fix: agents/index.ts hardened — BB_SQUEEZE removed, LONG-ONLY enforced, detectBBSqueeze import dropped |

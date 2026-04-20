@@ -16,6 +16,15 @@ const SESSION_CAPITAL = 5000
 const MAX_OPEN_PER_SESSION = 2 // was 4 — reduce exposure
 const MAX_POSITION_AGE_MS = 48 * 60 * 60 * 1000 // 48 hours
 
+// Audit 2026-04-20: 8/11 trades post-fix triggered TECH_SCORE fallback at
+// RSI 74-77 / BB %B 120-141% (extreme overbought) → all stopped out.
+// Block TECH_SCORE fallback when price is extended.
+const OVERBOUGHT_RSI = 72
+const OVERBOUGHT_BBPCT = 0.85
+
+// Cooldown after SL hit on same instrument (war-room uses 120min, match it).
+const COOLDOWN_MS_AFTER_SL = 120 * 60 * 1000
+
 export async function GET(req: NextRequest) {
   const auth = req.headers.get('authorization')
   if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
@@ -163,6 +172,25 @@ export async function GET(req: NextRequest) {
     if (currentOpenCount >= MAX_OPEN_PER_SESSION) break
     if (currentOpenSymbols.has(sym)) continue
 
+    // Cooldown: skip if instrument was stopped out within the last 2h
+    // Prevents "3 identical SL hits in 60min" pattern seen on 2026-04-17 ETH.
+    const cooldownCutoff = new Date(Date.now() - COOLDOWN_MS_AFTER_SL).toISOString()
+    const { data: recentSL } = await db
+      .from('demo_trades')
+      .select('id, exit_time, exit_reason')
+      .eq('session_id', session.id)
+      .eq('instrument', sym)
+      .eq('exit_reason', 'stop_loss')
+      .gte('exit_time', cooldownCutoff)
+      .order('exit_time', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (recentSL) {
+      actions.push(`${sym}: cooldown (SL within 2h), skipping`)
+      continue
+    }
+
     const ticker = await fetchBinanceTicker(sym)
     if (!ticker) continue
     const price = ticker.price
@@ -199,6 +227,14 @@ export async function GET(req: NextRequest) {
 
     // LONG-ONLY MODE — shorts had 0W/37L in history. Skip all shorts.
     if (effectiveDir === 'short') continue
+
+    // Overbought filter — TECH_SCORE fallback was buying tops
+    // (RSI 74-77 / BB %B 120-141%) and stopping out immediately.
+    // Only apply to non-confirmed signals (EMA_CROSS passes through even if hot).
+    if (!hasSignal && (ind.rsi > OVERBOUGHT_RSI || ind.bb.percentB > OVERBOUGHT_BBPCT)) {
+      actions.push(`${sym}: overbought (RSI:${ind.rsi.toFixed(0)} BB:${(ind.bb.percentB * 100).toFixed(0)}%), skipping`)
+      continue
+    }
 
     const { data: recentSignal } = await db
       .from('signals')

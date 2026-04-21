@@ -147,9 +147,11 @@ function computeRiskLevel(vix: number | null, fearGreed: number | null, highImpa
 
   if (highImpactEvents > 0) score += 2
 
+  // noTradeReason only for truly extreme conditions.
+  // High-impact events alone are NOT a reason to stop trading for 24h — war-room
+  // checks imminent (<4h) events separately in its own gate.
   let noTradeReason: string | null = null
   if (vix != null && vix > 40) noTradeReason = `VIX at ${vix} — extreme volatility, avoid new positions`
-  if (highImpactEvents >= 2) noTradeReason = `${highImpactEvents} high-impact events in next 24h — wait for clarity`
 
   const level: MacroSnapshot['riskLevel'] =
     score >= 5 ? 'EXTREME' : score >= 3 ? 'HIGH' : score >= 2 ? 'MEDIUM' : 'LOW'

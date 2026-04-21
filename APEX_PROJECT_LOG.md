@@ -419,3 +419,9 @@ All computed from OHLCV candle data:
 | 2026-04-20 | fix: demo cron adds 2h cooldown per instrument after SL hit — ends "3 ETH SLs in 60min" pattern |
 | 2026-04-20 | fix: /api/signals POST now rejects shorts + SOL/USD/BNB/USD to match war-room policy |
 | 2026-04-20 | fix: agents/index.ts hardened — BB_SQUEEZE removed, LONG-ONLY enforced, detectBBSqueeze import dropped |
+| 2026-04-21 | AUDIT 24h: 1 new entry, 3 closed (0W/3L, -$220), war-room SILENT for 48h+, all losses at RSI 48-50 mid-range |
+| 2026-04-21 | ROOT CAUSE: war-room macro gate paused trading 24h straight whenever 2+ high-impact events in rolling 24h window |
+| 2026-04-21 | fix: war-room macro pause narrowed — only pauses for high-impact events within next 4h (was 24h) |
+| 2026-04-21 | fix: macro-context no longer sets noTradeReason from high-impact event count — war-room owns that gate |
+| 2026-04-21 | fix: demo cron MIN_SCORE 70 → 78 (all 3 recent losses fired at score=83) |
+| 2026-04-21 | fix: demo cron TECH_SCORE fallback requires trend alignment (price > EMA20 > EMA50) for LONG |

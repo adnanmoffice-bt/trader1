@@ -11,7 +11,7 @@ export const maxDuration = 60
 const DEMO_INSTRUMENTS = ['BTC/USD', 'ETH/USD', 'XAU/USD'] as const
 // All values in USD — no currency conversion needed
 const RISK_PER_TRADE = 0.015  // 1.5% (was 3% — too aggressive)
-const MIN_SCORE = 70           // was 55 — need higher conviction
+const MIN_SCORE = 78           // raised from 70 after audit 2026-04-21 — 3/3 losses were at score=83
 const SESSION_CAPITAL = 5000
 const MAX_OPEN_PER_SESSION = 2 // was 4 — reduce exposure
 const MAX_POSITION_AGE_MS = 48 * 60 * 60 * 1000 // 48 hours
@@ -21,6 +21,10 @@ const MAX_POSITION_AGE_MS = 48 * 60 * 60 * 1000 // 48 hours
 // Block TECH_SCORE fallback when price is extended.
 const OVERBOUGHT_RSI = 72
 const OVERBOUGHT_BBPCT = 0.85
+
+// Audit 2026-04-21: 3 losses at mid-range RSI (48-50) bought into local downtrends.
+// TECH_SCORE fallback must align with trend: price above both EMA20 and EMA50.
+const REQUIRE_TREND_ALIGN_FOR_FALLBACK = true
 
 // Cooldown after SL hit on same instrument (war-room uses 120min, match it).
 const COOLDOWN_MS_AFTER_SL = 120 * 60 * 1000
@@ -234,6 +238,17 @@ export async function GET(req: NextRequest) {
     if (!hasSignal && (ind.rsi > OVERBOUGHT_RSI || ind.bb.percentB > OVERBOUGHT_BBPCT)) {
       actions.push(`${sym}: overbought (RSI:${ind.rsi.toFixed(0)} BB:${(ind.bb.percentB * 100).toFixed(0)}%), skipping`)
       continue
+    }
+
+    // Trend alignment — TECH_SCORE fallback must be in an uptrend for LONG.
+    // Audit 2026-04-21: all 3 losses (RSI 48-50) entered with price below EMA20.
+    if (!hasSignal && REQUIRE_TREND_ALIGN_FOR_FALLBACK && effectiveDir === 'long') {
+      const price_gt_ema20 = price > ind.ema_20
+      const ema20_gt_ema50 = ind.ema_20 > ind.ema_50
+      if (!(price_gt_ema20 && ema20_gt_ema50)) {
+        actions.push(`${sym}: trend misaligned (px<EMA20 or EMA20<EMA50), skipping`)
+        continue
+      }
     }
 
     const { data: recentSignal } = await db

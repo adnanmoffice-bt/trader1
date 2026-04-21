@@ -122,12 +122,25 @@ export async function runWarRoom(): Promise<void> {
     }
   }
 
-  // High-impact event proximity: no new trades within 4h of high-impact event
-  const highImpactSoon = (macro.upcomingEvents ?? []).filter(e => e.impact === 'high').length >= 2
-  if (highImpactSoon) {
+  // High-impact event proximity: pause only if event is within next 4h (not 24h).
+  // Audit 2026-04-21: old code paused war-room for 24+ hours straight because
+  // US calendar always has 2+ "high-impact" events in a rolling 24h window
+  // (Fed speeches, Jobless Claims, PMI). Tighten to actually-imminent events.
+  const now = Date.now()
+  const FOUR_HOURS_MS = 4 * 60 * 60 * 1000
+  const imminentHighImpact = (macro.upcomingEvents ?? []).filter(e => {
+    if (e.impact !== 'high') return false
+    const eventDate = e.date ? new Date(e.date).getTime() : NaN
+    if (!Number.isFinite(eventDate)) return false
+    const minutesUntil = (eventDate - now) / 60_000
+    return minutesUntil >= 0 && minutesUntil <= FOUR_HOURS_MS / 60_000
+  })
+  if (imminentHighImpact.length > 0) {
+    const ev = imminentHighImpact[0]
+    const minutesUntil = Math.round((new Date(ev.date).getTime() - now) / 60_000)
     await say(db, crypto.randomUUID(), null, {
       agent: 'orchestrator', role: 'alert',
-      message: `WAR ROOM PAUSED: ${macro.upcomingEvents.filter(e => e.impact === 'high').length} high-impact events upcoming. Waiting for clarity.`,
+      message: `WAR ROOM PAUSED: high-impact event "${ev.title}" in ${minutesUntil}min. Resumes after release.`,
     })
     return
   }

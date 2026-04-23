@@ -11,6 +11,7 @@ import { runPostMeetingBrief } from '@/agents/meta-agent'
 import { buildMacroContext, formatMacroContext, type MacroSnapshot } from '@/lib/macro-context'
 import { generateForecast, formatForecast } from '@/lib/forecast'
 import { validateOHLCV } from '@/lib/data-quality'
+import { getPrimaryExchange } from '@/lib/exchanges'
 import type { Instrument, OHLCV, Signal } from '@/types'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -648,6 +649,119 @@ async function runMeeting(
         signal_reason: reasoning,
         entry_time: new Date().toISOString(),
       })
+    }
+
+    // ── PHASE 1b: REAL trade execution (only if all gates pass) ──
+    // Gates (ALL must be true):
+    //   1. user_settings.trading_mode === 'live'
+    //   2. user_settings.auto_trade_enabled === true
+    //   3. primary exchange has credentials (env vars OR DB-stored)
+    //   4. canWithdraw on the API key is FALSE (safety check at runtime)
+    //   5. USDT spot balance >= notional (with small buffer)
+    //   6. Notional >= exchange minimum order size
+    // Any failure → log reason, skip real execution, keep demo only.
+    if (triggerDir === 'long' && sizing.units > 0 && saved?.id) {
+      const { data: settings } = await db.from('user_settings')
+        .select('user_id, trading_mode, auto_trade_enabled')
+        .limit(1)
+        .maybeSingle()
+
+      const gates = {
+        trading_mode_live: settings?.trading_mode === 'live',
+        auto_trade_on: settings?.auto_trade_enabled === true,
+        has_user: !!settings?.user_id,
+      }
+
+      const logExec = async (level: 'info' | 'ok' | 'warn' | 'error', msg: string) => {
+        try { await db.from('agent_logs').insert({ agent: 'live-exec', level, message: msg }) } catch { /* non-critical */ }
+      }
+
+      if (!gates.trading_mode_live || !gates.auto_trade_on || !gates.has_user) {
+        await logExec('info',
+          `${instrument}: real trade skipped — mode:${gates.trading_mode_live ? 'live' : 'demo'} auto:${gates.auto_trade_on} user:${gates.has_user}`)
+      } else {
+        try {
+          const ex = getPrimaryExchange()
+          if (!ex.isConfigured()) {
+            await logExec('error',
+              `${instrument}: BLOCKED — no exchange credentials on server (set BINANCE_API_KEY and BINANCE_SECRET_KEY in Vercel env vars)`)
+          } else {
+            const conn = await ex.testConnection()
+            if (!conn.success) {
+              await logExec('error', `${instrument}: BLOCKED — exchange connect failed: ${conn.error ?? 'unknown'}`)
+            } else if (conn.canWithdraw) {
+              await logExec('error',
+                `${instrument}: BLOCKED — API key has canWithdraw=true. Turn off Withdrawals on Binance API Management before live trading.`)
+            } else if (!conn.canTrade) {
+              await logExec('error', `${instrument}: BLOCKED — API key canTrade=false`)
+            } else {
+              const notionalUsd = sizing.notionalUsd
+              const minOrder = ex.config.minOrderSize ?? 10
+              if (notionalUsd < minOrder) {
+                await logExec('warn', `${instrument}: order too small ($${notionalUsd.toFixed(2)} < min $${minOrder})`)
+              } else if (conn.quoteBalance < notionalUsd) {
+                await logExec('warn',
+                  `${instrument}: insufficient USDT — balance $${conn.quoteBalance.toFixed(2)} < notional $${notionalUsd.toFixed(2)}`)
+              } else {
+                const result = await ex.marketBuy(instrument, notionalUsd)
+                if (!result) {
+                  await logExec('error', `${instrument}: marketBuy returned null`)
+                } else {
+                  await logExec('ok',
+                    `${instrument}: REAL BUY filled qty=${result.executedQty.toFixed(6)} @ $${result.avgPrice.toFixed(2)} (orderId:${result.orderId})`)
+
+                  // Place SL + TP (don't fail the whole trade if these error; positions cron will reconcile)
+                  const slOk = await ex.setStopLoss(instrument, result.executedQty, sl).catch(() => false)
+                  const tpOk = await ex.setTakeProfit(instrument, result.executedQty, tp).catch(() => false)
+                  if (!slOk || !tpOk) {
+                    await logExec('warn',
+                      `${instrument}: SL/TP order placement partial (sl:${slOk} tp:${tpOk}) — positions cron will reconcile`)
+                  }
+
+                  await db.from('trades').insert({
+                    signal_id: saved.id,
+                    user_id: settings!.user_id,
+                    instrument,
+                    direction: 'long',
+                    quantity: result.executedQty,
+                    entry_price: result.avgPrice,
+                    stop_loss: sl,
+                    take_profit: tp,
+                    status: 'open',
+                    is_demo: false,
+                    notes: `Binance order ${result.orderId} | risk $${notionalUsd.toFixed(0)} | ${reasoning.slice(0, 180)}`,
+                  })
+
+                  await db.from('positions').upsert({
+                    user_id: settings!.user_id,
+                    instrument,
+                    direction: 'long',
+                    quantity: result.executedQty,
+                    avg_entry_price: result.avgPrice,
+                    current_price: result.avgPrice,
+                    stop_loss: sl,
+                    take_profit: tp,
+                    is_demo: false,
+                  }, { onConflict: 'user_id,instrument,is_demo' })
+
+                  await waDecision({
+                    instrument,
+                    decision: `REAL TRADE EXECUTED: LONG ${instrument} @ $${result.avgPrice.toFixed(2)} | SL:$${sl.toFixed(2)} TP:$${tp.toFixed(2)} | qty ${result.executedQty.toFixed(6)} ($${notionalUsd.toFixed(0)}) | Binance order ${result.orderId}`,
+                    execute: true,
+                    direction: 'long', entry: result.avgPrice, sl, tp, rr,
+                    votesFor: voteFor, votesAgainst: voteAgainst,
+                    trigger: allTriggers ?? undefined,
+                    backtestWins: bt.wins, backtestLosses: bt.losses,
+                    kelly: stats.kellyFraction,
+                  }).catch(() => {})
+                }
+              }
+            }
+          }
+        } catch (e) {
+          await logExec('error', `${instrument}: exception — ${String(e).slice(0, 200)}`)
+        }
+      }
     }
 
     await waDecision({

@@ -689,12 +689,14 @@ async function runMeeting(
             const conn = await ex.testConnection()
             if (!conn.success) {
               await logExec('error', `${instrument}: BLOCKED — exchange connect failed: ${conn.error ?? 'unknown'}`)
-            } else if (conn.canWithdraw) {
-              await logExec('error',
-                `${instrument}: BLOCKED — API key has canWithdraw=true. Turn off Withdrawals on Binance API Management before live trading.`)
             } else if (!conn.canTrade) {
               await logExec('error', `${instrument}: BLOCKED — API key canTrade=false`)
             } else {
+              // NOTE: canWithdraw gate disabled by user request (2026-04-23).
+              // API key still has withdrawal permission — rotate the key if compromised.
+              if (conn.canWithdraw) {
+                await logExec('warn', `${instrument}: proceeding with canWithdraw=true — key should be rotated with Withdrawals disabled`)
+              }
               const notionalUsd = sizing.notionalUsd
               const minOrder = ex.config.minOrderSize ?? 10
               if (notionalUsd < minOrder) {

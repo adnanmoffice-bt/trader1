@@ -196,10 +196,10 @@ export default function SettingsPage() {
     })
     const data = await res.json()
     if (data.success) {
-      setSaveMsg('Sačuvano!')
+      setSaveMsg('Saved!')
       await loadSettings()
     } else {
-      setSaveMsg(data.error || 'Greška')
+      setSaveMsg(data.error || 'Error')
     }
     setSaving(false)
     setTimeout(() => setSaveMsg(''), 3000)
@@ -208,8 +208,8 @@ export default function SettingsPage() {
   const currentExMeta = EXCHANGES.find(e => e.id === selectedExchange)!
 
   async function testExchange() {
-    if (!apiKey || !secretKey) { setTestResult({ success: false, message: 'Unesi oba ključa' }); return }
-    if (currentExMeta.needsPassphrase && !passphrase) { setTestResult({ success: false, message: 'Unesi Passphrase' }); return }
+    if (!apiKey || !secretKey) { setTestResult({ success: false, message: 'Enter both keys' }); return }
+    if (currentExMeta.needsPassphrase && !passphrase) { setTestResult({ success: false, message: 'Enter Passphrase' }); return }
     setTesting(true)
     setTestResult(null)
     try {
@@ -222,14 +222,14 @@ export default function SettingsPage() {
       if (data.success) {
         setTestResult({
           success: true,
-          message: `${data.exchangeName} povezan! ${data.quoteAsset}: $${data.quoteBalance.toFixed(2)} | Trading: ${data.canTrade ? 'DA' : 'NE'}`,
+          message: `${data.exchangeName} connected! ${data.quoteAsset}: $${data.quoteBalance.toFixed(2)} | Trading: ${data.canTrade ? 'YES' : 'NO'}`,
           warning: data.warning,
         })
       } else {
         setTestResult({ success: false, message: data.error })
       }
     } catch {
-      setTestResult({ success: false, message: 'Greška pri testiranju' })
+      setTestResult({ success: false, message: 'Testing error' })
     }
     setTesting(false)
   }
@@ -259,16 +259,16 @@ export default function SettingsPage() {
   async function toggleTradingMode() {
     const newMode = settings?.trading_mode === 'live' ? 'demo' : 'live'
     if (newMode === 'live' && !anyExchangeConfigured) {
-      setSaveMsg('Prvo konfiguriši barem jedan exchange!')
+      setSaveMsg('Configure at least one exchange first!')
       setTimeout(() => setSaveMsg(''), 3000)
       return
     }
-    if (newMode === 'live' && !confirm('PAŽNJA: Prelaziš na LIVE trading sa pravim novcem. Nastaviti?')) return
+    if (newMode === 'live' && !confirm('WARNING: You are switching to LIVE trading with real money. Continue?')) return
     await saveField({ trading_mode: newMode })
   }
 
   async function handleKillSwitch(action: 'activate' | 'deactivate') {
-    if (action === 'activate' && !confirm('KILL SWITCH će zaustaviti SVE trgovanje na 24h. Nastaviti?')) return
+    if (action === 'activate' && !confirm('KILL SWITCH will stop ALL trading for 24h. Continue?')) return
     await fetch('/api/kill-switch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -287,7 +287,7 @@ export default function SettingsPage() {
 
   async function testWhatsApp() {
     const instId = waInstanceId || settings?.whatsapp_instance_id || ''
-    if (!instId || !waApiToken) { setWaTestResult({ success: false, message: 'Unesi Instance ID i API Token' }); return }
+    if (!instId || !waApiToken) { setWaTestResult({ success: false, message: 'Enter Instance ID and API Token' }); return }
     setWaTesting(true)
     setWaTestResult(null)
     try {
@@ -298,12 +298,12 @@ export default function SettingsPage() {
       })
       const data = await res.json()
       if (data.success) {
-        setWaTestResult({ success: true, message: `Povezano! Telefon: +${data.phone}` })
+        setWaTestResult({ success: true, message: `Connected! Phone: +${data.phone}` })
       } else {
-        setWaTestResult({ success: false, message: data.error || 'Greška' })
+        setWaTestResult({ success: false, message: data.error || 'Error' })
       }
     } catch {
-      setWaTestResult({ success: false, message: 'Greška pri testiranju' })
+      setWaTestResult({ success: false, message: 'Testing error' })
     }
     setWaTesting(false)
   }
@@ -328,7 +328,7 @@ export default function SettingsPage() {
     const instId = waInstanceId || settings?.whatsapp_instance_id
     const groupId = waSelectedGroup || settings?.whatsapp_group_id
     if (!waApiToken) {
-      setWaTestResult({ success: false, message: 'Unesi API Token prije čuvanja!' })
+      setWaTestResult({ success: false, message: 'Enter API Token before saving!' })
       return
     }
     const groupName = waGroups.find(g => g.id === waSelectedGroup)?.name
@@ -339,15 +339,15 @@ export default function SettingsPage() {
       whatsapp_group_name: groupName || undefined,
       whatsapp_enabled: true,
     })
-    setWaTestResult({ success: true, message: 'WhatsApp konfiguracija sačuvana! Token je u bazi.' })
+    setWaTestResult({ success: true, message: 'WhatsApp configuration saved! Token is in database.' })
   }
 
   async function sendTestWaMessage() {
     const instId = waInstanceId || settings?.whatsapp_instance_id || ''
     const token = waApiToken
     const groupId = waSelectedGroup || settings?.whatsapp_group_id || ''
-    if (!instId || !groupId) { setWaTestResult({ success: false, message: 'Sačuvaj konfiguraciju prvo (Instance ID + Grupa)' }); return }
-    if (!token) { setWaTestResult({ success: false, message: 'Unesi API Token za slanje test poruke' }); return }
+    if (!instId || !groupId) { setWaTestResult({ success: false, message: 'Save configuration first (Instance ID + Group)' }); return }
+    if (!token) { setWaTestResult({ success: false, message: 'Enter API Token to send test message' }); return }
     setWaTesting(true)
     try {
       const res = await fetch('/api/settings/test-whatsapp', {
@@ -356,9 +356,9 @@ export default function SettingsPage() {
         body: JSON.stringify({ instanceId: instId, apiToken: token, groupId, action: 'test-message' }),
       })
       const data = await res.json()
-      setWaTestResult({ success: data.success, message: data.success ? 'Test poruka poslana u grupu!' : (data.error || 'Greška') })
+      setWaTestResult({ success: data.success, message: data.success ? 'Test message sent to group!' : (data.error || 'Error') })
     } catch {
-      setWaTestResult({ success: false, message: 'Greška' })
+      setWaTestResult({ success: false, message: 'Error' })
     }
     setWaTesting(false)
   }
@@ -370,12 +370,12 @@ export default function SettingsPage() {
       <header className="flex items-center justify-between px-6 h-12 border-b border-[var(--border)]" style={{ background: 'var(--bg-panel)' }}>
         <div className="flex items-center gap-4">
           <a href="/" className="text-lg font-black" style={{ color: 'var(--amber)' }}>APEX</a>
-          <span className="text-[11px] font-bold text-[var(--text-muted)] tracking-wider">PODEŠAVANJA</span>
+          <span className="text-[11px] font-bold text-[var(--text-muted)] tracking-wider">SETTINGS</span>
         </div>
         <div className="flex items-center gap-3">
           {saveMsg && (
             <span className={cn('text-[11px] font-bold px-3 py-1 rounded-full animate-pulse',
-              saveMsg === 'Sačuvano!' ? 'text-[var(--green)] bg-[rgba(0,255,163,0.1)]' : 'text-[var(--red)] bg-[rgba(255,51,102,0.1)]'
+              saveMsg === 'Saved!' ? 'text-[var(--green)] bg-[rgba(0,255,163,0.1)]' : 'text-[var(--red)] bg-[rgba(255,51,102,0.1)]'
             )}>{saveMsg}</span>
           )}
           <a href="/" className="text-[11px] font-bold px-3 py-1 rounded" style={{ color: 'var(--cyan)', border: '1px solid var(--cyan)' }}>TERMINAL</a>
@@ -385,18 +385,18 @@ export default function SettingsPage() {
       <main className="max-w-3xl mx-auto px-6 py-6 space-y-5">
 
         {/* ─── TRADING MODE ──────────────────────────────────────────── */}
-        <Section title="Režim Trgovanja" icon="⚡"
+        <Section title="Trading Mode" icon="⚡"
           badge={<Badge text={isLive ? 'LIVE' : 'DEMO'} ok={!isLive} />}
         >
           <div className="flex items-center justify-between">
             <div>
               <div className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>
-                {isLive ? 'LIVE — Pravi novac' : 'DEMO — Simulacija'}
+                {isLive ? 'LIVE — Real money' : 'DEMO — Simulation'}
               </div>
               <div className="text-[11px] mt-1" style={{ color: 'var(--text-secondary)' }}>
                 {isLive
-                  ? `AI trguje na ${EXCHANGES.find(e => e.id === settings?.primary_exchange)?.name || 'exchange-u'} sa pravim sredstvima`
-                  : `Virtualni kapital: $${riskForm.initial_capital.toLocaleString()}`
+                  ? `AI trades on ${EXCHANGES.find(e => e.id === settings?.primary_exchange)?.name || 'exchange'} with real funds`
+                  : `Virtual capital: $${riskForm.initial_capital.toLocaleString()}`
                 }
               </div>
             </div>
@@ -410,24 +410,24 @@ export default function SettingsPage() {
                   : 'border-2 border-[var(--amber)] text-[var(--amber)] hover:bg-[rgba(255,204,0,0.1)]'
               )}
             >
-              {isLive ? 'PREBACI NA DEMO' : 'PREBACI NA LIVE'}
+              {isLive ? 'SWITCH TO DEMO' : 'SWITCH TO LIVE'}
             </button>
           </div>
           {isLive && (
             <div className="mt-3 p-3 rounded-lg text-[11px] font-bold" style={{ background: 'rgba(255,51,102,0.08)', color: 'var(--red)', border: '1px solid var(--red)' }}>
-              UPOZORENJE: AI signali se izvršavaju sa pravim novcem na {EXCHANGES.find(e => e.id === settings?.primary_exchange)?.name || 'exchange-u'}. Kill switch ispod.
+              WARNING: AI signals are executed with real money on {EXCHANGES.find(e => e.id === settings?.primary_exchange)?.name || 'the exchange'}. Kill switch below.
             </div>
           )}
         </Section>
 
         {/* ─── EXCHANGE CONNECTIONS ─────────────────────────────────── */}
-        <Section title="Exchange Konekcije" icon="🏦"
-          badge={<Badge text={anyExchangeConfigured ? `${(settings?.configured_exchanges?.length ?? 0) + (settings?.binance_configured ? 1 : 0)} POVEZAN` : 'NIJEDAN'} ok={!!anyExchangeConfigured} />}
+        <Section title="Exchange Connections" icon="🏦"
+          badge={<Badge text={anyExchangeConfigured ? `${(settings?.configured_exchanges?.length ?? 0) + (settings?.binance_configured ? 1 : 0)} CONNECTED` : 'NONE'} ok={!!anyExchangeConfigured} />}
         >
           {/* Connected exchanges */}
           {(settings?.binance_configured || (settings?.configured_exchanges?.length ?? 0) > 0) && (
             <div className="mb-4 space-y-2">
-              <div className="text-[10px] font-bold mb-2" style={{ color: 'var(--text-muted)' }}>POVEZANI EXCHANGE-OVI</div>
+              <div className="text-[10px] font-bold mb-2" style={{ color: 'var(--text-muted)' }}>CONNECTED EXCHANGES</div>
               {settings?.binance_configured && (
                 <div className="p-2.5 rounded-lg flex items-center justify-between" style={{ background: 'rgba(0,255,163,0.06)', border: '1px solid rgba(0,255,163,0.15)' }}>
                   <div className="flex items-center gap-2">
@@ -441,7 +441,7 @@ export default function SettingsPage() {
                       settings?.primary_exchange === 'binance' ? 'bg-[var(--amber)] text-black' : 'text-[var(--text-muted)]'
                     )} style={settings?.primary_exchange !== 'binance' ? { border: '1px solid var(--border)' } : {}}
                   >
-                    {settings?.primary_exchange === 'binance' ? 'PRIMARNI' : 'POSTAVI KAO PRIMARNI'}
+                    {settings?.primary_exchange === 'binance' ? 'PRIMARY' : 'SET AS PRIMARY'}
                   </button>
                 </div>
               )}
@@ -460,7 +460,7 @@ export default function SettingsPage() {
                         settings?.primary_exchange === ex.id ? 'bg-[var(--amber)] text-black' : 'text-[var(--text-muted)]'
                       )} style={settings?.primary_exchange !== ex.id ? { border: '1px solid var(--border)' } : {}}
                     >
-                      {settings?.primary_exchange === ex.id ? 'PRIMARNI' : 'POSTAVI KAO PRIMARNI'}
+                      {settings?.primary_exchange === ex.id ? 'PRIMARY' : 'SET AS PRIMARY'}
                     </button>
                   </div>
                 )
@@ -470,7 +470,7 @@ export default function SettingsPage() {
 
           {/* Exchange selector */}
           <div className="mb-3">
-            <label className="text-[10px] font-bold block mb-2" style={{ color: 'var(--text-muted)' }}>DODAJ EXCHANGE</label>
+            <label className="text-[10px] font-bold block mb-2" style={{ color: 'var(--text-muted)' }}>ADD EXCHANGE</label>
             <div className="grid grid-cols-4 gap-2">
               {EXCHANGES.map(ex => (
                 <button key={ex.id} onClick={() => { setSelectedExchange(ex.id); setTestResult(null); setApiKey(''); setSecretKey(''); setPassphrase('') }}
@@ -490,7 +490,7 @@ export default function SettingsPage() {
             <div>
               <label className="text-[10px] font-bold block mb-1" style={{ color: 'var(--text-muted)' }}>{currentExMeta.name} API KEY</label>
               <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
-                placeholder={`Unesi ${currentExMeta.name} API Key`}
+                placeholder={`Enter ${currentExMeta.name} API Key`}
                 className="w-full px-3 py-2 text-sm rounded-lg font-mono"
                 style={{ background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
               />
@@ -498,16 +498,16 @@ export default function SettingsPage() {
             <div>
               <label className="text-[10px] font-bold block mb-1" style={{ color: 'var(--text-muted)' }}>{currentExMeta.name} SECRET KEY</label>
               <input type="password" value={secretKey} onChange={e => setSecretKey(e.target.value)}
-                placeholder={`Unesi ${currentExMeta.name} Secret Key`}
+                placeholder={`Enter ${currentExMeta.name} Secret Key`}
                 className="w-full px-3 py-2 text-sm rounded-lg font-mono"
                 style={{ background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
               />
             </div>
             {currentExMeta.needsPassphrase && (
               <div>
-                <label className="text-[10px] font-bold block mb-1" style={{ color: 'var(--amber)' }}>PASSPHRASE (obavezno za {currentExMeta.name})</label>
+                <label className="text-[10px] font-bold block mb-1" style={{ color: 'var(--amber)' }}>PASSPHRASE (required for {currentExMeta.name})</label>
                 <input type="password" value={passphrase} onChange={e => setPassphrase(e.target.value)}
-                  placeholder={`Unesi ${currentExMeta.name} Passphrase`}
+                  placeholder={`Enter ${currentExMeta.name} Passphrase`}
                   className="w-full px-3 py-2 text-sm rounded-lg font-mono"
                   style={{ background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--amber)' }}
                 />
@@ -519,13 +519,13 @@ export default function SettingsPage() {
                 className="px-4 py-2 text-[11px] font-bold rounded-lg transition-colors disabled:opacity-30"
                 style={{ border: '1px solid var(--cyan)', color: 'var(--cyan)' }}
               >
-                {testing ? 'TESTIRAM...' : `TESTIRAJ ${currentExMeta.name.toUpperCase()}`}
+                {testing ? 'TESTING...' : `TEST ${currentExMeta.name.toUpperCase()}`}
               </button>
               <button onClick={saveExchangeKeys} disabled={saving || !apiKey || !secretKey}
                 className="px-4 py-2 text-[11px] font-bold rounded-lg transition-colors disabled:opacity-30"
                 style={{ background: 'var(--green)', color: '#000' }}
               >
-                SAČUVAJ KLJUČEVE
+                SAVE KEYS
               </button>
             </div>
 
@@ -543,20 +543,20 @@ export default function SettingsPage() {
 
           <div className="mt-4 p-3 rounded-lg text-[10px]" style={{ background: 'var(--bg-secondary)', color: 'var(--text-muted)' }}>
             <strong>Setup:</strong> {currentExMeta.website} → Settings → API Management → Create API
-            <br />Uključi samo <strong>&quot;Enable Spot Trading&quot;</strong>. NIKADA ne uključuj Withdrawal.
-            {currentExMeta.needsPassphrase && <><br /><span style={{ color: 'var(--amber)' }}>⚠️ {currentExMeta.name} zahtijeva Passphrase koji se postavlja pri kreiranju API ključa.</span></>}
+            <br />Enable only <strong>&quot;Enable Spot Trading&quot;</strong>. NEVER enable Withdrawal.
+            {currentExMeta.needsPassphrase && <><br /><span style={{ color: 'var(--amber)' }}>⚠️ {currentExMeta.name} requires a Passphrase that is set when creating the API key.</span></>}
           </div>
         </Section>
 
         {/* ─── WALLET ─────────────────────────────────────────────── */}
         {anyExchangeConfigured && (
-          <Section title="Novčanik" icon="💰"
+          <Section title="Wallet" icon="💰"
             badge={
               <button onClick={loadWallet} disabled={walletLoading}
                 className="text-[9px] font-bold px-2 py-0.5 rounded"
                 style={{ color: 'var(--cyan)', border: '1px solid var(--cyan)' }}
               >
-                {walletLoading ? 'UČITAVAM...' : 'OSVJEŽI'}
+                {walletLoading ? 'LOADING...' : 'REFRESH'}
               </button>
             }
           >
@@ -564,7 +564,7 @@ export default function SettingsPage() {
               <div className="space-y-4">
                 <div className="grid grid-cols-3 gap-3">
                   <div className="p-3 rounded-lg text-center" style={{ background: 'var(--bg-secondary)' }}>
-                    <div className="text-[10px] font-bold" style={{ color: 'var(--text-muted)' }}>USDT RASPOLOŽIVO</div>
+                    <div className="text-[10px] font-bold" style={{ color: 'var(--text-muted)' }}>USDT AVAILABLE</div>
                     <div className="text-xl font-black mt-1" style={{ color: 'var(--green)' }}>
                       ${wallet.summary.usdt_free.toFixed(2)}
                     </div>
@@ -588,14 +588,14 @@ export default function SettingsPage() {
 
                 {wallet.balances.length > 0 && (
                   <div>
-                    <div className="text-[10px] font-bold mb-2" style={{ color: 'var(--text-muted)' }}>SVI ASSETI ({wallet.summary.total_assets})</div>
+                    <div className="text-[10px] font-bold mb-2" style={{ color: 'var(--text-muted)' }}>ALL ASSETS ({wallet.summary.total_assets})</div>
                     <div className="space-y-1 max-h-40 overflow-y-auto">
                       {wallet.balances.map(b => (
                         <div key={b.asset} className="flex items-center justify-between py-1 px-2 rounded text-[11px]" style={{ background: 'var(--bg-secondary)' }}>
                           <span className="font-bold" style={{ color: 'var(--text-primary)' }}>{b.asset}</span>
                           <div className="flex gap-4">
-                            <span style={{ color: 'var(--text-secondary)' }}>Slobodno: <span className="font-mono font-bold">{b.free.toFixed(b.asset === 'USDT' ? 2 : 6)}</span></span>
-                            {b.locked > 0 && <span style={{ color: 'var(--amber)' }}>Zaključano: <span className="font-mono">{b.locked.toFixed(6)}</span></span>}
+                            <span style={{ color: 'var(--text-secondary)' }}>Free: <span className="font-mono font-bold">{b.free.toFixed(b.asset === 'USDT' ? 2 : 6)}</span></span>
+                            {b.locked > 0 && <span style={{ color: 'var(--amber)' }}>Locked: <span className="font-mono">{b.locked.toFixed(6)}</span></span>}
                           </div>
                         </div>
                       ))}
@@ -611,29 +611,29 @@ export default function SettingsPage() {
                   <div className="flex items-center gap-1.5">
                     <StatusDot ok={!wallet.permissions.can_withdraw} />
                     <span style={{ color: wallet.permissions.can_withdraw ? 'var(--red)' : 'var(--text-muted)' }}>
-                      {wallet.permissions.can_withdraw ? 'Withdrawal UKLJUČEN — isključi!' : 'Withdrawal isključen'}
+                      {wallet.permissions.can_withdraw ? 'Withdrawal ENABLED — disable it!' : 'Withdrawal disabled'}
                     </span>
                   </div>
                 </div>
               </div>
             ) : walletLoading ? (
-              <div className="text-center py-8 text-[11px]" style={{ color: 'var(--text-muted)' }}>Učitavam wallet podatke...</div>
+              <div className="text-center py-8 text-[11px]" style={{ color: 'var(--text-muted)' }}>Loading wallet data...</div>
             ) : (
-              <div className="text-center py-8 text-[11px]" style={{ color: 'var(--text-muted)' }}>Nije moguće učitati — provjeri API ključeve</div>
+              <div className="text-center py-8 text-[11px]" style={{ color: 'var(--text-muted)' }}>Cannot load — check API keys</div>
             )}
           </Section>
         )}
 
         {/* ─── RISK CONTROLS ──────────────────────────────────────── */}
-        <Section title="Kontrola Rizika" icon="🛡️">
+        <Section title="Risk Controls" icon="🛡️">
           <div className="space-y-4">
             {[
-              { key: 'max_drawdown_pct', label: 'Max Drawdown', unit: '%', min: 5, max: 30, step: 1, desc: 'Kill-switch ako portfolio padne ispod ovog procenta' },
-              { key: 'daily_loss_limit_pct', label: 'Dnevni Limit Gubitka', unit: '%', min: 1, max: 10, step: 0.5, desc: 'Zaustavi trading za danas ako gubici pređu' },
-              { key: 'max_positions', label: 'Max Otvorenih Pozicija', unit: '', min: 1, max: 10, step: 1, desc: 'Koliko istovremenih trade-ova' },
-              { key: 'risk_per_trade_pct', label: 'Rizik Po Trade-u', unit: '%', min: 0.5, max: 5, step: 0.5, desc: 'Maksimalan kapital po jednom trade-u' },
-              { key: 'min_risk_reward', label: 'Min Risk:Reward', unit: ':1', min: 1, max: 5, step: 0.5, desc: 'Minimalan odnos nagrade prema riziku' },
-              { key: 'max_sl_pct', label: 'Max Stop Loss', unit: '%', min: 1, max: 15, step: 1, desc: 'Maksimalan SL od entry cijene' },
+              { key: 'max_drawdown_pct', label: 'Max Drawdown', unit: '%', min: 5, max: 30, step: 1, desc: 'Kill-switch if portfolio drops below this percentage' },
+              { key: 'daily_loss_limit_pct', label: 'Daily Loss Limit', unit: '%', min: 1, max: 10, step: 0.5, desc: 'Stop trading today if losses exceed this' },
+              { key: 'max_positions', label: 'Max Open Positions', unit: '', min: 1, max: 10, step: 1, desc: 'How many concurrent trades allowed' },
+              { key: 'risk_per_trade_pct', label: 'Risk Per Trade', unit: '%', min: 0.5, max: 5, step: 0.5, desc: 'Maximum capital per single trade' },
+              { key: 'min_risk_reward', label: 'Min Risk:Reward', unit: ':1', min: 1, max: 5, step: 0.5, desc: 'Minimum reward-to-risk ratio' },
+              { key: 'max_sl_pct', label: 'Max Stop Loss', unit: '%', min: 1, max: 15, step: 1, desc: 'Maximum SL distance from entry price' },
             ].map(field => (
               <div key={field.key} className="flex items-center justify-between gap-4">
                 <div className="flex-1 min-w-0">
@@ -659,8 +659,8 @@ export default function SettingsPage() {
 
             <div className="flex items-center justify-between gap-4 pt-2">
               <div>
-                <div className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>Početni Kapital</div>
-                <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Početna vrijednost portfolia u USD</div>
+                <div className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>Initial Capital</div>
+                <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Starting portfolio value in USD</div>
               </div>
               <input
                 type="number"
@@ -678,21 +678,21 @@ export default function SettingsPage() {
                 className="px-5 py-2 text-[11px] font-bold rounded-lg transition-colors disabled:opacity-30"
                 style={{ background: 'var(--green)', color: '#000' }}
               >
-                SAČUVAJ LIMITE
+                SAVE LIMITS
               </button>
             </div>
           </div>
         </Section>
 
         {/* ─── TELEGRAM ───────────────────────────────────────────── */}
-        <Section title="Telegram Notifikacije" icon="📱"
-          badge={<Badge text={settings?.telegram_configured ? 'AKTIVNO' : 'NIJE KONFIGURISAN'} ok={!!settings?.telegram_configured} />}
+        <Section title="Telegram Notifications" icon="📱"
+          badge={<Badge text={settings?.telegram_configured ? 'ACTIVE' : 'NOT CONFIGURED'} ok={!!settings?.telegram_configured} />}
         >
           <div className="space-y-3">
             <div className="flex items-center justify-between mb-3">
               <div>
-                <div className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>Notifikacije</div>
-                <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Šalje alert na telefon za svaki trade</div>
+                <div className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>Notifications</div>
+                <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Sends an alert to your phone for every trade</div>
               </div>
               <button
                 onClick={() => saveField({ notifications_enabled: !settings?.notifications_enabled })}
@@ -713,7 +713,7 @@ export default function SettingsPage() {
                 type="password"
                 value={tgToken}
                 onChange={e => setTgToken(e.target.value)}
-                placeholder={settings?.telegram_configured ? 'Unesi novi za promjenu...' : 'Unesi Bot Token od @BotFather'}
+                placeholder={settings?.telegram_configured ? 'Enter new to change...' : 'Enter Bot Token from @BotFather'}
                 className="w-full px-3 py-2 text-sm rounded-lg font-mono"
                 style={{ background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
               />
@@ -724,7 +724,7 @@ export default function SettingsPage() {
                 type="text"
                 value={tgChatId}
                 onChange={e => setTgChatId(e.target.value)}
-                placeholder="Tvoj Chat ID (pošalji /start @userinfobot)"
+                placeholder="Your Chat ID (send /start to @userinfobot)"
                 className="w-full px-3 py-2 text-sm rounded-lg font-mono"
                 style={{ background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
               />
@@ -735,21 +735,21 @@ export default function SettingsPage() {
                 className="px-4 py-2 text-[11px] font-bold rounded-lg transition-colors disabled:opacity-30"
                 style={{ background: 'var(--green)', color: '#000' }}
               >
-                SAČUVAJ TELEGRAM
+                SAVE TELEGRAM
               </button>
             </div>
           </div>
         </Section>
 
         {/* ─── WHATSAPP ─────────────────────────────────────────────── */}
-        <Section title="WhatsApp Grupa" icon="💬"
-          badge={<Badge text={settings?.whatsapp_configured ? 'POVEZAN' : 'NIJE KONFIGURISAN'} ok={!!settings?.whatsapp_configured} />}
+        <Section title="WhatsApp Group" icon="💬"
+          badge={<Badge text={settings?.whatsapp_configured ? 'CONNECTED' : 'NOT CONFIGURED'} ok={!!settings?.whatsapp_configured} />}
         >
           <div className="space-y-3">
             <div className="flex items-center justify-between mb-2">
               <div>
-                <div className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>WhatsApp Notifikacije</div>
-                <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Šalje signale, trade-ove i izvještaje u WhatsApp grupu</div>
+                <div className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>WhatsApp Notifications</div>
+                <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Sends signals, trades and reports to the WhatsApp group</div>
               </div>
               <button
                 onClick={() => saveField({ whatsapp_enabled: !settings?.whatsapp_enabled })}
@@ -768,23 +768,23 @@ export default function SettingsPage() {
               <div className="mb-3 p-3 rounded-lg flex items-center gap-3" style={{ background: 'rgba(0,255,163,0.06)', border: '1px solid rgba(0,255,163,0.2)' }}>
                 <StatusDot ok />
                 <div>
-                  <div className="text-[11px] font-bold" style={{ color: 'var(--green)' }}>Green API Povezan</div>
+                  <div className="text-[11px] font-bold" style={{ color: 'var(--green)' }}>Green API Connected</div>
                   <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
                     Instance: {settings.whatsapp_instance_id}
-                    {settings.whatsapp_group_name && ` | Grupa: ${settings.whatsapp_group_name}`}
-                    {settings.whatsapp_group_id && !settings.whatsapp_group_name && ` | Grupa: ${settings.whatsapp_group_id}`}
+                    {settings.whatsapp_group_name && ` | Group: ${settings.whatsapp_group_name}`}
+                    {settings.whatsapp_group_id && !settings.whatsapp_group_name && ` | Group: ${settings.whatsapp_group_id}`}
                   </div>
                   <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                    Token: {settings.whatsapp_api_token_set ? '✅ u bazi' : '❌ NIJE SAČUVAN'}
+                    Token: {settings.whatsapp_api_token_set ? '✅ in database' : '❌ NOT SAVED'}
                     {' | '}Enabled: {settings.whatsapp_enabled ? '✅' : '❌ OFF'}
-                    {' | '}Grupa: {settings.whatsapp_group_id ? '✅' : '❌ NEMA'}
+                    {' | '}Group: {settings.whatsapp_group_id ? '✅' : '❌ NONE'}
                   </div>
                 </div>
               </div>
             )}
             {!settings?.whatsapp_configured && settings?.whatsapp_instance_id && (
               <div className="mb-3 p-3 rounded-lg text-[11px] font-bold" style={{ background: 'rgba(255,204,0,0.08)', color: 'var(--amber)', border: '1px solid var(--amber)' }}>
-                Instance ID postoji ali API Token NEDOSTAJE u bazi. Unesi token i klikni Sačuvaj.
+                Instance ID exists but API Token is MISSING from database. Enter token and click Save.
               </div>
             )}
 
@@ -794,7 +794,7 @@ export default function SettingsPage() {
                 type="text"
                 value={waInstanceId}
                 onChange={e => setWaInstanceId(e.target.value)}
-                placeholder={settings?.whatsapp_instance_id || 'npr. 7107578215'}
+                placeholder={settings?.whatsapp_instance_id || 'e.g. 7107578215'}
                 className="w-full px-3 py-2 text-sm rounded-lg font-mono"
                 style={{ background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
               />
@@ -805,7 +805,7 @@ export default function SettingsPage() {
                 type="password"
                 value={waApiToken}
                 onChange={e => setWaApiToken(e.target.value)}
-                placeholder={settings?.whatsapp_configured ? 'Unesi novi za promjenu...' : 'Unesi API Token od Green API'}
+                placeholder={settings?.whatsapp_configured ? 'Enter new to change...' : 'Enter API Token from Green API'}
                 className="w-full px-3 py-2 text-sm rounded-lg font-mono"
                 style={{ background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
               />
@@ -816,26 +816,26 @@ export default function SettingsPage() {
                 className="px-4 py-2 text-[11px] font-bold rounded-lg transition-colors disabled:opacity-30"
                 style={{ border: '1px solid var(--cyan)', color: 'var(--cyan)' }}
               >
-                {waTesting ? 'TESTIRAM...' : 'TESTIRAJ KONEKCIJU'}
+                {waTesting ? 'TESTING...' : 'TEST CONNECTION'}
               </button>
               <button onClick={loadWaGroups} disabled={waGroupsLoading || !waApiToken}
                 className="px-4 py-2 text-[11px] font-bold rounded-lg transition-colors disabled:opacity-30"
                 style={{ border: '1px solid var(--amber)', color: 'var(--amber)' }}
               >
-                {waGroupsLoading ? 'UČITAVAM...' : 'UČITAJ GRUPE'}
+                {waGroupsLoading ? 'LOADING...' : 'LOAD GROUPS'}
               </button>
             </div>
 
             {waGroups.length > 0 && (
               <div>
-                <label className="text-[10px] font-bold block mb-1" style={{ color: 'var(--text-muted)' }}>ODABERI GRUPU</label>
+                <label className="text-[10px] font-bold block mb-1" style={{ color: 'var(--text-muted)' }}>SELECT GROUP</label>
                 <select
                   value={waSelectedGroup || settings?.whatsapp_group_id || ''}
                   onChange={e => setWaSelectedGroup(e.target.value)}
                   className="w-full px-3 py-2 text-sm rounded-lg"
                   style={{ background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
                 >
-                  <option value="">— Odaberi grupu —</option>
+                  <option value="">— Select a group —</option>
                   {waGroups.map(g => (
                     <option key={g.id} value={g.id}>{g.name}</option>
                   ))}
@@ -856,43 +856,43 @@ export default function SettingsPage() {
                 className="px-4 py-2 text-[11px] font-bold rounded-lg transition-colors disabled:opacity-30"
                 style={{ background: 'var(--green)', color: '#000' }}
               >
-                SAČUVAJ WHATSAPP
+                SAVE WHATSAPP
               </button>
               {(waSelectedGroup || settings?.whatsapp_group_id) && waApiToken && (
                 <button onClick={sendTestWaMessage} disabled={waTesting}
                   className="px-4 py-2 text-[11px] font-bold rounded-lg transition-colors disabled:opacity-30"
                   style={{ border: '1px solid var(--purple)', color: 'var(--purple)' }}
                 >
-                  POŠALJI TEST PORUKU
+                  SEND TEST MESSAGE
                 </button>
               )}
             </div>
           </div>
 
           <div className="mt-4 p-3 rounded-lg text-[10px]" style={{ background: 'var(--bg-secondary)', color: 'var(--text-muted)' }}>
-            <strong>Setup:</strong> green-api.com → Kreiraj instancu → Skeniraj QR → Kopiraj Instance ID + API Token
+            <strong>Setup:</strong> green-api.com → Create instance → Scan QR → Copy Instance ID + API Token
           </div>
         </Section>
 
         {/* ─── SAFETY STATUS + KILL SWITCH ─────────────────────────── */}
-        <Section title="Sigurnosni Status" icon="🚨"
-          badge={safety && <Badge text={safety.safe ? 'SVE OK' : 'UPOZORENJE'} ok={safety.safe} />}
+        <Section title="Safety Status" icon="🚨"
+          badge={safety && <Badge text={safety.safe ? 'ALL OK' : 'WARNING'} ok={safety.safe} />}
         >
           {safety ? (
             <div className="space-y-4">
               <div className="flex items-center gap-3 mb-2">
                 <span className={cn('w-4 h-4 rounded-full', safety.safe ? 'bg-[var(--green)]' : 'bg-[var(--red)] animate-pulse')} />
                 <span className={cn('text-sm font-bold', safety.safe ? 'text-[var(--green)]' : 'text-[var(--red)]')}>
-                  {safety.safe ? 'Svi sistemi OK' : (safety.reason || 'Problem detektovan')}
+                  {safety.safe ? 'All systems OK' : (safety.reason || 'Problem detected')}
                 </span>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 {[
                   { label: 'Drawdown', value: `${(safety.drawdownPct * 100).toFixed(1)}%`, ok: safety.drawdownPct < 0.15 },
-                  { label: 'Današnji P&L', value: `${safety.todayPnl >= 0 ? '+' : ''}$${safety.todayPnl.toFixed(0)}`, ok: safety.todayPnl >= 0 },
-                  { label: 'Otvorene Pozicije', value: `${safety.openPositions} / ${safety.maxPositions}`, ok: safety.openPositions < safety.maxPositions },
-                  { label: 'Kapital', value: `$${safety.currentCapital.toLocaleString()}`, ok: true },
+                  { label: "Today's P&L", value: `${safety.todayPnl >= 0 ? '+' : ''}$${safety.todayPnl.toFixed(0)}`, ok: safety.todayPnl >= 0 },
+                  { label: 'Open Positions', value: `${safety.openPositions} / ${safety.maxPositions}`, ok: safety.openPositions < safety.maxPositions },
+                  { label: 'Capital', value: `$${safety.currentCapital.toLocaleString()}`, ok: true },
                 ].map(s => (
                   <div key={s.label} className="p-3 rounded-lg" style={{ background: 'var(--bg-secondary)' }}>
                     <div className="text-[10px] font-bold" style={{ color: 'var(--text-muted)' }}>{s.label}</div>
@@ -909,8 +909,8 @@ export default function SettingsPage() {
                     <div className="text-sm font-bold" style={{ color: 'var(--red)' }}>Kill Switch</div>
                     <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
                       {safety.killSwitchActive
-                        ? 'AKTIVAN — sav trading je zaustavljen'
-                        : 'Zaustavi sav trading odmah (24h)'
+                        ? 'ACTIVE — all trading is stopped'
+                        : 'Stop all trading immediately (24h)'
                       }
                     </div>
                   </div>
@@ -922,13 +922,13 @@ export default function SettingsPage() {
                         : 'bg-[var(--red)] text-white hover:brightness-110'
                     )}
                   >
-                    {safety.killSwitchActive ? 'DEAKTIVIRAJ' : 'AKTIVIRAJ KILL SWITCH'}
+                    {safety.killSwitchActive ? 'DEACTIVATE' : 'ACTIVATE KILL SWITCH'}
                   </button>
                 </div>
               </div>
             </div>
           ) : (
-            <div className="text-center py-6 text-[11px]" style={{ color: 'var(--text-muted)' }}>Učitavam sigurnosni status...</div>
+            <div className="text-center py-6 text-[11px]" style={{ color: 'var(--text-muted)' }}>Loading safety status...</div>
           )}
         </Section>
 
@@ -936,9 +936,9 @@ export default function SettingsPage() {
         <Section title="Auto-Trading" icon="🤖">
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>Automatsko Izvršavanje</div>
+              <div className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>Automatic Execution</div>
               <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                Kad je uključeno, AI automatski otvara/zatvara trade-ove. Kad je isključeno, samo generiše signale.
+                When enabled, AI automatically opens/closes trades. When disabled, it only generates signals.
               </div>
             </div>
             <button
@@ -955,32 +955,32 @@ export default function SettingsPage() {
           </div>
           {settings?.auto_trade_enabled && isLive && (
             <div className="mt-3 p-3 rounded-lg text-[11px] font-bold" style={{ background: 'rgba(255,51,102,0.08)', color: 'var(--red)', border: '1px solid var(--red)' }}>
-              Auto-trading je AKTIVAN sa PRAVIM novcem. AI signali se izvršavaju na {EXCHANGES.find(e => e.id === settings?.primary_exchange)?.name || 'primarnom exchange-u'}.
+              Auto-trading is ACTIVE with REAL money. AI signals are executed on {EXCHANGES.find(e => e.id === settings?.primary_exchange)?.name || 'the primary exchange'}.
             </div>
           )}
         </Section>
 
         {/* ─── APPEARANCE ─────────────────────────────────────────── */}
-        <Section title="Izgled" icon="🎨">
+        <Section title="Appearance" icon="🎨">
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>Tema</div>
-              <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Svijetli ili tamni mod</div>
+              <div className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>Theme</div>
+              <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Light or dark mode</div>
             </div>
             <button onClick={toggle}
               className="px-4 py-2 text-sm font-bold rounded-lg transition-colors"
               style={{ border: '1px solid var(--border)', color: 'var(--text-primary)', background: 'var(--bg-secondary)' }}
             >
-              {theme === 'light' ? 'TAMNI MOD' : 'SVIJETLI MOD'}
+              {theme === 'light' ? 'DARK MODE' : 'LIGHT MODE'}
             </button>
           </div>
         </Section>
 
         {/* ─── PROFILE ────────────────────────────────────────────── */}
-        <Section title="Profil" icon="👤">
+        <Section title="Profile" icon="👤">
           <div className="space-y-3">
             {[
-              { label: 'Ime', value: user?.name },
+              { label: 'Name', value: user?.name },
               { label: 'Email', value: user?.email },
               { label: 'User ID', value: user?.id, mono: true },
             ].map(row => (
@@ -993,7 +993,7 @@ export default function SettingsPage() {
             ))}
             <div className="pt-3 border-t border-[var(--border)]">
               <button onClick={handleLogout} className="text-sm font-bold hover:underline" style={{ color: 'var(--red)' }}>
-                Odjavi Se
+                Log Out
               </button>
             </div>
           </div>
@@ -1001,7 +1001,7 @@ export default function SettingsPage() {
 
         {/* ─── FOOTER ─────────────────────────────────────────────── */}
         <div className="text-center py-6 text-[10px]" style={{ color: 'var(--text-muted)' }}>
-          APEX Trading Terminal v1.0 — Svi podaci su enkriptovani
+          APEX Trading Terminal v1.0 — All data is encrypted
         </div>
       </main>
     </div>

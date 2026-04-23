@@ -1,8 +1,28 @@
 import { createServiceSupabase } from '@/lib/supabase'
 
 const MAX_DRAWDOWN_HARD_STOP = 0.75  // 75% — only kill switch at catastrophic level
-const DAILY_LOSS_LIMIT_PCT = 0.03    // 3% max daily loss
+// Raised 3% → 5% on 2026-04-23: with R:R 2.25:1 and 1.5% risk/trade,
+// 2 consecutive SLs = 3% = instant block. 5% gives room for 3 losses + recovery.
+const DAILY_LOSS_LIMIT_PCT = 0.05
 const MAX_POSITIONS = 3
+
+// Dubai is our business timezone (UTC+4). Using UTC midnight as day boundary
+// caused morning SLs (Dubai ~04:30) to eat the whole day's loss budget.
+// Compute "day start" as 00:00 Dubai → 20:00 UTC previous day.
+export const DUBAI_UTC_OFFSET_HOURS = 4
+export function dubaiDayStartUTC(): Date {
+  const now = new Date()
+  const dubaiNow = new Date(now.getTime() + DUBAI_UTC_OFFSET_HOURS * 3600_000)
+  // midnight Dubai that bounds the current Dubai day
+  const dubaiMidnight = new Date(Date.UTC(
+    dubaiNow.getUTCFullYear(),
+    dubaiNow.getUTCMonth(),
+    dubaiNow.getUTCDate(),
+    0, 0, 0, 0,
+  ))
+  // convert back to UTC: subtract offset
+  return new Date(dubaiMidnight.getTime() - DUBAI_UTC_OFFSET_HOURS * 3600_000)
+}
 
 export interface SafetyStatus {
   safe: boolean
@@ -63,10 +83,9 @@ export async function checkSafety(userId?: string): Promise<SafetyStatus> {
   const drawdownPct = peakCapital > 0 ? Math.max(0, (peakCapital - currentCapital) / peakCapital) : 0
   const drawdownOk = drawdownPct < MAX_DRAWDOWN_HARD_STOP
 
-  // Daily loss: sum of today's closed trades from BOTH tables
-  const todayStart = new Date()
-  todayStart.setUTCHours(0, 0, 0, 0)
-  const todayISO = todayStart.toISOString()
+  // Daily loss: sum of today's closed trades from BOTH tables.
+  // Day boundary is Dubai midnight (UTC+4), not UTC midnight.
+  const todayISO = dubaiDayStartUTC().toISOString()
 
   const { data: todayLiveTrades } = await db
     .from('trades')

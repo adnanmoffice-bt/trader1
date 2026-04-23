@@ -712,43 +712,130 @@ async function runMeeting(
                   await logExec('ok',
                     `${instrument}: REAL BUY filled qty=${result.executedQty.toFixed(6)} @ $${result.avgPrice.toFixed(2)} (orderId:${result.orderId})`)
 
-                  // Place SL + TP (don't fail the whole trade if these error; positions cron will reconcile)
-                  const slOk = await ex.setStopLoss(instrument, result.executedQty, sl).catch(() => false)
-                  const tpOk = await ex.setTakeProfit(instrument, result.executedQty, tp).catch(() => false)
-                  if (!slOk || !tpOk) {
-                    await logExec('warn',
-                      `${instrument}: SL/TP order placement partial (sl:${slOk} tp:${tpOk}) — positions cron will reconcile`)
+                  // SL placement is CRITICAL — retry up to 3 times with backoff.
+                  // A naked long position is unlimited downside risk.
+                  let slOk = false
+                  for (let attempt = 1; attempt <= 3 && !slOk; attempt++) {
+                    slOk = await ex.setStopLoss(instrument, result.executedQty, sl).catch(() => false)
+                    if (!slOk && attempt < 3) {
+                      await logExec('warn', `${instrument}: SL attempt ${attempt}/3 failed, retrying...`)
+                      await new Promise(r => setTimeout(r, 500 * attempt))
+                    }
                   }
 
-                  await db.from('trades').insert({
-                    signal_id: saved.id,
-                    user_id: settings!.user_id,
-                    instrument,
-                    direction: 'long',
-                    quantity: result.executedQty,
-                    entry_price: result.avgPrice,
-                    stop_loss: sl,
-                    take_profit: tp,
-                    status: 'open',
-                    is_demo: false,
-                    notes: `Binance order ${result.orderId} | risk $${notionalUsd.toFixed(0)} | ${reasoning.slice(0, 180)}`,
-                  })
+                  // If SL could not be placed, emergency-close the naked position.
+                  let emergencyExit: { avgPrice: number; executedQty: number } | null = null
+                  if (!slOk) {
+                    await logExec('error',
+                      `${instrument}: SL placement FAILED 3x — triggering emergency marketSell to avoid naked position`)
+                    const closeRes = await ex.marketSell(instrument, result.executedQty).catch(() => null)
+                    if (closeRes) {
+                      emergencyExit = { avgPrice: closeRes.avgPrice, executedQty: closeRes.executedQty }
+                      await logExec('error',
+                        `${instrument}: emergency close filled qty=${closeRes.executedQty.toFixed(6)} @ $${closeRes.avgPrice.toFixed(2)} — trade aborted; no open position`)
+                    } else {
+                      await logExec('error',
+                        `${instrument}: CRITICAL — SL placement failed AND emergency marketSell failed. Position is NAKED on ${ex.config.name}. Manual intervention required (Binance UI → Spot → sell ${instrument.split('/')[0]}).`)
+                    }
+                  } else {
+                    // SL in place → try TP (not critical; positions cron trails if this fails)
+                    const tpOk = await ex.setTakeProfit(instrument, result.executedQty, tp).catch(() => false)
+                    if (!tpOk) {
+                      await logExec('warn',
+                        `${instrument}: TP placement failed — positions cron will manage exit via trailing SL`)
+                    }
+                  }
 
-                  await db.from('positions').upsert({
-                    user_id: settings!.user_id,
-                    instrument,
-                    direction: 'long',
-                    quantity: result.executedQty,
-                    avg_entry_price: result.avgPrice,
-                    current_price: result.avgPrice,
-                    stop_loss: sl,
-                    take_profit: tp,
-                    is_demo: false,
-                  }, { onConflict: 'user_id,instrument,is_demo' })
+                  // DB bookkeeping — 3 paths:
+                  //   A) SL OK                  → normal open trade + open position
+                  //   B) SL failed, emergency OK → record closed trade, no open position
+                  //   C) SL failed AND emergency failed → record open NAKED trade (flag for operator)
+                  if (emergencyExit) {
+                    // Path B: already flat on exchange
+                    const pnl = (emergencyExit.avgPrice - result.avgPrice) * emergencyExit.executedQty
+                    const pnlPct = (pnl / (result.avgPrice * emergencyExit.executedQty)) * 100
+                    await db.from('trades').insert({
+                      signal_id: saved.id,
+                      user_id: settings!.user_id,
+                      instrument,
+                      direction: 'long',
+                      quantity: result.executedQty,
+                      entry_price: result.avgPrice,
+                      exit_price: emergencyExit.avgPrice,
+                      stop_loss: sl,
+                      take_profit: tp,
+                      pnl,
+                      pnl_pct: pnlPct,
+                      pnl_aed: pnl,
+                      status: 'stopped',
+                      is_demo: false,
+                      closed_at: new Date().toISOString(),
+                      notes: `EMERGENCY_SL_FAIL: SL placement rejected 3x — closed at market. Binance order ${result.orderId}.`,
+                    })
+                  } else if (!slOk) {
+                    // Path C: naked position — flag heavily so operator notices
+                    await db.from('trades').insert({
+                      signal_id: saved.id,
+                      user_id: settings!.user_id,
+                      instrument,
+                      direction: 'long',
+                      quantity: result.executedQty,
+                      entry_price: result.avgPrice,
+                      stop_loss: sl,
+                      take_profit: tp,
+                      status: 'open',
+                      is_demo: false,
+                      notes: `⚠ NAKED POSITION: SL placement failed AND emergency sell failed. Binance order ${result.orderId}. MANUAL CLOSE REQUIRED.`,
+                    })
+                    await db.from('positions').upsert({
+                      user_id: settings!.user_id,
+                      instrument,
+                      direction: 'long',
+                      quantity: result.executedQty,
+                      avg_entry_price: result.avgPrice,
+                      current_price: result.avgPrice,
+                      stop_loss: sl,
+                      take_profit: tp,
+                      is_demo: false,
+                    }, { onConflict: 'user_id,instrument,is_demo' })
+                  } else {
+                    // Path A: happy path
+                    await db.from('trades').insert({
+                      signal_id: saved.id,
+                      user_id: settings!.user_id,
+                      instrument,
+                      direction: 'long',
+                      quantity: result.executedQty,
+                      entry_price: result.avgPrice,
+                      stop_loss: sl,
+                      take_profit: tp,
+                      status: 'open',
+                      is_demo: false,
+                      notes: `Binance order ${result.orderId} | risk $${notionalUsd.toFixed(0)} | ${reasoning.slice(0, 180)}`,
+                    })
 
+                    await db.from('positions').upsert({
+                      user_id: settings!.user_id,
+                      instrument,
+                      direction: 'long',
+                      quantity: result.executedQty,
+                      avg_entry_price: result.avgPrice,
+                      current_price: result.avgPrice,
+                      stop_loss: sl,
+                      take_profit: tp,
+                      is_demo: false,
+                    }, { onConflict: 'user_id,instrument,is_demo' })
+                  }
+
+                  // WhatsApp decision notification — message reflects actual outcome
+                  const decisionMsg = emergencyExit
+                    ? `⚠ EMERGENCY CLOSE: LONG ${instrument} BOUGHT @ $${result.avgPrice.toFixed(2)} then SOLD @ $${emergencyExit.avgPrice.toFixed(2)} (SL placement failed). Binance order ${result.orderId}.`
+                    : !slOk
+                      ? `🚨 NAKED POSITION ALERT: LONG ${instrument} @ $${result.avgPrice.toFixed(2)} — SL and emergency close BOTH failed. MANUAL ACTION REQUIRED on Binance.`
+                      : `REAL TRADE EXECUTED: LONG ${instrument} @ $${result.avgPrice.toFixed(2)} | SL:$${sl.toFixed(2)} TP:$${tp.toFixed(2)} | qty ${result.executedQty.toFixed(6)} ($${notionalUsd.toFixed(0)}) | Binance order ${result.orderId}`
                   await waDecision({
                     instrument,
-                    decision: `REAL TRADE EXECUTED: LONG ${instrument} @ $${result.avgPrice.toFixed(2)} | SL:$${sl.toFixed(2)} TP:$${tp.toFixed(2)} | qty ${result.executedQty.toFixed(6)} ($${notionalUsd.toFixed(0)}) | Binance order ${result.orderId}`,
+                    decision: decisionMsg,
                     execute: true,
                     direction: 'long', entry: result.avgPrice, sl, tp, rr,
                     votesFor: voteFor, votesAgainst: voteAgainst,

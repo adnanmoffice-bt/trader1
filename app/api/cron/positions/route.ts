@@ -1,11 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceSupabase } from '@/lib/supabase'
-import { ExchangeManager } from '@/lib/exchanges'
+import { ExchangeManager, getPrimaryExchange } from '@/lib/exchanges'
 import { sendPositionAlert } from '@/lib/telegram'
 import { notifyPositionAlert as waPositionAlert } from '@/lib/whatsapp'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
+
+// Map APEX instrument → Binance base asset ticker.
+// Most are literal (BTC/USD → BTC), but XAU/USD is tokenized as PAXG on Binance.
+function getBaseAsset(instrument: string): string {
+  const map: Record<string, string> = { 'XAU/USD': 'PAXG' }
+  return map[instrument] ?? instrument.split('/')[0]
+}
 
 export async function GET(req: NextRequest) {
   const auth = req.headers.get('authorization')
@@ -22,6 +29,7 @@ export async function GET(req: NextRequest) {
 
   const closed: string[] = []
   const updated: string[] = []
+  const skipped: string[] = []
 
   for (const pos of positions) {
     const ticker = await mgr.getBestTicker(pos.instrument)
@@ -78,22 +86,128 @@ export async function GET(req: NextRequest) {
       console.error(`[positions] Invalid entry/qty for ${pos.instrument}: entry=${entryPrice} qty=${qty}`)
       continue
     }
-    const pnl = pos.direction === 'long'
-      ? (cur - entryPrice) * qty
-      : (entryPrice - cur) * qty
-    const pnlPct = (pnl / (entryPrice * qty)) * 100
-    const pnlAed = pnl
+
     const reason = hitSL ? 'stop_loss' : 'take_profit'
 
-    // CRITICAL: Update trade FIRST with proper user_id + is_demo filter, then delete position
+    // ─────────────────────────────────────────────────────────────────────────
+    // EXCHANGE RECONCILIATION (only for real, non-demo positions)
+    // ─────────────────────────────────────────────────────────────────────────
+    // Before marking the DB as closed, verify the actual exchange state.
+    // Three possible exchange states:
+    //   (a) asset already sold (pre-placed SL/TP fired on Binance) → use cur as approx exit
+    //   (b) asset still held   (pre-placed orders never fired)    → cancel open orders + force marketSell
+    //   (c) exchange error                                         → skip this cycle, retry next run
+    //
+    // Demo positions skip this branch and close directly in DB as before.
+    let exitPrice = cur
+    let exchangeVerified = false
+    let forcedClose = false
+
+    if (!pos.is_demo) {
+      try {
+        const ex = getPrimaryExchange()
+        if (!ex.isConfigured()) {
+          await db.from('agent_logs').insert({
+            agent: 'positions-cron', level: 'warn',
+            message: `${pos.instrument}: close skipped — primary exchange not configured; cannot verify real position state`,
+          })
+          skipped.push(`${pos.instrument} (exchange not configured)`)
+          continue
+        }
+
+        const balances = await ex.getBalances()
+        const base = getBaseAsset(pos.instrument)
+        const assetBal = balances.find(b => b.asset === base)
+        const exchangeTotal = assetBal?.total ?? 0
+        const exchangeFree = assetBal?.free ?? 0
+
+        if (exchangeTotal >= qty * 0.9) {
+          // (b) Full position still on exchange → pre-placed SL/TP did not fire.
+          //     Cancel any leftover open orders + force marketSell.
+          await ex.cancelAllOrders(pos.instrument).catch(() => { /* non-critical */ })
+          const sellQty = Math.min(qty, exchangeFree)
+          if (sellQty <= 0) {
+            await db.from('agent_logs').insert({
+              agent: 'positions-cron', level: 'warn',
+              message: `${pos.instrument}: position flagged closed but balance is locked (free=${exchangeFree} total=${exchangeTotal}) — retry next cycle`,
+            })
+            skipped.push(`${pos.instrument} (balance locked)`)
+            continue
+          }
+          const sellRes = await ex.marketSell(pos.instrument, sellQty).catch(() => null)
+          if (!sellRes) {
+            await db.from('agent_logs').insert({
+              agent: 'positions-cron', level: 'error',
+              message: `${pos.instrument}: force marketSell FAILED during reconciliation — retry next cycle. Manual check advised.`,
+            })
+            skipped.push(`${pos.instrument} (force sell failed)`)
+            continue
+          }
+          exitPrice = sellRes.avgPrice
+          forcedClose = true
+          await db.from('agent_logs').insert({
+            agent: 'positions-cron', level: 'ok',
+            message: `${pos.instrument}: force-closed qty=${sellRes.executedQty.toFixed(6)} @ $${sellRes.avgPrice.toFixed(2)} (pre-placed ${reason.toUpperCase()} order had not fired)`,
+          })
+          exchangeVerified = true
+        } else if (exchangeTotal < qty * 0.1) {
+          // (a) Almost nothing left → pre-placed SL/TP already sold the asset.
+          //     Clean up any stale open orders + close DB with current ticker as exit approximation.
+          await ex.cancelAllOrders(pos.instrument).catch(() => { /* non-critical */ })
+          exitPrice = cur
+          exchangeVerified = true
+        } else {
+          // Weird partial state (e.g. 50% filled SL). Sell whatever is left.
+          await ex.cancelAllOrders(pos.instrument).catch(() => { /* non-critical */ })
+          const sellQty = Math.min(exchangeFree, qty)
+          if (sellQty > 0) {
+            const sellRes = await ex.marketSell(pos.instrument, sellQty).catch(() => null)
+            if (sellRes) {
+              exitPrice = sellRes.avgPrice
+              forcedClose = true
+              await db.from('agent_logs').insert({
+                agent: 'positions-cron', level: 'warn',
+                message: `${pos.instrument}: partial state — sold residual qty=${sellRes.executedQty.toFixed(6)} @ $${sellRes.avgPrice.toFixed(2)} (exchange had ${exchangeTotal} of expected ${qty})`,
+              })
+              exchangeVerified = true
+            } else {
+              skipped.push(`${pos.instrument} (partial sell failed)`)
+              continue
+            }
+          } else {
+            exitPrice = cur
+            exchangeVerified = true
+          }
+        }
+      } catch (e) {
+        // Any unexpected exchange-API failure → do NOT close the DB yet.
+        await db.from('agent_logs').insert({
+          agent: 'positions-cron', level: 'error',
+          message: `${pos.instrument}: exchange reconciliation threw — ${String(e).slice(0, 200)}. Skipping this cycle.`,
+        })
+        skipped.push(`${pos.instrument} (exception)`)
+        continue
+      }
+    }
+
+    const pnl = pos.direction === 'long'
+      ? (exitPrice - entryPrice) * qty
+      : (entryPrice - exitPrice) * qty
+    const pnlPct = (pnl / (entryPrice * qty)) * 100
+    const pnlAed = pnl
+
+    // Update trade row (unchanged logic, just uses verified exitPrice now)
     const { error: tradeErr } = await db.from('trades')
       .update({
         status:     hitSL ? 'stopped' : 'closed',
-        exit_price: cur,
+        exit_price: exitPrice,
         pnl,
         pnl_pct:    pnlPct,
         pnl_aed:    pnlAed,
         closed_at:  new Date().toISOString(),
+        notes:      forcedClose
+          ? `Force-closed by positions cron (pre-placed ${reason.toUpperCase()} did not fire)`
+          : undefined,
       })
       .eq('instrument', pos.instrument)
       .eq('user_id', pos.user_id)
@@ -108,7 +222,7 @@ export async function GET(req: NextRequest) {
     // Also close matching demo_trades
     await db.from('demo_trades')
       .update({
-        exit_price: cur,
+        exit_price: exitPrice,
         exit_time: new Date().toISOString(),
         exit_reason: reason,
         pnl,
@@ -135,13 +249,15 @@ export async function GET(req: NextRequest) {
     await sendPositionAlert(pos.instrument, reason, pnlAed, pnlPct).catch(e => console.error('[positions] Telegram error:', e))
     await waPositionAlert(pos.instrument, reason, pnlAed, pnlPct).catch(e => console.error('[positions] WhatsApp error:', e))
 
-    closed.push(`${pos.instrument} ${reason} P&L: $${pnlAed.toFixed(0)}`)
+    const suffix = pos.is_demo ? '[demo]' : exchangeVerified ? (forcedClose ? '[forced]' : '[verified]') : '[unverified]'
+    closed.push(`${pos.instrument} ${reason} P&L: $${pnlAed.toFixed(0)} ${suffix}`)
   }
 
   return NextResponse.json({
     success: true,
     updated: updated.length,
     closed,
+    skipped,
     timestamp: new Date().toISOString(),
   })
 }

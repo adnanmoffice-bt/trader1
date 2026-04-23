@@ -425,3 +425,5 @@ All computed from OHLCV candle data:
 | 2026-04-21 | fix: macro-context no longer sets noTradeReason from high-impact event count — war-room owns that gate |
 | 2026-04-21 | fix: demo cron MIN_SCORE 70 → 78 (all 3 recent losses fired at score=83) |
 | 2026-04-21 | fix: demo cron TECH_SCORE fallback requires trend alignment (price > EMA20 > EMA50) for LONG |
+| 2026-04-23 | ui: nav redesign — 12 top-level items → 5 primary (TERMINAL/WAR ROOM/SIGNALS/ANALYTICS/JOURNAL) + CHARTS/LAB dropdowns with click-outside + Escape close |
+| 2026-04-23 | docs: added CONTEXT.md (AI-agent knowledge file) + .cursor/rules/context-load.mdc auto-load rule |

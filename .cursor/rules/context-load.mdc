@@ -1,0 +1,18 @@
+---
+description: Auto-load APEX project knowledge file
+alwaysApply: true
+---
+
+# APEX context
+
+Before doing anything in this APEX project, read these in order:
+
+1. `CONTEXT.md` (project root) — mandatory; AI-agent knowledge file with hard-won lessons, blacklists, gates, and architecture map.
+2. `APEX_PROJECT_LOG.md` (project root) — master changelog by user.
+3. `.cursor/rules/apex-trading.mdc` — coding conventions.
+
+If a recent commit message starts with `CRITICAL:` or `fix:` and touches `agents/war-room.ts`, `lib/safety.ts`, `lib/risk-controls.ts`, or `lib/exchanges/*`, also read the diff before suggesting changes — these files move real money.
+
+Never re-enable: shorts, SOL/USD, BNB/USD, BB_SQUEEZE trigger. They have caused documented losses.
+
+User language: Bosnian/Croatian/Serbian. Reply concisely in their language unless they switch to English.

@@ -29,10 +29,22 @@ export async function GET(req: NextRequest) {
   try {
     prices = await fetchAllMarketData()
     if (prices.length) {
-      const { error } = await db.from('market_data').upsert(
-        prices.map(({ id: _id, ...rest }) => rest),
-        { onConflict: 'symbol' }
-      )
+      // Dedupe by symbol — fetchAllMarketData can return same symbol twice
+      // (e.g. XAU/USD from both Binance PAXG and Yahoo GC=F). A batch upsert
+      // with ON CONFLICT on 'symbol' fails if the same symbol appears twice.
+      // Postgres: "ON CONFLICT DO UPDATE command cannot affect row a second time"
+      // This has silently broken the whole market_data table since 2026-04-06.
+      // First occurrence wins (Binance is pushed first → crypto-source preferred).
+      const seen = new Set<string>()
+      const deduped = prices
+        .map(({ id: _id, ...rest }) => rest)
+        .filter(p => {
+          if (seen.has(p.symbol)) return false
+          seen.add(p.symbol)
+          return true
+        })
+
+      const { error } = await db.from('market_data').upsert(deduped, { onConflict: 'symbol' })
       if (error) errors.push(`market_data upsert: ${error.message}`)
     } else {
       errors.push('prices: empty result from fetchAllMarketData')

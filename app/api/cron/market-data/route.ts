@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceSupabase } from '@/lib/supabase'
-import { fetchAllMarketData, fetchBinanceKlines, fetchFearGreed } from '@/lib/price-fetcher'
+import { fetchAllMarketData, fetchKlines, fetchFearGreed } from '@/lib/price-fetcher'
 
 export const runtime = 'nodejs'
 export const maxDuration = 30
@@ -15,7 +15,16 @@ export async function GET(req: NextRequest) {
   const errors: string[] = []
   const t0 = Date.now()
 
-  // 1. Fetch latest prices from Binance (parallel, fast)
+  // Heartbeat — lets us confirm the cron actually runs on Vercel.
+  try {
+    await db.from('agent_logs').insert({
+      agent: 'market-data-cron',
+      level: 'info',
+      message: 'start',
+    })
+  } catch { /* non-critical */ }
+
+  // 1. Fetch latest prices from Binance + Yahoo (parallel, fast)
   let prices: Awaited<ReturnType<typeof fetchAllMarketData>> = []
   try {
     prices = await fetchAllMarketData()
@@ -25,18 +34,28 @@ export async function GET(req: NextRequest) {
         { onConflict: 'symbol' }
       )
       if (error) errors.push(`market_data upsert: ${error.message}`)
+    } else {
+      errors.push('prices: empty result from fetchAllMarketData')
     }
   } catch (e) {
-    errors.push(`prices: ${String(e).slice(0, 60)}`)
+    errors.push(`prices: ${String(e).slice(0, 120)}`)
   }
 
-  // 2. Store last 5 hourly candles (parallel)
-  const candleSymbols = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'BNB/USD', 'XAU/USD'] as const
+  // 2. Store last 5 hourly candles for all tradeable symbols.
+  // Uses fetchKlines (universal): Binance for crypto/gold, Yahoo fallback
+  // for BRENT, WTI, SPY, forex. Was crypto-only, which left oil dead.
+  const candleSymbols = [
+    'BTC/USD', 'ETH/USD', 'SOL/USD', 'BNB/USD',
+    'DOGE/USD', 'AVAX/USD', 'LINK/USD',
+    'XAU/USD',
+    'BRENT', 'WTI', 'SPY', 'QQQ',
+    'EUR/USD', 'USD/JPY',
+  ] as const
   try {
     await Promise.allSettled(
       candleSymbols.map(async (sym) => {
-        const candles = await fetchBinanceKlines(sym, '1h', 5)
-        if (!candles.length) return
+        const candles = await fetchKlines(sym, '1h', 5)
+        if (!candles.length) { errors.push(`candles ${sym}: no data`); return }
         const { error } = await db.from('price_history').upsert(
           candles.map(c => ({
             symbol: sym, open: c.open, high: c.high, low: c.low,
@@ -49,7 +68,7 @@ export async function GET(req: NextRequest) {
       })
     )
   } catch (e) {
-    errors.push(`candles: ${String(e).slice(0, 60)}`)
+    errors.push(`candles: ${String(e).slice(0, 120)}`)
   }
 
   // 3. Update open positions with current prices
@@ -84,6 +103,16 @@ export async function GET(req: NextRequest) {
   } catch {
     // non-critical
   }
+
+  // Close-out log entry — single row summarising the run.
+  const summary = `done fetched=${prices.length} fng=${fngValue ?? '?'} errors=${errors.length} dur=${Date.now() - t0}ms`
+  try {
+    await db.from('agent_logs').insert({
+      agent: 'market-data-cron',
+      level: errors.length ? 'warn' : 'ok',
+      message: errors.length ? `${summary} | ${errors.slice(0, 3).join(' ; ')}` : summary,
+    })
+  } catch { /* non-critical */ }
 
   return NextResponse.json({
     success: true,

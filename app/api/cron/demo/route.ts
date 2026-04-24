@@ -403,12 +403,16 @@ async function updateSessionStats(
     max_drawdown:  maxDD,
   }).eq('id', sessionId)
 
-  // Sync portfolio table (used by war-room for capital + daily loss checks)
+  // Sync portfolio table (used by war-room for capital + daily loss checks).
+  // updated_at is intentionally refreshed so downstream crons (morning-briefing,
+  // daily-report) can tell when sync last ran — prevents the "frozen 2026-04-07
+  // row" anomaly surfaced in the 2026-04-24 audit.
   await db.from('portfolio').update({
     capital: initialCapital + totalPnl,
     available_capital: initialCapital + totalPnl,
     realized_pnl: totalPnl,
     win_count: wins,
     loss_count: losses,
+    updated_at: new Date().toISOString(),
   }).eq('is_demo', false).then(({ error }) => { if (error) console.error('[demo] portfolio sync error:', error.message) })
 }

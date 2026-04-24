@@ -1,7 +1,7 @@
 # APEX — AI Agent Knowledge File
 
 > Pročitaj OVO, plus `APEX_PROJECT_LOG.md` (master log korisnika) i `.cursor/rules/apex-trading.mdc`, prije bilo kakvog rada.
-> Posljednje ažurirano: 2026-04-23 nakon kloniranja na novi kompjuter.
+> Posljednje ažurirano: 2026-04-24 nakon 24h audita (seed candles, risk-controls fix, portfolio resync).
 
 ---
 
@@ -114,6 +114,10 @@ RLS: enabled na svim tablama. Realtime: large allow-list.
 17. **`canWithdraw` gate je DISABLED** (per user request 2026-04-23, commit `4d5155e`). API ključ ima withdraw permisiju. Ako bude kompromitovan — rotirati key sa Withdrawals=disabled.
 18. **`pg` u devDependencies** je za potrebe lokalnih SQL-skripti, NE za production.
 19. **`oakscriptjs` je u dependencies** ali se ne koristi nigdje — nijesam siguran zašto je tu, ne diraj.
+20. **MATIC/USD je mapiran na POLUSDT na Binance-u** (Polygon rebrand Sept 2024). Legacy `MATICUSDT` ticker i dalje vraća `ticker/24hr`, ali `klines` podaci su zaleđeni na 2024-09-10. Fixano u `lib/price-fetcher.ts` 2026-04-24.
+21. **`lib/risk-controls.ts` i `lib/safety.ts` MORAJU imati ISTI `DAILY_LOSS_LIMIT_PCT`.** Oba su 0.05 (5%) od 2026-04-24 (audit je pronašao da je risk-controls ostao na 0.03 dok je safety.ts bio 0.05 — commit `be92ffce`). Provjeri oba ako mijenjaš jedan.
+22. **`portfolio.is_demo=true` red je obrisan 2026-04-24** — app koristi samo `is_demo=false` red. Demo cron sada šalje `updated_at` da se timestamp ne zaledi.
+23. **`TELEGRAM_BOT_TOKEN` TRENUTNO NIJE postavljen na Vercel prod-u** (utvrđeno 2026-04-24 preko `/api/debug/env-check`). Telegram alerti su mrtvi. WhatsApp (Green API) radi i zamjenjuje ih.
 
 ## Real-money execution gates (ALL must be true u `war-room.ts`)
 
@@ -140,6 +144,8 @@ Bilo koji false → samo demo trade, nema real exec. Sve loguje u `agent_logs` a
 ```
 
 XAU/USD i Yahoo-source instrumenti su revived u commit `bcbbad3` (oil/commodities preko Yahoo simbola).
+
+**Binance pair mapping** (`lib/price-fetcher.ts`, polje `BINANCE_SYMBOLS`) — svih 13 instrumenata (11 aktivnih + 2 blacklist) pokriveno nakon 2026-04-24 seed-a. Prije toga su ADA/DOT/MATIC/NEAR/APT imali 0 candles jer mapping nije postojao, a MATIC je bio zaleđen na 2024-09-10 (delisting).
 
 ---
 

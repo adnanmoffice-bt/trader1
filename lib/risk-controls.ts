@@ -1,7 +1,7 @@
 import { createServiceSupabase } from '@/lib/supabase'
 import { kellyFraction } from '@/lib/indicators'
 
-const DAILY_LOSS_LIMIT_PCT = 0.03   // 3% — aligned with safety.ts
+const DAILY_LOSS_LIMIT_PCT = 0.05   // 5% — aligned with safety.ts (raised from 3% in commit be92ffce 2026-04-23)
 const MAX_SINGLE_TRADE_PCT = 0.10   // 10% of capital per position
 const MAX_POSITIONS = 3
 const MIN_RR = 1.5

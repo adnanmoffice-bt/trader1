@@ -16,6 +16,13 @@ const BINANCE_SYMBOLS: Record<string, string> = {
   'AVAX/USD': 'AVAXUSDT',
   'LINK/USD': 'LINKUSDT',
   'XAU/USD': 'PAXGUSDT',
+  'ADA/USD': 'ADAUSDT',
+  'DOT/USD': 'DOTUSDT',
+  // Polygon rebranded MATIC -> POL on Binance (Sept 2024). Legacy MATICUSDT
+  // still returns stale 2024 candles, so we route MATIC/USD to the live POL pair.
+  'MATIC/USD': 'POLUSDT',
+  'NEAR/USD': 'NEARUSDT',
+  'APT/USD': 'APTUSDT',
 }
 
 const YAHOO_SYMBOLS: Record<string, string> = {

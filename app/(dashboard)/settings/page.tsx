@@ -53,11 +53,17 @@ interface Settings {
   auto_trade_enabled: boolean
 }
 
+interface WalletAsset { asset: string; free: number; locked: number; total: number }
 interface WalletData {
   configured: boolean
   connected: boolean
-  balances: { asset: string; free: number; locked: number; total: number }[]
+  balances: WalletAsset[]
   summary: { usdt_free: number; usdt_total: number; btc_total: number; eth_total: number; total_assets: number }
+  wallets?: {
+    spot: { assets: WalletAsset[]; usdt_free: number; usdt_total: number; count: number }
+    funding: { assets: WalletAsset[]; usdt_total: number; count: number; ok: boolean }
+    earn_flexible: { assets: WalletAsset[]; usdt_total: number; count: number; ok: boolean }
+  }
   permissions: { can_trade: boolean; can_withdraw: boolean }
 }
 
@@ -562,14 +568,23 @@ export default function SettingsPage() {
           >
             {wallet ? (
               <div className="space-y-4">
-                <div className="grid grid-cols-3 gap-3">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                   <div className="p-3 rounded-lg text-center" style={{ background: 'var(--bg-secondary)' }}>
-                    <div className="text-[10px] font-bold" style={{ color: 'var(--text-muted)' }}>USDT AVAILABLE</div>
+                    <div className="text-[10px] font-bold" style={{ color: 'var(--text-muted)' }}>USDT TRADABLE</div>
                     <div className="text-xl font-black mt-1" style={{ color: 'var(--green)' }}>
                       ${wallet.summary.usdt_free.toFixed(2)}
                     </div>
-                    <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                      ${wallet.summary.usdt_free.toFixed(0)} USD
+                    <div className="text-[9px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                      Spot · free for war-room
+                    </div>
+                  </div>
+                  <div className="p-3 rounded-lg text-center" style={{ background: 'var(--bg-secondary)' }}>
+                    <div className="text-[10px] font-bold" style={{ color: 'var(--text-muted)' }}>USDT TOTAL</div>
+                    <div className="text-xl font-black mt-1" style={{ color: 'var(--cyan)' }}>
+                      ${wallet.summary.usdt_total.toFixed(2)}
+                    </div>
+                    <div className="text-[9px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                      All wallets combined
                     </div>
                   </div>
                   <div className="p-3 rounded-lg text-center" style={{ background: 'var(--bg-secondary)' }}>
@@ -586,15 +601,43 @@ export default function SettingsPage() {
                   </div>
                 </div>
 
+                {wallet.summary.usdt_free < 10 && wallet.summary.usdt_total > 10 && (
+                  <div className="p-2.5 rounded-lg border text-[11px]"
+                    style={{ background: 'rgba(255,204,0,0.08)', borderColor: 'var(--amber)', color: 'var(--amber)' }}>
+                    ⚠️ Tradable USDT is ${wallet.summary.usdt_free.toFixed(2)} but you hold ${wallet.summary.usdt_total.toFixed(2)} total.
+                    Transfer from <strong>Funding</strong> / <strong>Simple Earn</strong> to <strong>Spot</strong> on Binance to let the war-room trade.
+                  </div>
+                )}
+
+                {wallet.wallets && (
+                  <div className="grid grid-cols-3 gap-2">
+                    {([
+                      { key: 'spot', label: 'SPOT', color: 'var(--green)', w: wallet.wallets.spot },
+                      { key: 'funding', label: 'FUNDING', color: 'var(--cyan)', w: wallet.wallets.funding },
+                      { key: 'earn_flexible', label: 'SIMPLE EARN', color: 'var(--purple)', w: wallet.wallets.earn_flexible },
+                    ] as const).map(({ key, label, color, w }) => (
+                      <div key={key} className="p-2.5 rounded-lg" style={{ background: 'var(--bg-secondary)' }}>
+                        <div className="text-[9px] font-bold" style={{ color }}>{label}</div>
+                        <div className="text-sm font-black mt-0.5 font-mono" style={{ color: 'var(--text-primary)' }}>
+                          ${(w.usdt_total ?? 0).toFixed(2)}
+                        </div>
+                        <div className="text-[9px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                          {w.count} {w.count === 1 ? 'asset' : 'assets'}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 {wallet.balances.length > 0 && (
                   <div>
-                    <div className="text-[10px] font-bold mb-2" style={{ color: 'var(--text-muted)' }}>ALL ASSETS ({wallet.summary.total_assets})</div>
+                    <div className="text-[10px] font-bold mb-2" style={{ color: 'var(--text-muted)' }}>ALL ASSETS ({wallet.summary.total_assets}) · aggregated across wallets</div>
                     <div className="space-y-1 max-h-40 overflow-y-auto">
                       {wallet.balances.map(b => (
                         <div key={b.asset} className="flex items-center justify-between py-1 px-2 rounded text-[11px]" style={{ background: 'var(--bg-secondary)' }}>
                           <span className="font-bold" style={{ color: 'var(--text-primary)' }}>{b.asset}</span>
                           <div className="flex gap-4">
-                            <span style={{ color: 'var(--text-secondary)' }}>Free: <span className="font-mono font-bold">{b.free.toFixed(b.asset === 'USDT' ? 2 : 6)}</span></span>
+                            <span style={{ color: 'var(--text-secondary)' }}>Total: <span className="font-mono font-bold">{b.total.toFixed(b.asset === 'USDT' || b.asset === 'USDC' ? 2 : 6)}</span></span>
                             {b.locked > 0 && <span style={{ color: 'var(--amber)' }}>Locked: <span className="font-mono">{b.locked.toFixed(6)}</span></span>}
                           </div>
                         </div>

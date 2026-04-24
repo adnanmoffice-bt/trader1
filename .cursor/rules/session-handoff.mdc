@@ -1,0 +1,75 @@
+---
+description: Enforce the day/night Cursor session handoff protocol for APEX
+alwaysApply: true
+---
+
+# APEX session handoff
+
+This project is edited by two Cursor instances on two machines
+(day = Computer A, night = Computer B), both signed into the same account
+and pushing to `main` on `adnanmoffice-bt/trader1`. Without discipline they
+will stomp on each other's work. Follow this protocol **exactly**.
+
+## On session start (do this before answering the user's first real request)
+
+1. Run `git fetch origin` and `git status`. If `origin/main` is ahead of
+   local, run `git pull --ff-only origin main` before touching any file.
+2. Read `HANDOFF.md` end-to-end (root of repo).
+3. Read `CONTEXT.md` (architecture + hard-won lessons) and the most recent
+   10 commits with `git log --oneline -10`.
+4. If `HANDOFF.md` has an active `LOCK:` line, stop and ask the user
+   whether the other machine is still mid-edit before continuing.
+5. If the user's request overlaps an item already listed under
+   **OPEN WORK**, acknowledge that explicitly.
+
+## On session end (do this when the user's task is complete or when they stop)
+
+1. Update `HANDOFF.md`:
+   - Prepend a new **SESSION LOG** entry at the top with date (Dubai
+     time), machine (Computer A/day or Computer B/night), commit SHA,
+     short context, and safety notes.
+   - Add/tick items under **OPEN WORK**.
+   - Remove any `LOCK:` lines you set earlier in the session.
+2. `git add -A && git commit -m "<conventional message>" && git push origin main`.
+3. Never leave uncommitted changes at end of session (except private env
+   files or the `.git/COMMIT_MSG_TMP.txt` scratch file). The other machine
+   must be able to `git pull` and be in the same state you left.
+
+## Mid-session, if you're about to edit a high-risk file
+
+High-risk files: `agents/war-room.ts`, `agents/meta-agent.ts`,
+`lib/safety.ts`, `lib/risk-controls.ts`, `lib/exchanges/*`,
+`app/api/cron/*`, `supabase/schema.sql`.
+
+Before a multi-step refactor on any of these:
+1. Add a `LOCK:` line to `HANDOFF.md` (e.g.
+   `LOCK: agents/war-room.ts — Computer A — started 2026-04-24 10:00 Dubai`).
+2. Push that `LOCK:` commit immediately so the other machine sees it.
+3. Clear the lock (and push) when you're done.
+
+## Commit hygiene
+
+- One logical change per commit.
+- Conventional-ish prefixes: `feat:`, `fix:`, `fix(safety):`, `ui:`,
+  `i18n:`, `chore:`, `CRITICAL:` (user-facing breakage being fixed).
+- Always push. Both machines are consumers of `origin/main`.
+- On Windows PowerShell, heredoc doesn't work — write commit messages to
+  `.git/COMMIT_MSG_TMP.txt` and commit with `git commit -F`.
+
+## Never do
+
+- Don't `git push --force` to `main`.
+- Don't rebase `main` history.
+- Don't commit `.env.local`, `.env*`, or anything under `.vercel/`.
+- Don't amend a pushed commit unless the user explicitly says so.
+- Don't re-enable: shorts, SOL/USD, BNB/USD, BB_SQUEEZE trigger. Document
+  reasons for these in `CONTEXT.md` → "Tvrde, naučene istine".
+
+## Things both machines should stay in sync on
+
+- `CONTEXT.md` — architecture, invariants.
+- `HANDOFF.md` — who did what, what's pending.
+- `APEX_PROJECT_LOG.md` — longer-form changelog.
+- `.cursor/rules/*.mdc` — behaviour rules.
+- `scripts/*` — debug + audit scripts (commit them; don't leave them
+  untracked forever).

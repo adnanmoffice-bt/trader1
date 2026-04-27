@@ -29,7 +29,8 @@ const URL = process.env.NEXT_PUBLIC_SUPABASE_URL
 const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
 if (!URL || !KEY) { console.error('Missing Supabase env'); process.exit(1) }
 
-const DAY_AGO = new Date(Date.now() - 24 * 3600 * 1000).toISOString()
+const HOURS = Number(process.env.WINDOW_HOURS || process.argv[2] || 24)
+const DAY_AGO = new Date(Date.now() - HOURS * 3600 * 1000).toISOString()
 const HR48_AGO = new Date(Date.now() - 48 * 3600 * 1000).toISOString()
 
 async function q(table, params) {
@@ -58,7 +59,7 @@ function ago(iso) {
   return `${h}h ago`
 }
 
-console.log('=== APEX 24h AUDIT ===')
+console.log(`=== APEX ${HOURS}h AUDIT ===`)
 console.log(`Window: ${tmLocal(DAY_AGO)} → ${tmLocal(new Date().toISOString())}  (Dubai)\n`)
 
 // 1. PORTFOLIO STATE

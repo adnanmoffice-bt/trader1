@@ -1,7 +1,7 @@
 # APEX — AI Agent Knowledge File
 
 > Pročitaj OVO, plus `APEX_PROJECT_LOG.md` (master log korisnika) i `.cursor/rules/apex-trading.mdc`, prije bilo kakvog rada.
-> Posljednje ažurirano: 2026-04-24 nakon 24h audita (seed candles, risk-controls fix, portfolio resync).
+> Posljednje ažurirano: 2026-04-27 nakon 3-day full system audita (candle list fix, daily-loss DB sync, schema-drift discovery).
 
 ---
 
@@ -117,6 +117,11 @@ RLS: enabled na svim tablama. Realtime: large allow-list.
 20. **MATIC/USD je mapiran na POLUSDT na Binance-u** (Polygon rebrand Sept 2024). Legacy `MATICUSDT` ticker i dalje vraća `ticker/24hr`, ali `klines` podaci su zaleđeni na 2024-09-10. Fixano u `lib/price-fetcher.ts` 2026-04-24.
 21. **`lib/risk-controls.ts` i `lib/safety.ts` MORAJU imati ISTI `DAILY_LOSS_LIMIT_PCT`.** Oba su 0.05 (5%) od 2026-04-24 (audit je pronašao da je risk-controls ostao na 0.03 dok je safety.ts bio 0.05 — commit `be92ffce`). Provjeri oba ako mijenjaš jedan.
 22. **`portfolio.is_demo=true` red je obrisan 2026-04-24** — app koristi samo `is_demo=false` red. Demo cron sada šalje `updated_at` da se timestamp ne zaledi.
+24. **Hourly candle refresh lista MORA biti u `app/api/cron/market-data/route.ts` `candleSymbols` array — NE u `app/api/cron/seed/route.ts`.** Seed cron NIJE registrovan u `vercel.json` i ne pokreće se automatski. ALT 5 (ADA/DOT/MATIC/NEAR/APT) su prvo seedovani 2026-04-24, ali su zamrzli 72h kasnije jer market-data cron ih nije refreshovao. Fixano 2026-04-27 (commit nakon ovog audita).
+25. **DB SCHEMA DRIFT — nedostaju tabele koje kod referencira** (otkriveno 2026-04-27): `agent_knowledge`, `performance_snapshots`, `trade_analytics`, `trade_journal`, `polymarket_bets`. Sve su definisane u `supabase/schema.sql` ali nikad nisu primjenjene na trenutnu Supabase instancu. Posljedica: meta-agent može da računa, ali ne može da PERSISTUJE auto-prepisane prompte (silent fail kroz try/catch). Performance cron (koji ionako nije u vercel.json) bi pisao u nepostojeću tabelu. Equity-curve i Calendar UI vraćaju prazne podatke. Polymarket je potpuno mrtav (404 na svaki insert). **Plan**: ili primijeniti `schema.sql`, ili obrisati cijeli paket feature-a koji se ne koristi i čisto zatvoriti rupe.
+26. **Crons koji POSTOJE u kodu ali NISU u `vercel.json`** (otkriveno 2026-04-27): `/api/cron/seed`, `/api/cron/performance`, `/api/cron/analytics`, `/api/cron/run-all`. Ne pokreću se. Performance i analytics su namijenjene za daily snapshot/equity-curve — ali bez tabela ionako ne bi radile.
+27. **Heartbeat logging postoji SAMO u `market-data` cron-u** (otkriveno 2026-04-27). Signals/positions/demo/polymarket/meta-agent/morning-briefing/daily-report/weekly-report NEMAJU `agent_logs.insert({ agent: 'X-cron', ...})` na ulasku/izlasku — pa ne znamo da li uopće rade. Treba dodati standardizovan heartbeat helper.
+28. **`user_settings.currency = 'AED'`** ali kod (war-room, safety, portfolio sync) tretira sve kao USD. Polje je legacy iz pre-`d730a9c` tranzicije. Ne mijenjati u live mode-u dok se ne potvrdi da nema reference na njega u trade-write path-u.
 23. **`TELEGRAM_BOT_TOKEN` TRENUTNO NIJE postavljen na Vercel prod-u** (utvrđeno 2026-04-24 preko `/api/debug/env-check`). Telegram alerti su mrtvi. WhatsApp (Green API) radi i zamjenjuje ih.
 
 ## Real-money execution gates (ALL must be true u `war-room.ts`)

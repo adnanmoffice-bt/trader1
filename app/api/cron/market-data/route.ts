@@ -56,9 +56,16 @@ export async function GET(req: NextRequest) {
   // 2. Store last 5 hourly candles for all tradeable symbols.
   // Uses fetchKlines (universal): Binance for crypto/gold, Yahoo fallback
   // for BRENT, WTI, SPY, forex. Was crypto-only, which left oil dead.
+  // Keep this in sync with ACTIVE_INSTRUMENTS in agents/war-room.ts.
+  // The 5 alts (ADA/DOT/MATIC/NEAR/APT) were missing here so candles froze
+  // on 2026-04-24 right after the manual seed and triggered "DATA QUALITY
+  // FAIL — Stale data: last candle 4320min ago" rejections in war-room.
+  // SOL/BNB stay blacklisted for trading but candles fetched in case we need
+  // them for context indicators or future re-enable.
   const candleSymbols = [
     'BTC/USD', 'ETH/USD', 'SOL/USD', 'BNB/USD',
     'DOGE/USD', 'AVAX/USD', 'LINK/USD',
+    'ADA/USD', 'DOT/USD', 'MATIC/USD', 'NEAR/USD', 'APT/USD',
     'XAU/USD',
     'BRENT', 'WTI', 'SPY', 'QQQ',
     'EUR/USD', 'USD/JPY',

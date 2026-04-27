@@ -2,6 +2,7 @@
 
 import { useStore } from '@/lib/store'
 import { useEffect, useState } from 'react'
+import { AIBudgetTile } from '@/components/AIBudgetTile'
 
 function Dot({ color }: { color: string }) {
   return <span style={{ width: 5, height: 5, borderRadius: '50%', background: color, display: 'inline-block', flexShrink: 0 }} />
@@ -77,6 +78,8 @@ export function StatusBar() {
         <span style={{ color: 'var(--text-3)', fontSize: 8 }}>POS</span>
         <span style={{ fontWeight: 700, color: positions.length >= 3 ? 'var(--red)' : 'var(--text-0)' }}>{positions.length}/3</span>
       </div>
+
+      <AIBudgetTile />
 
       {/* Scrolling Price Ticker */}
       <div style={{ flex: 1, overflow: 'hidden', whiteSpace: 'nowrap', position: 'relative', maskImage: 'linear-gradient(to right, transparent, black 5%, black 95%, transparent)' }}>

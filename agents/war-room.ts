@@ -286,7 +286,37 @@ async function runMeeting(
   const triggerDir = rawTriggers[0]?.direction ?? null
   const allTriggers = rawTriggers.map(t => t.name).join(' + ') || null
 
-  if (regime.regime === 'ranging' && rawTriggers.length < 2) {
+  // RANGING gate — relaxed 2026-04-28 after audit showed 100% rejection on
+  // BTC/ETH/XAU/etc for the full 24-72h window with this gate set to "always
+  // need 2+ triggers in any ranging market".
+  //
+  // detectRegime() strength scale for 'ranging':
+  //   strength = max(0, 1 - |emaSpread%|)
+  //   strength 0.0  → emaSpread ≈ 1%  (right at trending boundary)
+  //   strength 0.5  → emaSpread ≈ 0.5%
+  //   strength 1.0  → emaSpread ≈ 0%  (perfectly flat)
+  //
+  // So strength<0.5 = "weak range, almost trending". In that state we allow a
+  // single STRONG trigger (EMA crosses / MACD cross / EMA50 breakout). RSI
+  // Extreme alone or Volume Spike alone are still gated.
+  // Strong ranges (strength>=0.5) keep the original 2+ trigger requirement.
+  //
+  // Three downstream gates still apply to single-trigger weak-range entries:
+  //   1. trend filter (forecast.smoothedTrend !== 'down')
+  //   2. quickBacktest >= 35% win rate
+  //   3. 12-agent vote margin > 2
+  // Plus daily-loss limit, drawdown tier, cooldown — so this is a calibrated
+  // relaxation, not a removal.
+  const STRONG_TRIGGERS = new Set([
+    'EMA 12/26 Cross',
+    'MACD Crossover',
+    'EMA 50 Breakout',
+  ])
+  const weakRange = regime.regime === 'ranging' && regime.strength < 0.5
+  const hasStrongTrigger = rawTriggers.some(t => STRONG_TRIGGERS.has(t.name))
+  const allowWeakRangeSingle = weakRange && hasStrongTrigger && rawTriggers.length >= 1
+
+  if (regime.regime === 'ranging' && rawTriggers.length < 2 && !allowWeakRangeSingle) {
     await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
       message: `${instrument} @ $${f(price)} | ${allTriggers} detected but market is RANGING (strength:${regime.strength.toFixed(1)}). Need 2+ triggers for confluence in range-bound markets.`,
     })

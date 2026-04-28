@@ -1,7 +1,7 @@
 # APEX — AI Agent Knowledge File
 
 > Pročitaj OVO, plus `APEX_PROJECT_LOG.md` (master log korisnika) i `.cursor/rules/apex-trading.mdc`, prije bilo kakvog rada.
-> Posljednje ažurirano: 2026-04-27 nakon 3-day full system audita (candle list fix, daily-loss DB sync, schema-drift discovery).
+> Posljednje ažurirano: 2026-04-28 nakon backfill 67h candle gap + RANGING gate calibration.
 
 ---
 
@@ -123,6 +123,8 @@ RLS: enabled na svim tablama. Realtime: large allow-list.
 27. **Heartbeat logging postoji SAMO u `market-data` cron-u** (otkriveno 2026-04-27). Signals/positions/demo/polymarket/meta-agent/morning-briefing/daily-report/weekly-report NEMAJU `agent_logs.insert({ agent: 'X-cron', ...})` na ulasku/izlasku — pa ne znamo da li uopće rade. Treba dodati standardizovan heartbeat helper.
 28. **`user_settings.currency = 'AED'`** ali kod (war-room, safety, portfolio sync) tretira sve kao USD. Polje je legacy iz pre-`d730a9c` tranzicije. Ne mijenjati u live mode-u dok se ne potvrdi da nema reference na njega u trade-write path-u.
 23. **`TELEGRAM_BOT_TOKEN` TRENUTNO NIJE postavljen na Vercel prod-u** (utvrđeno 2026-04-24 preko `/api/debug/env-check`). Telegram alerti su mrtvi. WhatsApp (Green API) radi i zamjenjuje ih.
+29. **Candle gap backfill protokol** (otkriveno 2026-04-28): Kad market-data cron NIJE pokrivao neki simbol N sati, on će kasnije refreshovati samo zadnjih 5 candles po pozivu — što ostavlja N-satnu rupu zauvijek. War-room data-quality gate odbija svaki instrument sa >4 missing candles u zadnjih 200. Posljedica: ADA/DOT/MATIC/NEAR/APT su imali 67-satnu rupu (Apr 24 seed → Apr 27 deploy) i bili su odbacivani 24h+ čak i nakon što je candle list fix pušten u prod. **Fix protokol**: nakon SVAKE izmjene `candleSymbols` liste u market-data cron, OBAVEZNO pokrenuti `node scripts/seed-missing-candles.mjs` da popuni rupu (1000 candles back-fill). Ne oslanjati se na cron forward-fill.
+30. **RANGING gate je kalibriran 2026-04-28** (`agents/war-room.ts` ~linija 289). Prethodno je odbacivao SVAKI single-trigger signal u ranging regime-u — to je 100% blokiralo BTC/ETH/XAU/etc kroz 24-72h jer je tržište bilo flat. Sad: za **slabe range-eve** (`regime.strength < 0.5`, što znači emaSpread 0.5-1%, blizu trending granice) DOZVOLJEN je single STRONG trigger (EMA 12/26 Cross, MACD Crossover, EMA 50 Breakout). RSI Extreme i Volume Spike sami **nisu** strong. Strong range (`strength >= 0.5`) i dalje traži 2+ triggera. Downstream gate-ovi (trend filter, backtest >= 35%, vote margin > 2, forecast veto, daily-loss) i dalje rade — ovo je kalibracija, ne uklanjanje.
 
 ## Real-money execution gates (ALL must be true u `war-room.ts`)
 

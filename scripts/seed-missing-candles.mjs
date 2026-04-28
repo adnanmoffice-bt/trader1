@@ -20,16 +20,21 @@ const URL = process.env.NEXT_PUBLIC_SUPABASE_URL
 const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
 if (!URL || !KEY) { console.error('Missing env'); process.exit(1) }
 
+// Note: MATIC/USD must use POLUSDT (Polygon rebrand 2024-09-10).
+// MATICUSDT klines on Binance are frozen at the rebrand date.
 const PAIRS = {
   'ADA/USD':   'ADAUSDT',
   'DOT/USD':   'DOTUSDT',
-  'MATIC/USD': 'MATICUSDT',
+  'MATIC/USD': 'POLUSDT',
   'NEAR/USD':  'NEARUSDT',
   'APT/USD':   'APTUSDT',
   'DOGE/USD':  'DOGEUSDT',
   'AVAX/USD':  'AVAXUSDT',
   'LINK/USD':  'LINKUSDT',
 }
+
+// 1000 = Binance max per request. Covers any gap up to ~41 days back.
+const KLINE_LIMIT = 1000
 
 async function fetchKlines(binanceSym, interval, limit) {
   // Binance limit per request = 1000. Use 500 for parity with seed cron.
@@ -57,11 +62,11 @@ async function upsertBatch(rows) {
   }
 }
 
-console.log('Seeding 500 1h candles for 8 instruments...\n')
+console.log(`Seeding ${KLINE_LIMIT} 1h candles for 8 instruments...\n`)
 for (const [sym, binanceSym] of Object.entries(PAIRS)) {
   const t0 = Date.now()
   try {
-    const klines = await fetchKlines(binanceSym, '1h', 500)
+    const klines = await fetchKlines(binanceSym, '1h', KLINE_LIMIT)
     const rows = klines.map(k => ({
       symbol:    sym,
       open:      Number(k[1]),

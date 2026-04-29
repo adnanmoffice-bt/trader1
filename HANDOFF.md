@@ -41,10 +41,11 @@ Same git identity on both → commits look identical; differentiate via the
 
 Items still to finish. Tick `[x]` when done; delete after a week.
 
-- [ ] Operator action: on Binance, transfer 1,100 USDT from **Funding → Spot** so war-room can execute real trades. Wallet UI will show `USDT TRADABLE > 0` after.
-- [ ] Operator action (optional): redeem a chunk of USDT from **Simple Earn flexible → Spot** if you want more headroom than $1,100.
+- [ ] **OPERATOR ACTION (BLOCKER for real trading): disable Binance Auto-Subscribe to Simple Earn.** Binance UI → Earn → Simple Earn → Manage (gear icon) → Auto-Subscribe → toggle OFF for USDT (and any other quote asset like USDC). Without this, every USDT transferred to Spot gets swept back into Earn at ~22:00 Dubai (`type=AUTO` in `/sapi/v1/simple-earn/flexible/history/subscriptionRecord`). Confirmed by 7 AUTO sweeps in last 7d. Detail in CONTEXT.md Hard Truth #31. The 500 USDT moved on 23/04 lasted 10 hours before sweep.
+- [ ] **OPERATOR ACTION: after Auto-Subscribe is OFF, run** `node scripts/move-funding-to-spot.mjs --amount=1100 --confirm` (and optionally `--redeem=500` to also pull existing Earn USDT). Script has a guard that detects AUTO sweeps and refuses to run while feature is still active (override with `--force` if you accept the sweep).
+- [x] ~~Operator action: on Binance, transfer 1,100 USDT from Funding → Spot~~ — superseded by the two items above; the original transfer attempt on 23/04 was reversed by Auto-Subscribe.
+- [x] ~~Operator action: top up Anthropic API credits~~ — confirmed working (no credit errors since 28/04, polymarket-scanner ran clean today).
 - [ ] Confirm `/api/wallet` reads the expected values on live URL after Vercel picks up `4b1c4ca`.
-- [ ] Operator action: top up Anthropic API credits — polymarket scanner has been failing with "credit balance too low" since 2026-04-26.
 - [ ] Operator decision: add `TELEGRAM_BOT_TOKEN` to Vercel prod env, OR formally drop Telegram in favor of WhatsApp (Green API).
 - [ ] Operator decision (architecture): apply `supabase/schema.sql` to prod DB to create the 5 missing tables (`agent_knowledge`, `performance_snapshots`, `trade_analytics`, `trade_journal`, `polymarket_bets`), OR delete the dead code paths that reference them. Currently silently failing.
 - [ ] Watch tomorrow's first 24h after RANGING gate calibration (commit on 2026-04-28). If single-trigger weak-range entries cause >2 SLs in a row on the same instrument, tighten the `STRONG_TRIGGERS` set or raise `regime.strength` threshold from 0.5 → 0.4.
@@ -62,6 +63,28 @@ _(none)_
 ---
 
 ## SESSION LOG (newest on top)
+
+### 2026-04-29 · 17:00 Dubai · Computer A (day)
+**Commit:** _(this push)_ — `chore(ops): document Binance Auto-Subscribe trap + safe Funding→Spot helper`
+
+Context:
+- User asked for full audit + 5-day chat review. Then questioned why "real money" execution shows 0 trades despite `trading_mode=live`.
+- Direct Binance API trace (`scripts/binance-trade-history.mjs`, `scripts/binance-money-flow.mjs`) revealed: 0 spot fills in 30 days, 0 open orders, Spot USDT = $0.01.
+- Root cause: **Binance Auto-Subscribe to Simple Earn** is sweeping all idle Spot USDT into Earn flexible at ~22:00 Dubai every night. The 500 USDT manually transferred Funding→Spot on 23/04 12:22 was reversed at 23/04 22:04 with `type=AUTO, amount=500.00005`. War-room phase 1b gate then quietly failed `quoteBalance >= notional` for every signal afterwards.
+- 5-day counterfactual: even with full Spot bankroll, war-room would have executed **0 trades** in this window (only 1 `role=open` meeting in 487 — NEAR/USD on 28/04 19:00 timed out and auto-rejected). So Auto-Subscribe didn't actually cost anything yet, but it makes any future signal silently demo-only.
+
+Changes:
+- `scripts/binance-trade-history.mjs` (new) — read-only myTrades dump per symbol over N days.
+- `scripts/binance-money-flow.mjs` (new) — read-only forensic trace: transfers, Earn subs/redemptions, converts, deposits, withdrawals, spot fills.
+- `scripts/move-funding-to-spot.mjs` (new) — dry-run by default, requires `--confirm`. Has built-in Auto-Subscribe guard: scans last 7d for `type=AUTO` USDT subs and refuses to transfer until user disables the feature in the Binance UI (override `--force`). Optional `--redeem=N` to also pull from Earn flexible.
+- `scripts/trace-real-trades.mjs` (new) — Supabase-side trade/position/log reconciliation (companion to the Binance-side scripts).
+- `CONTEXT.md` — added Hard Truth #31 (Auto-Subscribe trap) with full reproduction steps.
+- `HANDOFF.md` — replaced the now-misleading "transfer 1,100 USDT" item with two new operator items: (1) disable Auto-Subscribe in Binance UI, (2) re-run the transfer via the new script. Marked Anthropic top-up done.
+
+Safety notes:
+- All four scripts are read-only by default (`--confirm` required for any state change). No funds were moved in this session.
+- No code changes to `agents/`, `lib/safety.ts`, `lib/risk-controls.ts`, or `lib/exchanges/*`. War-room behaviour identical.
+- No SHORTS / SOL / BNB / BB_SQUEEZE re-enabled.
 
 ### 2026-04-28 · 14:00 Dubai · Computer A (day)
 **Commit:** _(this push)_ — fixes from morning chat "rjesi sve"

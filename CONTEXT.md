@@ -1,7 +1,7 @@
 # APEX — AI Agent Knowledge File
 
 > Pročitaj OVO, plus `APEX_PROJECT_LOG.md` (master log korisnika) i `.cursor/rules/apex-trading.mdc`, prije bilo kakvog rada.
-> Posljednje ažurirano: 2026-04-28 nakon backfill 67h candle gap + RANGING gate calibration.
+> Posljednje ažurirano: 2026-04-29 nakon otkrića Binance Auto-Subscribe to Simple Earn trap-a.
 
 ---
 
@@ -125,6 +125,7 @@ RLS: enabled na svim tablama. Realtime: large allow-list.
 23. **`TELEGRAM_BOT_TOKEN` TRENUTNO NIJE postavljen na Vercel prod-u** (utvrđeno 2026-04-24 preko `/api/debug/env-check`). Telegram alerti su mrtvi. WhatsApp (Green API) radi i zamjenjuje ih.
 29. **Candle gap backfill protokol** (otkriveno 2026-04-28): Kad market-data cron NIJE pokrivao neki simbol N sati, on će kasnije refreshovati samo zadnjih 5 candles po pozivu — što ostavlja N-satnu rupu zauvijek. War-room data-quality gate odbija svaki instrument sa >4 missing candles u zadnjih 200. Posljedica: ADA/DOT/MATIC/NEAR/APT su imali 67-satnu rupu (Apr 24 seed → Apr 27 deploy) i bili su odbacivani 24h+ čak i nakon što je candle list fix pušten u prod. **Fix protokol**: nakon SVAKE izmjene `candleSymbols` liste u market-data cron, OBAVEZNO pokrenuti `node scripts/seed-missing-candles.mjs` da popuni rupu (1000 candles back-fill). Ne oslanjati se na cron forward-fill.
 30. **RANGING gate je kalibriran 2026-04-28** (`agents/war-room.ts` ~linija 289). Prethodno je odbacivao SVAKI single-trigger signal u ranging regime-u — to je 100% blokiralo BTC/ETH/XAU/etc kroz 24-72h jer je tržište bilo flat. Sad: za **slabe range-eve** (`regime.strength < 0.5`, što znači emaSpread 0.5-1%, blizu trending granice) DOZVOLJEN je single STRONG trigger (EMA 12/26 Cross, MACD Crossover, EMA 50 Breakout). RSI Extreme i Volume Spike sami **nisu** strong. Strong range (`strength >= 0.5`) i dalje traži 2+ triggera. Downstream gate-ovi (trend filter, backtest >= 35%, vote margin > 2, forecast veto, daily-loss) i dalje rade — ovo je kalibracija, ne uklanjanje.
+31. **Binance Auto-Subscribe to Simple Earn TRAP** (otkriveno 2026-04-29). Binance ima feature koji svake noći oko **22:00 Dubai** automatski sweep-uje SVE idle USDT/USDC/BNB/itd. sa Spot wallet-a u Simple Earn flexible. Vidi se u `/sapi/v1/simple-earn/flexible/history/subscriptionRecord` kao `type=AUTO`. Konkretan slučaj: 23/04 u 12:22 transferirano je 500 USDT Funding → Spot, ali u 22:04 istog dana Binance ih je vratio u Earn (`amount=500.00005, type=AUTO, src=SPOT`). War-room je poslije čitao Spot USDT = $0.01 i tiho odbijao real exec na svakom signalu (gate 7: `quoteBalance < notional`). **Posljedica**: u zadnjih 30 dana 0 spot fills, 0 `live-exec` log entries, iako je `trading_mode=live`. **Fix je MANUELNI** — Binance API NE može gasiti Auto-Subscribe. Korak po korak: Binance UI → Earn → Simple Earn → Manage (gear icon) → Auto-Subscribe → toggle OFF za USDT (i bilo koji drugi quote asset). Alternativno: Wallet → Auto-Invest → pauzirati USDT planove. Tek poslije toga `scripts/move-funding-to-spot.mjs --amount=N --confirm` ostaje na Spot-u. Skripta ima built-in guard koji detektira AUTO subscriptions u zadnjih 7d i odbija prebaciti dok god je sweep aktivan (override sa `--force`).
 
 ## Real-money execution gates (ALL must be true u `war-room.ts`)
 

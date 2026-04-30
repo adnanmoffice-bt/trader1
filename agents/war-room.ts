@@ -3,7 +3,7 @@ import { computeIndicators, technicalScore, detectBBSqueeze, detectEMACross, det
 import { createServiceSupabase } from '@/lib/supabase'
 import { sendSignalAlert } from '@/lib/telegram'
 import { notifySignal as waSignal, notifyWarRoomDecision as waDecision, notifyWarRoomOpen as waOpen, notifyWarRoomDebate as waDebate, notifyWarRoomBlocked as waBlocked } from '@/lib/whatsapp'
-import { checkSafety, getRecoveryMode } from '@/lib/safety'
+import { checkSafety, getRecoveryMode, checkLiveTradingAllowed } from '@/lib/safety'
 import type { RecoveryMode } from '@/lib/safety'
 import { hardRiskCheck, checkDailyLossLimit, getTradeStats, riskBasedPositionSize } from '@/lib/risk-controls'
 import { AGENT_PROMPTS, AGENT_TOKEN_LIMITS, type AgentId, type PromptContext } from '@/agents/agent-prompts'
@@ -929,7 +929,17 @@ async function runMeeting(
         await logExec('info',
           `${instrument}: real trade skipped — mode:${gates.trading_mode_live ? 'live' : 'demo'} auto:${gates.auto_trade_on} user:${gates.has_user}`)
       } else {
-        try {
+        // ── EDGE GATE — added 2026-04-30 after backtest verdict ──
+        // Per-instrument blacklist + 30d rolling expectancy gate.
+        // Demo always continues regardless of this gate; only LIVE exec is
+        // affected. Fails CLOSED on insufficient data / DB error / negative
+        // edge — protects real money when the system is bleeding.
+        const edgeGate = await checkLiveTradingAllowed(instrument)
+        if (!edgeGate.allowed) {
+          await logExec('warn', `${instrument}: real trade BLOCKED by edge gate — ${edgeGate.reason}`)
+          // Fall through; demo trade has already been recorded above.
+        } else try {
+          await logExec('info', `${instrument}: edge gate OK — ${edgeGate.reason}`)
           const ex = getPrimaryExchange()
           if (!ex.isConfigured()) {
             await logExec('error',

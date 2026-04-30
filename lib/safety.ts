@@ -180,3 +180,157 @@ export async function deactivateKillSwitch(): Promise<void> {
     .eq('agent', 'kill-switch')
     .eq('level', 'error')
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LIVE-TRADING EDGE GATE — added 2026-04-30
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// 6-month walk-forward backtest (scripts/backtest-gate-stack.mjs run on
+// 2026-04-30) found NEGATIVE expectancy across all 24 SL/TP combos tested
+// on the 11-instrument set. Best config (-0.094 R/trade) still loses.
+//
+// Conclusion: the system in its current trigger-set has no proven edge.
+// Until edge is positive on a 30-day rolling window, live execution is
+// gated off. Demo trades continue (they're how we measure edge).
+//
+// Two layers:
+//   1. Per-instrument blacklist for instruments that lost > 10R over
+//      the 6-month backtest (ADA, DOT, APT). Hard-block live exec
+//      regardless of rolling stats. Demo allowed.
+//   2. Dynamic rolling-30d expectancy gate. If 30d demo+live trade
+//      expectancy < EDGE_THRESHOLD R/trade with sample >= 20 trades,
+//      block live exec on ALL instruments.
+//
+// Both layers are intentionally conservative — they FAIL CLOSED (no live
+// trading) if data is missing or ambiguous. The edge MUST be proven
+// positive before risking real money.
+
+const EDGE_THRESHOLD_R = -0.05         // 30-day rolling R-expectancy floor
+const MIN_TRADES_FOR_GATE = 20         // need at least 20 closed trades to evaluate
+
+/**
+ * Per-instrument LIVE-only blacklist. Keep these instruments in the war-room
+ * meeting loop (demo continues) but never let them risk real money.
+ *
+ * Sourced from 180d backtest (NEW mode) on 2026-04-30:
+ *   ADA/USD: 37 trades, 24.3% WR, -14.5R = roughly -$1,088 in real money
+ *   DOT/USD: 33 trades, 24.2% WR, -13.0R = roughly -$975
+ *   APT/USD: 36 trades, 30.6% WR, -8.5R  = roughly -$638
+ *
+ * Lift one of these only when the per-instrument gate (below) shows
+ * positive expectancy on that instrument over a 30-day window.
+ */
+export const LIVE_INSTRUMENT_BLACKLIST = new Set<string>([
+  'ADA/USD', 'DOT/USD', 'APT/USD',
+])
+
+export interface LiveTradingGate {
+  allowed: boolean
+  reason: string
+  expectancyR: number | null
+  tradeCount: number
+  instrument: string | null
+}
+
+/**
+ * Check whether real-money execution is allowed RIGHT NOW.
+ *
+ * Pass `instrument` to also enforce the per-instrument blacklist; pass
+ * undefined for the global rolling-expectancy gate only.
+ *
+ * The function reads `demo_trades` (real production sample) over the
+ * trailing 30 days, computes R-multiples per closed trade as
+ * `pnl / (|entry - sl| * quantity)`, and gates on the mean.
+ *
+ * Returns `allowed: true` ONLY when:
+ *   1. Instrument (if provided) is NOT in the live blacklist
+ *   2. Sample size >= MIN_TRADES_FOR_GATE OR trading_mode forces it off
+ *   3. Mean R-expectancy >= EDGE_THRESHOLD_R
+ */
+export async function checkLiveTradingAllowed(instrument?: string): Promise<LiveTradingGate> {
+  // Layer 1: per-instrument blacklist
+  if (instrument && LIVE_INSTRUMENT_BLACKLIST.has(instrument)) {
+    return {
+      allowed: false,
+      reason: `${instrument} is on LIVE_INSTRUMENT_BLACKLIST (negative 6mo expectancy). Demo allowed; live blocked.`,
+      expectancyR: null,
+      tradeCount: 0,
+      instrument: instrument ?? null,
+    }
+  }
+
+  const db = createServiceSupabase()
+  const since = new Date(Date.now() - 30 * 86400_000).toISOString()
+
+  let q = db.from('demo_trades')
+    .select('pnl, entry_price, stop_loss, quantity, instrument')
+    .not('exit_time', 'is', null)
+    .gte('exit_time', since)
+  if (instrument) q = q.eq('instrument', instrument)
+  const { data: trades, error } = await q
+  if (error) {
+    // Fail CLOSED on DB error — better to skip live exec than trade blind.
+    return {
+      allowed: false,
+      reason: `edge gate DB error (fail-closed): ${error.message}`,
+      expectancyR: null,
+      tradeCount: 0,
+      instrument: instrument ?? null,
+    }
+  }
+
+  const rows = (trades ?? []).filter(t =>
+    Number(t.pnl) !== 0 &&
+    Number(t.entry_price) > 0 &&
+    Number(t.stop_loss) > 0 &&
+    Number(t.quantity) > 0,
+  )
+
+  if (rows.length < MIN_TRADES_FOR_GATE) {
+    // Not enough data to prove edge yet. FAIL CLOSED — no live trades
+    // until we have a real sample. (Keeps the system honest in the early
+    // weeks of demo collection.)
+    return {
+      allowed: false,
+      reason: `insufficient sample for edge gate: ${rows.length} closed trades in 30d (need ${MIN_TRADES_FOR_GATE}). Live blocked until enough data.`,
+      expectancyR: null,
+      tradeCount: rows.length,
+      instrument: instrument ?? null,
+    }
+  }
+
+  // Compute R-multiples
+  let totalR = 0
+  let n = 0
+  for (const t of rows) {
+    const entry = Number(t.entry_price)
+    const sl = Number(t.stop_loss)
+    const qty = Number(t.quantity)
+    const pnl = Number(t.pnl)
+    const riskUsd = Math.abs(entry - sl) * qty
+    if (riskUsd <= 0) continue
+    totalR += pnl / riskUsd
+    n++
+  }
+  const expectancyR = n > 0 ? totalR / n : 0
+
+  if (expectancyR < EDGE_THRESHOLD_R) {
+    return {
+      allowed: false,
+      reason: `30d expectancy ${expectancyR.toFixed(3)} R/trade < ${EDGE_THRESHOLD_R} threshold (${n} trades${instrument ? ` on ${instrument}` : ''}). Live blocked until edge recovers.`,
+      expectancyR,
+      tradeCount: n,
+      instrument: instrument ?? null,
+    }
+  }
+
+  return {
+    allowed: true,
+    reason: `30d expectancy ${expectancyR.toFixed(3)} R/trade over ${n} trades${instrument ? ` on ${instrument}` : ''} — edge gate passed.`,
+    expectancyR,
+    tradeCount: n,
+    instrument: instrument ?? null,
+  }
+}
+
+export { EDGE_THRESHOLD_R, MIN_TRADES_FOR_GATE }

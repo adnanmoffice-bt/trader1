@@ -16,6 +16,9 @@ import { checkSessionGate } from '@/lib/session-filter'
 import { checkCorrelationDedup } from '@/lib/correlation-dedup'
 import { getDerivativesSnapshot, evaluateDerivativesForLong, type DerivativesSnapshot } from '@/lib/derivatives'
 import { checkOrderBookHealth } from '@/lib/orderbook'
+import { getBtcCmeGap, type CmeGapInfo } from '@/lib/cme-gaps'
+import { evaluateOnchainForLong } from '@/lib/onchain'
+import { evaluateNewsImpactForLong } from '@/lib/news-impact'
 import type { Instrument, OHLCV, Signal } from '@/types'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -401,6 +404,28 @@ async function runMeeting(
     return 'macro-high-strict'
   }
 
+  // ── CME GAP — BTC LONG only (cheap Yahoo lookup) ──
+  // Unfilled CME futures gap above current price = LONG bias (price tends
+  // to revisit the gap upward). Returns +/-5 conviction nudge, fails open.
+  let cmeGap: CmeGapInfo | null = null
+  if (instrument === 'BTC/USD' && triggerDir === 'long') {
+    cmeGap = await getBtcCmeGap()
+  }
+
+  // ── ON-CHAIN FLOW — LONG-side soft gate (currently stub, fails open) ──
+  // Heavy net-inflow to exchanges before a LONG = sell pressure. Hard veto
+  // at $50M+ inflow once a real data source is wired in lib/onchain.ts.
+  const onchainGate = triggerDir === 'long'
+    ? await evaluateOnchainForLong(instrument)
+    : { allowed: true, reason: 'short trigger — onchain gate skipped', convictionAdjust: 0 }
+  if (!onchainGate.allowed) {
+    await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
+      message: `${instrument} @ $${f(price)} | ${allTriggers} → ON-CHAIN VETO: ${onchainGate.reason}. Skipping debate.`,
+      data: { price, trigger: allTriggers, reason: 'onchain-veto' },
+    })
+    return 'onchain-veto'
+  }
+
   // ── PHASE 2: TREND FILTER GATE — only buy in uptrends ──
   const trendWeak = forecast.smoothedTrend === 'down' && forecast.upProbability4h < 0.45
   if (trendWeak) {
@@ -546,12 +571,17 @@ async function runMeeting(
   // Multi-timeframe trend summary
   const mtfText = `\n── MULTI-TIMEFRAME ──\n4H trend: ${mtf.trend4h} (RSI ${mtf.rsi4h.toFixed(0)})  |  1D trend: ${mtf.trend1d}  |  LONG confluence count: ${mtf.longConfluenceCount}/2\n`
 
+  // CME gap context (BTC LONG only)
+  const cmeGapText = cmeGap
+    ? `\n── CME GAP ──\nBTC=F last close: $${cmeGap.cmeClose.toFixed(0)}  |  spot: $${cmeGap.spotPrice.toFixed(0)}  |  gap ${cmeGap.gapPct >= 0 ? '+' : ''}${cmeGap.gapPct.toFixed(2)}%  fillDir: ${cmeGap.fillDirection}\n`
+    : ''
+
   let parsed: OrchestratorDecision | null = null
   let rawDecisionText = ''
   try {
     const result = await callAgent<OrchestratorDecision>({
       system: orchDbPrompt ?? orchDefaultPrompt,
-      user: `${fullConvo(conv)}${macroHeader}\n${forecastText}${derivativesText}${mtfText}\nFinal decision for ${instrument}. You have heard all 11 agents. Consider the LIVE WORLD STATE, QUANTITATIVE FORECAST, DERIVATIVES POSITIONING, and MULTI-TIMEFRAME alignment above. If any of these contradict the agent consensus, explain why you trust one over the others. Respond with JSON only.`,
+      user: `${fullConvo(conv)}${macroHeader}\n${forecastText}${derivativesText}${mtfText}${cmeGapText}\nFinal decision for ${instrument}. You have heard all 11 agents. Consider the LIVE WORLD STATE, QUANTITATIVE FORECAST, DERIVATIVES POSITIONING, MULTI-TIMEFRAME alignment, and CME GAP (BTC only) above. If any of these contradict the agent consensus, explain why you trust one over the others. Respond with JSON only.`,
       maxTokens: AGENT_TOKEN_LIMITS['orchestrator'],
       timeoutMs: 45000,
       expectJson: true,
@@ -572,10 +602,14 @@ async function runMeeting(
   const voteAgainst = conv.filter(m => /\b(bearish|reject(?:ed)?|against\b|sell\b|wait\b|pass\b|veto)\b/i.test(m.message) && m.role === 'speak' && m.agent !== 'orchestrator').length
   const voteMarginOk = voteFor > voteAgainst + 2
 
-  // Effective conviction = parsed conviction + derivatives soft adjustment.
-  // Hard derivatives veto already short-circuited above. Soft +/-N here
-  // can lift a marginal LONG into execute or push a borderline one out.
-  const effectiveConviction = (parsed?.conviction ?? 0) + derivGate.convictionAdjust
+  // Effective conviction = parsed conviction + soft adjustments from
+  // derivatives, on-chain (when wired), CME gap (BTC only).
+  // Hard vetoes already short-circuited pre-debate. Soft +/-N here can
+  // lift a marginal LONG into execute or push a borderline one out.
+  const effectiveConviction = (parsed?.conviction ?? 0)
+    + derivGate.convictionAdjust
+    + onchainGate.convictionAdjust
+    + (cmeGap?.longBias ?? 0)
 
   const minConviction = recovery.active ? recovery.minConfidence : 70
   const isExecute = parsed?.decision === 'EXECUTE'
@@ -682,6 +716,32 @@ async function runMeeting(
       // Soft conflict: flag but allow. Logged for later analysis.
       await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'alert',
         message: `Soft correlation flag: ${dedup.reason}`,
+      })
+    }
+
+    // ── NEWS-IMPACT VETO — final pre-exec sanity ──
+    // Pulls last 60 minutes of CryptoPanic / CoinDesk / CoinTelegraph RSS,
+    // filters to instrument-relevant headlines, asks Claude for a
+    // -100..+100 impact score on a LONG. Veto if score <= -40.
+    // Costs ~$0.005 per call. Fails open on Anthropic / RSS errors.
+    // Run AFTER orchestrator + correlation dedup so we only spend the
+    // tokens on trades that have already passed every other gate.
+    const newsGate = await evaluateNewsImpactForLong(instrument, 60)
+    if (!newsGate.allowed) {
+      await speak(db, meetingId, instrument, conv, { agent: 'market-analyst', role: 'decision',
+        message: `NEWS VETO: score ${newsGate.score} — ${newsGate.reason}. Top: ${newsGate.topHeadlines.slice(0,2).join(' | ').slice(0, 200)}`,
+      })
+      await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
+        message: `BLOCKED by news veto: ${newsGate.reason}. Meeting closed.`,
+      })
+      await waBlocked({ instrument, reason: `News score ${newsGate.score}: ${newsGate.reason}`, blocker: 'News Impact' }).catch(() => {})
+      await runPostMeetingBrief({ instrument, decision: 'blocked', votesFor: voteFor, votesAgainst: voteAgainst, trigger: allTriggers ?? trigger, agentStances }).catch(() => {})
+      return 'blocked-news'
+    }
+    // News-neutral or favourable — log and proceed.
+    if (newsGate.headlineCount > 0) {
+      await speak(db, meetingId, instrument, conv, { agent: 'market-analyst', role: 'speak',
+        message: `News check: score ${newsGate.score} on ${newsGate.headlineCount} headlines (${newsGate.reason})`,
       })
     }
 

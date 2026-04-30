@@ -457,3 +457,73 @@ export function detectRegime(candles: OHLCV[]): { regime: MarketRegime; strength
 function round(n: number): number {
   return Math.round(n * 100) / 100
 }
+
+// ─── Multi-Timeframe Confluence ───────────────────────────────────────────────
+//
+// Aggregates 1H candles into 4H and 1D buckets and returns whether the higher
+// timeframes confirm the 1H trigger direction. Used as a soft-veto for LONG
+// entries on weak 1H signals — if 4H and 1D are both bearish, even a clean
+// 1H trigger is unlikely to follow through.
+
+export interface MtfSnapshot {
+  /** 4-hour timeframe trend: up if EMA20(4h) > EMA50(4h) AND price > EMA20(4h) */
+  trend4h: 'up' | 'down' | 'flat'
+  /** 1-day timeframe trend, same logic */
+  trend1d: 'up' | 'down' | 'flat'
+  /** RSI on the 4h timeframe */
+  rsi4h: number
+  /** Number of higher timeframes aligned with LONG (0, 1, or 2) */
+  longConfluenceCount: number
+}
+
+function aggregateCandles(candles: OHLCV[], factor: number): OHLCV[] {
+  if (factor <= 1) return candles
+  const out: OHLCV[] = []
+  // Walk from oldest to newest in chunks of `factor`.
+  for (let i = 0; i + factor <= candles.length; i += factor) {
+    const chunk = candles.slice(i, i + factor)
+    out.push({
+      timestamp: chunk[0].timestamp,
+      open: chunk[0].open,
+      high: Math.max(...chunk.map(c => c.high)),
+      low: Math.min(...chunk.map(c => c.low)),
+      close: chunk[chunk.length - 1].close,
+      volume: chunk.reduce((s, c) => s + c.volume, 0),
+    })
+  }
+  return out
+}
+
+function computeTrend(candles: OHLCV[]): { trend: 'up' | 'down' | 'flat'; rsi: number } {
+  if (candles.length < 50) return { trend: 'flat', rsi: 50 }
+  const closes = candles.map(c => c.close)
+  const e20 = emaLast(closes, 20)
+  const e50 = emaLast(closes, 50)
+  const price = closes[closes.length - 1]
+  const r = rsi(closes)
+  const rsiVal = isNaN(r) ? 50 : r
+  if (e20 > e50 * 1.002 && price > e20) return { trend: 'up', rsi: rsiVal }
+  if (e20 < e50 * 0.998 && price < e20) return { trend: 'down', rsi: rsiVal }
+  return { trend: 'flat', rsi: rsiVal }
+}
+
+/**
+ * Build a multi-timeframe snapshot from 1H candles.
+ *
+ * Caller passes the same `candles` array used in the 1H meeting (≥ 200 rows).
+ * If there aren't enough candles for a higher timeframe trend, that trend
+ * defaults to 'flat' (treated as neither confirming nor rejecting).
+ */
+export function multiTimeframeConfluence(candles1h: OHLCV[]): MtfSnapshot {
+  const candles4h = aggregateCandles(candles1h, 4)
+  const candles1d = aggregateCandles(candles1h, 24)
+  const t4 = computeTrend(candles4h)
+  const t1d = computeTrend(candles1d)
+  const longCount = (t4.trend === 'up' ? 1 : 0) + (t1d.trend === 'up' ? 1 : 0)
+  return {
+    trend4h: t4.trend,
+    trend1d: t1d.trend,
+    rsi4h: t4.rsi,
+    longConfluenceCount: longCount,
+  }
+}

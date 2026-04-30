@@ -624,12 +624,31 @@ async function runMeeting(
       })
     }
 
-    // ── PHASE 3: Fixed ATR SL/TP — wider SL to survive noise, R:R >= 2:1 ──
-    // Data: 1.5 ATR SL → 31 stopouts in 15min. 2 ATR gives room to breathe.
+    // ── PHASE 3: Fixed ATR SL/TP — calibrated 2026-04-30 for higher hit rate ──
+    //
+    // History:
+    //   v1 (pre-2026-04-21): SL=1.5 ATR → 31 stopouts in 15min (too tight).
+    //   v2 (2026-04-21):     SL=2.0 ATR, TP=4.5 ATR (+2.25R), TP2=6.0 ATR.
+    //                        10-day audit: 4W/13L = 23.5% WR, -$308.65.
+    //   v3 (this commit):    SL=2.0 ATR, TP1=3.0 ATR (+1.5R), TP2=5.0 ATR (+2.5R).
+    //
+    // Rationale: every +2.25R move passes through +1.5R first, so every
+    // historical winner remains a winner. Losers that briefly tagged +1.5R
+    // before reversing convert from full SL to full TP. Backtest gate is
+    // automatically re-validated because quickBacktest() takes tpMult as
+    // an argument and we feed it the new value below.
+    //
+    // R:R primary = 1.5 (= MIN_RR floor in lib/risk-controls.ts).
+    // R:R runner  = 2.5 (held in take_profit_2 for future partial-fill logic).
+    //
+    // NOTE: partial-fill / break-even-stop management is OPEN WORK in the
+    // positions cron. For now both demo and live exec target TP1 (full
+    // close at +1.5R). TP2 is persisted on the signal row so a future
+    // positions-cron upgrade can split 50/50 and trail BE on TP1 fill.
     const entry = price
     const slMult = 2.0
-    const tpMult = 4.5
-    const tp2Mult = 6.0
+    const tpMult = 3.0    // TP1 — primary target, +1.5R
+    const tp2Mult = 5.0   // TP2 — runner target, +2.5R (recorded only)
     let sl: number, tp: number, tp2: number
 
     if (triggerDir === 'long') {

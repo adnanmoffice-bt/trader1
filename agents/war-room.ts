@@ -1,5 +1,5 @@
 import { callAgent, getDailyBudgetStatus } from '@/lib/anthropic'
-import { computeIndicators, technicalScore, detectBBSqueeze, detectEMACross, detectRSIExtreme, detectMACDCross, detectVolumeSpike, detectEMA50Breakout, quickBacktest, detectRegime } from '@/lib/indicators'
+import { computeIndicators, technicalScore, detectBBSqueeze, detectEMACross, detectRSIExtreme, detectMACDCross, detectVolumeSpike, detectEMA50Breakout, quickBacktest, detectRegime, multiTimeframeConfluence } from '@/lib/indicators'
 import { createServiceSupabase } from '@/lib/supabase'
 import { sendSignalAlert } from '@/lib/telegram'
 import { notifySignal as waSignal, notifyWarRoomDecision as waDecision, notifyWarRoomOpen as waOpen, notifyWarRoomDebate as waDebate, notifyWarRoomBlocked as waBlocked } from '@/lib/whatsapp'
@@ -374,6 +374,33 @@ async function runMeeting(
     return 'derivatives-veto'
   }
 
+  // ── MULTI-TIMEFRAME CONFLUENCE — block lonely 1H signals ──
+  // Aggregates the same 1H candle stream into 4H and 1D buckets and checks
+  // trend alignment. A single 1H trigger with both 4H and 1D bearish (count=0)
+  // is the lowest-edge setup in the dataset — block it pre-debate.
+  // Two-trigger or higher-confluence setups bypass this gate even at MTF=0
+  // because the 1H confluence is already strong evidence.
+  const mtf = multiTimeframeConfluence(ohlcv)
+  if (triggerDir === 'long' && rawTriggers.length === 1 && mtf.longConfluenceCount === 0) {
+    await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
+      message: `${instrument} @ $${f(price)} | ${allTriggers} → MTF VETO: 4H=${mtf.trend4h} 1D=${mtf.trend1d}, both against LONG with single 1H trigger. Skipping.`,
+      data: { price, trigger: allTriggers, reason: 'mtf-veto', mtf },
+    })
+    return 'mtf-veto'
+  }
+
+  // ── HIGH MACRO RISK — require trigger confluence ──
+  // EXTREME risk already pauses the whole war-room above. HIGH risk allows
+  // trading but only on high-confluence setups (3+ triggers) so we don't
+  // open marginal LONGs into a stressed tape (VIX > 25 or imminent events).
+  if (macro?.riskLevel === 'HIGH' && rawTriggers.length < 3) {
+    await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
+      message: `${instrument} @ $${f(price)} | ${allTriggers} (${rawTriggers.length} triggers) → MACRO HIGH RISK requires 3+ triggers. Skipping.`,
+      data: { price, trigger: allTriggers, reason: 'macro-high-strict', macroRisk: macro.riskLevel },
+    })
+    return 'macro-high-strict'
+  }
+
   // ── PHASE 2: TREND FILTER GATE — only buy in uptrends ──
   const trendWeak = forecast.smoothedTrend === 'down' && forecast.upProbability4h < 0.45
   if (trendWeak) {
@@ -516,12 +543,15 @@ async function runMeeting(
     ? `\n── DERIVATIVES POSITIONING ──\nFunding 8h: ${(derivSnap.fundingRate8h * 100).toFixed(3)}%  (7d avg: ${(derivSnap.fundingRateAvg7d * 100).toFixed(3)}%)\nOI delta 4h: ${derivSnap.openInterestDeltaPct4h?.toFixed(1) ?? '?'}%\nRetail L/S: ${derivSnap.retailLongShortRatio?.toFixed(2) ?? '?'}\nTop trader L/S: ${derivSnap.topTraderLongShortRatio?.toFixed(2) ?? '?'}\nDerivatives note: ${derivGate.reason}\n`
     : ''
 
+  // Multi-timeframe trend summary
+  const mtfText = `\n── MULTI-TIMEFRAME ──\n4H trend: ${mtf.trend4h} (RSI ${mtf.rsi4h.toFixed(0)})  |  1D trend: ${mtf.trend1d}  |  LONG confluence count: ${mtf.longConfluenceCount}/2\n`
+
   let parsed: OrchestratorDecision | null = null
   let rawDecisionText = ''
   try {
     const result = await callAgent<OrchestratorDecision>({
       system: orchDbPrompt ?? orchDefaultPrompt,
-      user: `${fullConvo(conv)}${macroHeader}\n${forecastText}${derivativesText}\nFinal decision for ${instrument}. You have heard all 11 agents. Consider the LIVE WORLD STATE, QUANTITATIVE FORECAST, and DERIVATIVES POSITIONING above. If the forecast or derivatives contradict the agent consensus, explain why you trust one over the others. Respond with JSON only.`,
+      user: `${fullConvo(conv)}${macroHeader}\n${forecastText}${derivativesText}${mtfText}\nFinal decision for ${instrument}. You have heard all 11 agents. Consider the LIVE WORLD STATE, QUANTITATIVE FORECAST, DERIVATIVES POSITIONING, and MULTI-TIMEFRAME alignment above. If any of these contradict the agent consensus, explain why you trust one over the others. Respond with JSON only.`,
       maxTokens: AGENT_TOKEN_LIMITS['orchestrator'],
       timeoutMs: 45000,
       expectJson: true,

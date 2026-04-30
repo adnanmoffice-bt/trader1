@@ -58,7 +58,8 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-_(none)_
+LOCK: agents/war-room.ts + lib/risk-controls.ts — Computer A — started 2026-04-30 12:50 Dubai
+       (multi-batch upgrade: session gate, correlation dedup, partial-TP/+BE, derivatives, MTF, news/CME/polymarket vetoes)
 
 ---
 

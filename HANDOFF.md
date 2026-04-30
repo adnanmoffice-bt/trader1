@@ -63,7 +63,8 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-_(none)_
+LOCK: app/api/cron/positions/* + lib/safety.ts — Computer A — started 2026-04-30 13:25 Dubai
+       (validation pass: 6-month backtest, partial-fill + BE-stop in positions cron, WR-based kill-switch, weekly review cron)
 
 ---
 

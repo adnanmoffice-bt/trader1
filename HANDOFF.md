@@ -50,7 +50,11 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 - [ ] Operator decision (architecture): apply `supabase/schema.sql` to prod DB to create the 5 missing tables (`agent_knowledge`, `performance_snapshots`, `trade_analytics`, `trade_journal`, `polymarket_bets`), OR delete the dead code paths that reference them. Currently silently failing.
 - [ ] Watch tomorrow's first 24h after RANGING gate calibration (commit on 2026-04-28). If single-trigger weak-range entries cause >2 SLs in a row on the same instrument, tighten the `STRONG_TRIGGERS` set or raise `regime.strength` threshold from 0.5 → 0.4.
 - [ ] Monitor first 48h with the new gate stack (commits c538663…d2da47a, 2026-04-30). Watch demo_trades for: rejection counts per gate (`audit-10d.mjs` will surface these once the new return labels appear in `war_room_messages.data.reason`), Asia-chop window flow (should be ~0 entries 02:00-09:00 Dubai), and orderbook-block events. If a particular gate is rejecting > 80% of meetings on a single instrument over 48h, we've over-tightened — relax the threshold rather than removing the gate.
-- [ ] Implement positions-cron partial-fill + break-even-stop logic so `signals.take_profit_2` (set on every new LONG since c7524e5) actually fires. Plan: when a position hits TP1, close 50%, move SL to entry on the remaining 50%, leave TP at TP2. Big-EV upgrade — the audit math projects another +$540/10d on top of the TP-tightening alone.
+- [ ] Implement positions-cron partial-fill + break-even-stop logic so `signals.take_profit_2` (set on every new LONG since c7524e5) actually fires. Plan: when a position hits TP1, close 50%, move SL to entry on the remaining 50%, leave TP at TP2. Big-EV upgrade — the audit math projects another +$540/10d on top of the TP-tightening alone. **DEFERRED** until backtest (`scripts/backtest-gate-stack.mjs`) shows positive expectancy on a 30-day rolling demo window. Implementing partial-fill on a negative-edge system just optimizes the loss curve.
+- [ ] Re-evaluate `LIVE_INSTRUMENT_BLACKLIST` (ADA/DOT/APT) in `lib/safety.ts` weekly. If 30-day demo expectancy turns positive on any of them, lift them off the blacklist.
+- [ ] Run `node scripts/backtest-gate-stack.mjs` weekly (or monthly) to re-validate. Save the output to `scripts/backtest-runs/YYYY-MM-DD.txt` so we can see edge trending over time.
+- [ ] Investigate why ETH/USD generates 0 trades in `FILTERED` and `NEW` modes of the backtest (BTC always triggers first chronologically, correlation dedup blocks ETH). Either accept ETH as BTC's shadow, OR loosen correlation dedup to allow ETH when BTC's open trade has > 4h elapsed.
+- [ ] (research) The 5 deterministic triggers (EMA cross, MACD cross, RSI extreme, EMA50 breakout, vol spike) had NEGATIVE expectancy across ALL 24 SL/TP combos tested in `--sweep`. Either find new triggers (ICT order blocks, volume profile POC reclaim, FVG fills) or accept paper-mode-only until edge appears.
 - [ ] Wire a real on-chain feed (CryptoQuant or Glassnode free tier) into `lib/onchain.ts` — interface is in place in war-room (`evaluateOnchainForLong`), war-room currently treats stub `null` as fail-open. With real data, LONG entries get hard-blocked on $50M+ net inflow / +8 boost on $50M+ net outflow.
 - [ ] Apply `supabase/schema.sql` to prod DB (creates `agent_knowledge`, `performance_snapshots`, `trade_analytics`, `trade_journal`, `polymarket_bets`) OR delete the dead code paths. Currently silently failing. Same item as last session — still pending.
 - [ ] Add heartbeat helper logs to `signals-cron`, `positions-cron`, `demo-cron`, `meta-agent-cron`, `morning-briefing-cron`, `daily-report-cron`, `weekly-report-cron`. Audit on 2026-04-30 showed only `market-data-cron`, `polymarket-scanner`, `budget-tracker`, and the new `status-report-cron` write `agent_logs` heartbeats. Without heartbeats we can't tell silent failures from "ran fine but had nothing to do". Pattern from `status-report-cron` (insert one row at end of each run) is the model.
@@ -63,12 +67,52 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-LOCK: app/api/cron/positions/* + lib/safety.ts — Computer A — started 2026-04-30 13:25 Dubai
-       (validation pass: 6-month backtest, partial-fill + BE-stop in positions cron, WR-based kill-switch, weekly review cron)
+_(none)_
 
 ---
 
 ## SESSION LOG (newest on top)
+
+### 2026-04-30 · 17:25 Dubai · Computer A (day) — VALIDATION PASS
+**Commits:** `ba53688` LOCK · `59a33b3` backtest script · `b7f5789` edge gate · _(this push)_ docs.
+
+Context:
+- Operator demanded "do all, arms yourself with knowledge you must be profitable today onward, we are trading real money".
+- Earlier in the day, 7 commits added a large gate stack (session, correlation, MTF, derivatives, news, CME, on-chain) on top of TP=3.0 ATR. Math was projected from a 17-trade 10-day audit (insufficient sample).
+- Operator's demand for proof-of-edge before live exec triggered a 6-month walk-forward backtest of the deterministic part of the system.
+
+What I built:
+- `scripts/backtest-gate-stack.mjs` — pulls 6 months of 1H Binance Spot candles for all 11 active instruments, re-implements every deterministic war-room gate, walks forward bar-by-bar, simulates entries/SL/TP, and outputs per-trade R-expectancy. Three modes (BASELINE / FILTERED / NEW) plus `--sweep` for SL/TP grid search.
+- `lib/safety.ts` — added `checkLiveTradingAllowed()`. Two layers: per-instrument LIVE_INSTRUMENT_BLACKLIST (ADA/DOT/APT) + 30-day rolling expectancy gate (-0.05 R/trade floor, min 20-trade sample, fails CLOSED).
+- `agents/war-room.ts` — wired `checkLiveTradingAllowed` into the live-exec branch BEFORE `getPrimaryExchange`. Demo trades unaffected; only real money is gated.
+
+Backtest verdict (180 days, 11 instruments, 27.4 — 28.8 trades/instrument/180d):
+
+| Mode      | Trades | WR     | Exp/R   | Total R | Total $$ on $5k |
+|-----------|--------|--------|---------|---------|-----------------|
+| BASELINE  |   657  | 27.2%  | -0.115  |  -75.3  | -$5,644         |
+| FILTERED  |   309  | 24.6%  | -0.201  |  -62.0  | -$4,650         |
+| NEW       |   348  | 34.5%  | -0.138  |  -48.0  | -$3,600         |
+
+NEW (the current production config) is the best of three by total dollars but still negative. The `--sweep` over 24 SL/TP combos found zero positive-expectancy configs. Best was SL=1.5×ATR, TP=2.0×ATR, R:R 1.33 → still -0.094 R/trade.
+
+Per-instrument NEW results (informative):
+- DOGE: +5.5R, 46.9% WR, ~+$413
+- LINK: +5.0R, 45.0% WR, ~+$375
+- BTC, ETH, AVAX, MATIC, NEAR, XAU: small negative
+- ADA: -14.5R | DOT: -13.0R | APT: -8.5R → these now blacklisted from LIVE only
+
+Honest verdict to operator:
+> "I cannot make a system profitable that doesn't have edge. What I CAN do is stop it from losing real money on a losing system. The edge gate now does exactly that. Demo continues so we can prove edge before scaling."
+
+What's NOT done (intentionally deferred):
+- Positions-cron partial-fill + break-even-stop logic. Implementing it on a negative-edge system just optimizes the loss curve. Defer until rolling 30d expectancy is positive.
+- Weekly P&L review cron. Daily-report-cron + audit-10d.mjs already exist.
+
+Other notes:
+- Updated `CONTEXT.md` Hard Truth #39 with backtest result.
+- Updated `APEX_PROJECT_LOG.md` with the validation entry.
+- LOCK cleared in this commit.
 
 ### 2026-04-30 · 14:30 Dubai · Computer A (day)
 **Commits:** `a1c42a6` LOCK · `c538663` helpers · `13573f3` Tier 1 wiring · `c7524e5` TP calibration · `24e2600` derivatives + book · `4e0c4d6` MTF + macro-HIGH · `d2da47a` news + CME + onchain · _(this push)_ docs.

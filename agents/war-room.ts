@@ -2,7 +2,7 @@ import { callAgent, getDailyBudgetStatus } from '@/lib/anthropic'
 import { computeIndicators, technicalScore, detectBBSqueeze, detectEMACross, detectRSIExtreme, detectMACDCross, detectVolumeSpike, detectEMA50Breakout, quickBacktest, detectRegime } from '@/lib/indicators'
 import { createServiceSupabase } from '@/lib/supabase'
 import { sendSignalAlert } from '@/lib/telegram'
-import { notifySignal as waSignal, notifyWarRoomDecision as waDecision, notifyWarRoomOpen as waOpen, notifyWarRoomDebate as waDebate, notifyWarRoomBlocked as waBlocked, notifyWarRoomScan as waScan } from '@/lib/whatsapp'
+import { notifySignal as waSignal, notifyWarRoomDecision as waDecision, notifyWarRoomOpen as waOpen, notifyWarRoomDebate as waDebate, notifyWarRoomBlocked as waBlocked } from '@/lib/whatsapp'
 import { checkSafety, getRecoveryMode } from '@/lib/safety'
 import type { RecoveryMode } from '@/lib/safety'
 import { hardRiskCheck, checkDailyLossLimit, getTradeStats, riskBasedPositionSize } from '@/lib/risk-controls'
@@ -179,15 +179,11 @@ export async function runWarRoom(): Promise<void> {
     }
   }
 
-  const triggersFound = scanResults.filter(s => s.status !== 'no trigger' && s.status !== 'error' && s.status !== 'cooldown' && s.status !== 'budget-capped').length
-  const budgetEnd = await getDailyBudgetStatus()
-  await waScan({
-    totalScanned: ALL_INSTRUMENTS.length,
-    triggersFound,
-    instruments: scanResults,
-    budgetSpent: budgetEnd.spent,
-    budgetRemaining: budgetEnd.remaining,
-  } as Parameters<typeof waScan>[0]).catch(e => console.error('[war-room] waScan WhatsApp error:', e))
+  // Note: per-tick "scan summary" WhatsApp blasts removed 2026-04-30 in favor
+  // of the dedicated /api/cron/status-report cron (every 2h, much richer
+  // payload). Per-meeting open / decision / blocked WhatsApp messages still fire
+  // for real events. waScan is now a no-op stub kept for ABI compat.
+  void scanResults
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

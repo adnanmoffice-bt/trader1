@@ -10,6 +10,7 @@
     { "path": "/api/cron/meta-weekly",       "schedule": "0 4 * * 0" },
     { "path": "/api/cron/morning-briefing",  "schedule": "5 2 * * *" },
     { "path": "/api/cron/daily-report",      "schedule": "0 18 * * *" },
-    { "path": "/api/cron/weekly-report",     "schedule": "10 18 * * 0" }
+    { "path": "/api/cron/weekly-report",     "schedule": "10 18 * * 0" },
+    { "path": "/api/cron/status-report",     "schedule": "0 */2 * * *" }
   ]
 }

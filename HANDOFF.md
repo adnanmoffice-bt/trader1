@@ -41,10 +41,10 @@ Same git identity on both → commits look identical; differentiate via the
 
 Items still to finish. Tick `[x]` when done; delete after a week.
 
-- [ ] **OPERATOR ACTION (BLOCKER for real trading): disable Binance Auto-Subscribe to Simple Earn.** Binance UI → Earn → Simple Earn → Manage (gear icon) → Auto-Subscribe → toggle OFF for USDT (and any other quote asset like USDC). Without this, every USDT transferred to Spot gets swept back into Earn at ~22:00 Dubai (`type=AUTO` in `/sapi/v1/simple-earn/flexible/history/subscriptionRecord`). Confirmed by 7 AUTO sweeps in last 7d. Detail in CONTEXT.md Hard Truth #31. The 500 USDT moved on 23/04 lasted 10 hours before sweep.
-- [ ] **OPERATOR ACTION: after Auto-Subscribe is OFF, run** `node scripts/move-funding-to-spot.mjs --amount=1100 --confirm` (and optionally `--redeem=500` to also pull existing Earn USDT). Script has a guard that detects AUTO sweeps and refuses to run while feature is still active (override with `--force` if you accept the sweep).
-- [x] ~~Operator action: on Binance, transfer 1,100 USDT from Funding → Spot~~ — superseded by the two items above; the original transfer attempt on 23/04 was reversed by Auto-Subscribe.
-- [x] ~~Operator action: top up Anthropic API credits~~ — confirmed working (no credit errors since 28/04, polymarket-scanner ran clean today).
+- [x] ~~Disable Binance Auto-Subscribe to Simple Earn~~ — operator reports done (30/04 ~12:14 Dubai). **Confirmation pending**: rerun `node scripts/test-binance-key.mjs` after 22:05 Dubai tonight; if Spot USDT ≈ $500, toggle truly took effect. If sweep fires again, revisit Earn settings.
+- [x] ~~Move 1,100 USDT Funding → Spot~~ — operator chose to start with 500 USDT manually via Binance UI (API key lacks Universal Transfer permission, so `scripts/move-funding-to-spot.mjs` returns -1002). Verified Spot USDT = $500.0164 at 30/04 12:14 Dubai. Funding USDT remaining: $600.
+- [ ] (after tonight's sweep test confirms Auto-Subscribe is off) decide whether to move the remaining $600 of Funding USDT into Spot for larger position sizing, OR leave as buffer.
+- [ ] (optional, future) Add `Permits Universal Transfer` to the Binance API key if you want `scripts/move-funding-to-spot.mjs` to work end-to-end. Trade-off: widens API key blast radius (a leaked key could move funds between wallets without your password). Current setup forces transfers to be manual UI-only — safer.
 - [ ] Confirm `/api/wallet` reads the expected values on live URL after Vercel picks up `4b1c4ca`.
 - [ ] Operator decision: add `TELEGRAM_BOT_TOKEN` to Vercel prod env, OR formally drop Telegram in favor of WhatsApp (Green API).
 - [ ] Operator decision (architecture): apply `supabase/schema.sql` to prod DB to create the 5 missing tables (`agent_knowledge`, `performance_snapshots`, `trade_analytics`, `trade_journal`, `polymarket_bets`), OR delete the dead code paths that reference them. Currently silently failing.
@@ -63,6 +63,35 @@ _(none)_
 ---
 
 ## SESSION LOG (newest on top)
+
+### 2026-04-30 · 12:30 Dubai · Computer A (day)
+**Commit:** _(this push)_ — `feat(whatsapp): rich 2h status report cron + cleaner event message format`
+
+Context:
+- Operator transferred 500 USDT Funding → Spot manually via Binance UI (API key lacks Universal Transfer permission, so `scripts/move-funding-to-spot.mjs` aborted with `-1002 not authorized`). Verified Spot USDT = $500.0164 via `scripts/test-binance-key.mjs`.
+- Operator reports Auto-Subscribe to Simple Earn now disabled in Binance UI. Real test is the 22:00 Dubai sweep tonight — if Spot stays at ~$500, toggle truly stuck. If it drops, retry the toggle.
+- Operator asked for WhatsApp messages to be cleaner/denser and the periodic scan summaries to fire every 2h instead of every 15min.
+
+Changes:
+- `lib/whatsapp.ts`:
+  - New `notifyPeriodicReport(payload)` — comprehensive 2h status format covering portfolio (paper), real-money breakdown (Spot/Funding/Earn), 2h activity counters (meetings, triggers, executes/rejects, blocks, macro pauses, real trade P&L), open positions with live P&L, market snapshot per active instrument (price, 24h Δ, RSI, regime + strength), notable triggers, macro pause state, daily-loss budget consumption, AI spend.
+  - Reformatted `notifySignal`, `notifyWarRoomOpen`, `notifyWarRoomDecision`, `notifyWarRoomDebate`, `notifyWarRoomBlocked`, `notifyTradeOpened`, `notifyTradeClosed`, `notifyPositionAlert` with consistent header/body/footer pattern. Added `[REAL]`/`[PAPER]` tag, signed P&L, SL/TP percent distances, hold duration on close, Binance order ID on real opens.
+  - `notifyWarRoomScan` is now a no-op stub (kept for ABI compat, will delete in a later commit).
+  - Removed random `greet()` from event-driven alerts (kept friendly tone in daily/weekly/morning/kill-switch/demo/profit-alloc reports).
+- New `app/api/cron/status-report/route.ts`:
+  - Standalone cron, auths via `CRON_SECRET`. Reads portfolio + user_settings + war_room_messages (last 2h) + trades + positions + price_history (last 120 candles per active instrument for indicator computation) + Binance Spot via `getPrimaryExchange().testConnection()` + Funding/Earn via direct signed Binance SAPI. Calls `notifyPeriodicReport` and writes a heartbeat log to `agent_logs (agent='status-report-cron')`.
+- `vercel.json`: added `{ "path": "/api/cron/status-report", "schedule": "0 */2 * * *" }` — fires at 00:00, 02:00, ..., 22:00 UTC (~04:00, 06:00, ..., 02:00 Dubai). 12 reports/day, replacing the ~96 daily 15-min scan blasts.
+- `agents/war-room.ts`: removed inline `waScan` call (kills the per-tick 15-min spam). Per-meeting `waOpen` / `waDebate` / `waDecision` / `waBlocked` still fire on real events.
+
+Safety notes:
+- No code change to `lib/safety.ts`, `lib/risk-controls.ts`, `lib/exchanges/*`, or war-room execution / sizing logic.
+- No SHORTS / SOL / BNB / BB_SQUEEZE re-enabled.
+- TypeScript build passes (`tsc --noEmit` exit 0). No linter errors on touched files.
+- Status-report cron is read-only — no trade writes, no settings mutations.
+
+Open follow-ups (operator to verify):
+- Tonight after 22:05 Dubai: run `node scripts/test-binance-key.mjs`. If Spot USDT ≈ $500, Auto-Subscribe is genuinely off → ready to move the rest of Funding ($600 left) into Spot.
+- After Vercel deploys this commit: confirm the first 2h report fires and looks readable in the WhatsApp group. Tweak formatting if anything feels too dense.
 
 ### 2026-04-29 · 17:00 Dubai · Computer A (day)
 **Commit:** _(this push)_ — `chore(ops): document Binance Auto-Subscribe trap + safe Funding→Spot helper`

@@ -3,15 +3,9 @@ import type { Signal, DemoSession } from '@/types'
 
 // All values in USD
 const TEAM = ['Sachin', 'Adnan', 'Mohammad']
-const GREETINGS = [
-  `What's up ${TEAM.join(', ')}! 🤝`,
-  `Gentlemen — ${TEAM.join(', ')} — let's get it! 💪`,
-  `${TEAM.join(', ')} — your AI is on it. 🤖`,
-  `Morning bosses! ${TEAM.join(', ')} — here's the update. ☕`,
-  `${TEAM[0]}, ${TEAM[1]}, ${TEAM[2]} — APEX reporting in. ⚡`,
-  `Team! Your boy APEX has news. 📢`,
-]
-function greet() { return GREETINGS[Math.floor(Math.random() * GREETINGS.length)] }
+// Random greeting was previously used in event-driven alerts; removed 2026-04-30
+// to keep operational messages dense. TEAM is still used by daily/weekly/morning
+// reports where a friendlier tone is appropriate.
 
 interface WhatsAppConfig {
   apiUrl: string
@@ -194,7 +188,37 @@ export async function testConnection(instanceId: string, apiToken: string): Prom
 }
 
 function f(n: number): string {
-  return n >= 10000 ? n.toLocaleString('en', { maximumFractionDigits: 0 }) : n.toFixed(2)
+  if (!Number.isFinite(n)) return '?'
+  if (Math.abs(n) >= 10000) return n.toLocaleString('en', { maximumFractionDigits: 0 })
+  if (Math.abs(n) >= 1)     return n.toFixed(2)
+  if (Math.abs(n) >= 0.01)  return n.toFixed(4)
+  return n.toFixed(6)
+}
+
+function fInt(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return '—'
+  return Math.round(n).toLocaleString('en')
+}
+
+function fSigned(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return '—'
+  return (n >= 0 ? '+' : '') + f(n)
+}
+
+function fPct(n: number | null | undefined, decimals = 1): string {
+  if (n == null || !Number.isFinite(n)) return '—'
+  return (n >= 0 ? '+' : '') + n.toFixed(decimals) + '%'
+}
+
+function dubaiNow(): string {
+  return new Date().toLocaleString('en-GB', {
+    timeZone: 'Asia/Dubai', day: '2-digit', month: 'short',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  })
+}
+
+function dubaiTime(): string {
+  return new Date().toLocaleTimeString('en-GB', { timeZone: 'Asia/Dubai', hour: '2-digit', minute: '2-digit', hour12: false })
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -204,23 +228,29 @@ function f(n: number): string {
 export async function notifySignal(signal: Signal, userId?: string) {
   const icon = signal.direction === 'long' ? '🟢' : signal.direction === 'short' ? '🔴' : '🟡'
   const dir = signal.direction.toUpperCase()
-  const rr = signal.risk_reward ? `R:R ${signal.risk_reward}x` : ''
+  const rr = signal.risk_reward ? `R:R ${Number(signal.risk_reward).toFixed(2)}x` : ''
+  const slDist = signal.entry_price && signal.stop_loss
+    ? Math.abs((signal.entry_price - signal.stop_loss) / signal.entry_price) * 100
+    : null
+  const tpDist = signal.entry_price && signal.take_profit_1
+    ? Math.abs((signal.take_profit_1 - signal.entry_price) / signal.entry_price) * 100
+    : null
 
-  const msg = `${icon} *APEX SIGNAL — ${dir} ${signal.instrument}*
-━━━━━━━━━━━━━━━━━━
-${greet()}
+  const lines = [
+    `${icon} *SIGNAL — ${dir} ${signal.instrument}*`,
+    '━━━━━━━━━━━━━━━━━━',
+    `📍 Entry:  $${f(signal.entry_price ?? 0)}`,
+    `🛑 SL:     $${f(signal.stop_loss ?? 0)}${slDist != null ? `  (-${slDist.toFixed(2)}%)` : ''}`,
+    `🎯 TP1:    $${f(signal.take_profit_1 ?? 0)}${tpDist != null ? `  (+${tpDist.toFixed(2)}%)` : ''}`,
+    `🎯 TP2:    $${f(signal.take_profit_2 ?? 0)}`,
+    `📊 Conf:   ${signal.confidence}%   ${rr}`,
+    '',
+    `🧠 ${(signal.reasoning ?? '').slice(0, 200)}`,
+  ]
+  if (signal.ai_analysis) lines.push(`🤖 ${String(signal.ai_analysis).slice(0, 160)}`)
+  lines.push(`⏰ ${dubaiTime()} GST`)
 
-📍 Entry: $${f(signal.entry_price ?? 0)}
-🛑 Stop Loss: $${f(signal.stop_loss ?? 0)}
-🎯 Target 1: $${f(signal.take_profit_1 ?? 0)}
-🎯 Target 2: $${f(signal.take_profit_2 ?? 0)}
-📊 Confidence: ${signal.confidence}% | ${rr}
-━━━━━━━━━━━━━━━━━━
-🧠 ${signal.reasoning.slice(0, 200)}
-🤖 ${signal.ai_analysis.slice(0, 150)}
-⏰ ${new Date().toLocaleTimeString('en', { timeZone: 'Asia/Dubai' })} UAE`
-
-  return sendGroupMessage(msg, userId)
+  return sendGroupMessage(lines.join('\n'), userId)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -246,29 +276,27 @@ export async function notifyWarRoomDecision(data: {
   const icon = data.execute ? '⚔️' : '🚫'
   const verdict = data.execute ? 'EXECUTE' : 'REJECTED'
 
-  let msg = `${icon} *WAR ROOM — ${data.instrument}*
-━━━━━━━━━━━━━━━━━━
-${data.execute ? `${TEAM.join(', ')} — 12 AI agents debated and we're going in! 🔥` : `${TEAM.join(', ')} — sat this one out. Protecting your capital. 🛡️`}
+  const lines = [
+    `${icon} *WAR ROOM ${verdict} — ${data.instrument}*`,
+    '━━━━━━━━━━━━━━━━━━',
+    `🗳️ Vote: ${data.votesFor} FOR / ${data.votesAgainst} AGAINST`,
+  ]
 
-📋 Verdict: *${verdict}*
-🗳️ Vote: ${data.votesFor} FOR / ${data.votesAgainst} AGAINST`
+  if (data.trigger)            lines.push(`🔔 Trigger: ${data.trigger}`)
+  if (data.backtestWins !== undefined) lines.push(`🧪 Backtest: ${data.backtestWins}W / ${data.backtestLosses}L`)
+  if (data.kelly)              lines.push(`📐 Kelly: ${(data.kelly * 100).toFixed(1)}%`)
 
   if (data.execute && data.entry) {
-    msg += `
-
-📍 ${data.direction?.toUpperCase()} @ $${f(data.entry)}
-🛑 SL: $${f(data.sl ?? 0)} | 🎯 TP: $${f(data.tp ?? 0)}
-📊 R:R: ${data.rr?.toFixed(2) ?? '?'}x`
+    lines.push('')
+    lines.push(`📍 ${data.direction?.toUpperCase()} @ $${f(data.entry)}`)
+    lines.push(`🛑 SL: $${f(data.sl ?? 0)}   🎯 TP: $${f(data.tp ?? 0)}   R:R ${data.rr?.toFixed(2) ?? '?'}x`)
   }
 
-  if (data.trigger) msg += `\n🔔 Trigger: ${data.trigger}`
-  if (data.backtestWins !== undefined) msg += `\n🧪 Backtest: ${data.backtestWins}W / ${data.backtestLosses}L`
-  if (data.kelly) msg += `\n📐 Kelly: ${(data.kelly * 100).toFixed(1)}%`
+  lines.push('')
+  lines.push(`💬 ${(data.decision ?? '').slice(0, 220)}`)
+  lines.push(`⏰ ${dubaiTime()} GST`)
 
-  msg += `\n\n💬 "${data.decision.slice(0, 200)}"`
-  msg += `\n⏰ ${new Date().toLocaleTimeString('en', { timeZone: 'Asia/Dubai' })} UAE`
-
-  return sendGroupMessage(msg, userId)
+  return sendGroupMessage(lines.join('\n'), userId)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -281,18 +309,17 @@ export async function notifyWarRoomOpen(data: {
 }, userId?: string) {
   const icon = data.direction === 'long' ? '🟢' : '🔴'
 
-  const msg = `🏛️ *WAR ROOM OPENED — ${data.instrument}*
-━━━━━━━━━━━━━━━━━━
-${TEAM.join(', ')} — I detected something! Calling all 12 agents to debate.
-
-${icon} Trigger: *${data.trigger}* → ${data.direction.toUpperCase()}
-💲 Price: $${f(data.price)}
-📊 RSI: ${data.rsi.toFixed(0)} | ATR: ${data.atr.toFixed(2)} | Vol: ${data.volumeRatio.toFixed(1)}x
-${data.triggerCount > 1 ? `⚡ ${data.triggerCount} signals detected — strong confluence!` : ''}
-
-🎙️ Agents debating now... stand by for verdict.`
-
-  return sendGroupMessage(msg, userId)
+  const lines = [
+    `🏛️ *MEETING — ${data.instrument}*`,
+    '━━━━━━━━━━━━━━━━━━',
+    `${icon} ${data.direction.toUpperCase()} @ $${f(data.price)}`,
+    `🔔 Trigger: ${data.trigger}${data.triggerCount > 1 ? `  (×${data.triggerCount} confluence)` : ''}`,
+    `📊 RSI ${data.rsi.toFixed(0)}  ATR ${data.atr.toFixed(2)}  Vol ${data.volumeRatio.toFixed(1)}x`,
+    '',
+    `🎙️ 12 agents debating · verdict soon`,
+    `⏰ ${dubaiTime()} GST`,
+  ]
+  return sendGroupMessage(lines.join('\n'), userId)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -305,23 +332,24 @@ export async function notifyWarRoomDebate(data: {
 }, userId?: string) {
   const stanceIcon = (s: string) => s === 'bullish' ? '🟢' : s === 'bearish' ? '🔴' : '🟡'
 
-  const agentLines = data.agents.map(a =>
-    `${stanceIcon(a.stance)} *${a.name}*: ${a.summary}`
-  ).join('\n')
-
   const bullish = data.agents.filter(a => a.stance === 'bullish').length
   const bearish = data.agents.filter(a => a.stance === 'bearish').length
+  const neutral = data.agents.filter(a => a.stance === 'neutral').length
 
-  const msg = `🎙️ *WAR ROOM DEBATE — ${data.instrument}*
-━━━━━━━━━━━━━━━━━━
-${TEAM.join(', ')} — here's what the agents are saying:
-
-${agentLines}
-
-📊 Running tally: ${bullish} bullish / ${bearish} bearish
-⏳ Orchestrator making final decision...`
-
-  return sendGroupMessage(msg, userId)
+  // Compact: only show non-neutral agents to save space
+  const lines = [
+    `🎙️ *DEBATE — ${data.instrument}*`,
+    '━━━━━━━━━━━━━━━━━━',
+    `Tally: ${bullish}🟢 / ${bearish}🔴 / ${neutral}🟡`,
+    '',
+  ]
+  for (const a of data.agents) {
+    if (a.stance === 'neutral') continue
+    lines.push(`${stanceIcon(a.stance)} *${a.name}*: ${a.summary.slice(0, 110)}`)
+  }
+  lines.push('')
+  lines.push(`⏳ Orchestrator deciding · ${dubaiTime()} GST`)
+  return sendGroupMessage(lines.join('\n'), userId)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -331,43 +359,31 @@ ${agentLines}
 export async function notifyWarRoomBlocked(data: {
   instrument: string; reason: string; blocker: string;
 }, userId?: string) {
-  const msg = `🛡️ *WAR ROOM BLOCKED — ${data.instrument}*
-━━━━━━━━━━━━━━━━━━
-${TEAM.join(', ')} — I was about to trade but risk controls stopped me.
-Better safe than sorry with your money! 💰
-
-⛔ Blocked by: *${data.blocker}*
-📋 Reason: ${data.reason}
-— APEX AI 🛡️`
-
-  return sendGroupMessage(msg, userId)
+  const lines = [
+    `🛡️ *BLOCKED — ${data.instrument}*`,
+    '━━━━━━━━━━━━━━━━━━',
+    `⛔ Blocker: *${data.blocker}*`,
+    `📋 Reason: ${data.reason.slice(0, 220)}`,
+    `⏰ ${dubaiTime()} GST`,
+  ]
+  return sendGroupMessage(lines.join('\n'), userId)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 2e. WAR ROOM — Quick scan summary (periodic)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-export async function notifyWarRoomScan(data: {
+/**
+ * @deprecated Replaced by notifyPeriodicReport sent on a 2h cron schedule.
+ * Kept as a no-op stub so existing imports don't break during deploy.
+ * Will be removed in a future commit.
+ */
+export async function notifyWarRoomScan(_data: {
   totalScanned: number; triggersFound: number;
   instruments: { symbol: string; status: string }[];
   budgetSpent?: number; budgetRemaining?: number;
-}, userId?: string) {
-  const lines = data.instruments
-    .filter(i => i.status !== 'no trigger')
-    .map(i => `  ${i.symbol}: ${i.status}`)
-    .join('\n')
-
-  const budget = data.budgetSpent != null
-    ? `\nBudget: $${data.budgetSpent.toFixed(2)} spent / $${data.budgetRemaining?.toFixed(2)} left`
-    : ''
-
-  const time = new Date().toLocaleTimeString('en', { timeZone: 'Asia/Dubai', hour: '2-digit', minute: '2-digit' })
-
-  const msg = data.triggersFound > 0
-    ? `SCAN ${time} | ${data.totalScanned} markets | ${data.triggersFound} triggers found\n${lines}\nDebating now...${budget}`
-    : `SCAN ${time} | ${data.totalScanned} markets | All quiet${budget}`
-
-  return sendGroupMessage(msg, userId)
+}, _userId?: string): Promise<boolean> {
+  return false
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -377,22 +393,30 @@ export async function notifyWarRoomScan(data: {
 export async function notifyTradeOpened(trade: {
   instrument: string; direction: string; entry_price: number;
   quantity: number; stop_loss?: number; take_profit?: number;
+  isReal?: boolean; orderId?: string;
 }, userId?: string) {
   const icon = trade.direction === 'long' ? '🟢' : '🔴'
   const notional = trade.quantity * trade.entry_price
+  const tag = trade.isReal === false ? 'PAPER' : 'REAL'
+  const slDist = trade.stop_loss
+    ? Math.abs((trade.entry_price - trade.stop_loss) / trade.entry_price) * 100
+    : null
+  const tpDist = trade.take_profit
+    ? Math.abs((trade.take_profit - trade.entry_price) / trade.entry_price) * 100
+    : null
 
-  const msg = `${icon} *TRADE OPENED*
-━━━━━━━━━━━━━━━━━━
-Bosses, we're in! Your money is working. 💰
+  const lines = [
+    `${icon} *TRADE OPENED [${tag}]* — ${trade.instrument}`,
+    '━━━━━━━━━━━━━━━━━━',
+    `📍 ${trade.direction.toUpperCase()} @ $${f(trade.entry_price)}`,
+    `📦 Size: ${trade.quantity.toFixed(6)} (~$${notional.toFixed(0)})`,
+    `🛑 SL: $${f(trade.stop_loss ?? 0)}${slDist != null ? `  (-${slDist.toFixed(2)}%)` : ''}`,
+    `🎯 TP: $${f(trade.take_profit ?? 0)}${tpDist != null ? `  (+${tpDist.toFixed(2)}%)` : ''}`,
+  ]
+  if (trade.orderId) lines.push(`🔗 Binance order: ${trade.orderId}`)
+  lines.push(`⏰ ${dubaiTime()} GST`)
 
-📈 ${trade.direction.toUpperCase()} ${trade.instrument}
-📍 Entry: $${f(trade.entry_price)}
-📦 Size: ${trade.quantity.toFixed(6)} (~$${notional.toFixed(0)})
-🛑 SL: $${f(trade.stop_loss ?? 0)}
-🎯 TP: $${f(trade.take_profit ?? 0)}
-⏰ ${new Date().toLocaleTimeString('en', { timeZone: 'Asia/Dubai' })} UAE`
-
-  return sendGroupMessage(msg, userId)
+  return sendGroupMessage(lines.join('\n'), userId)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -403,34 +427,26 @@ export async function notifyTradeClosed(trade: {
   instrument: string; direction: string; entry_price: number;
   exit_price: number; pnl: number; pnl_pct: number;
   reason: string;
+  isReal?: boolean; durationMs?: number;
 }, userId?: string) {
   const won = trade.pnl >= 0
   const icon = won ? '✅' : '❌'
-  const label = trade.reason === 'take_profit' ? 'TAKE PROFIT HIT' : trade.reason === 'stop_loss' ? 'STOP LOSS HIT' : 'TRADE CLOSED'
-  const winMsg = [
-    `${TEAM.join(', ')} — cha-ching!`,
-    `Money in the bank, gentlemen!`,
-    `Another W for the team! ${TEAM[0]}, ${TEAM[1]}, ${TEAM[2]}`,
+  const label = trade.reason === 'take_profit' ? 'TAKE PROFIT' : trade.reason === 'stop_loss' ? 'STOP LOSS' : 'CLOSED'
+  const tag = trade.isReal === false ? 'PAPER' : 'REAL'
+
+  const lines = [
+    `${icon} *${label} [${tag}]* — ${trade.instrument}`,
+    '━━━━━━━━━━━━━━━━━━',
+    `${trade.direction.toUpperCase()}  $${f(trade.entry_price)} → $${f(trade.exit_price)}`,
+    `P&L: ${fSigned(trade.pnl)} (${fPct(trade.pnl_pct, 2)})`,
   ]
-  const lossMsg = [
-    `Took an L on this one, team. Part of the game.`,
-    `Loss today, lessons learned. We bounce back.`,
-    `Small setback. Trust the process, ${TEAM.join(', ')}.`,
-  ]
-  const comment = won
-    ? winMsg[Math.floor(Math.random() * winMsg.length)]
-    : lossMsg[Math.floor(Math.random() * lossMsg.length)]
-
-  const msg = `${icon} *${label}*
-━━━━━━━━━━━━━━━━━━
-${comment}
-
-${trade.direction.toUpperCase()} ${trade.instrument}
-Entry: $${f(trade.entry_price)} → Exit: $${f(trade.exit_price)}
-P&L: ${won ? '+' : ''}$${f(trade.pnl)} (${won ? '+' : ''}${trade.pnl_pct.toFixed(2)}%)
-${new Date().toLocaleTimeString('en', { timeZone: 'Asia/Dubai' })} UAE`
-
-  return sendGroupMessage(msg, userId)
+  if (trade.durationMs && trade.durationMs > 0) {
+    const mins = Math.round(trade.durationMs / 60000)
+    const dur = mins < 60 ? `${mins}m` : `${(mins / 60).toFixed(1)}h`
+    lines.push(`⏱ Held: ${dur}`)
+  }
+  lines.push(`⏰ ${dubaiTime()} GST`)
+  return sendGroupMessage(lines.join('\n'), userId)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -446,14 +462,15 @@ export async function notifyPositionAlert(
 ) {
   const isProfit = event === 'take_profit'
   const icon = isProfit ? '✅' : event === 'stop_loss' ? '🛑' : 'ℹ️'
-  const label = isProfit ? 'TAKE PROFIT HIT' : event === 'stop_loss' ? 'STOP LOSS HIT' : 'POSITION CLOSED'
+  const label = isProfit ? 'TAKE PROFIT' : event === 'stop_loss' ? 'STOP LOSS' : 'POSITION CLOSED'
 
-  const msg = `${icon} *${label} — ${instrument}*
-━━━━━━━━━━━━━━━━━━
-P&L: ${pnl >= 0 ? '+' : ''}$${Math.abs(pnl).toLocaleString()} (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%)
-⏰ ${new Date().toLocaleTimeString('en', { timeZone: 'Asia/Dubai' })} UAE`
-
-  return sendGroupMessage(msg, userId)
+  const lines = [
+    `${icon} *${label} — ${instrument}*`,
+    '━━━━━━━━━━━━━━━━━━',
+    `P&L: ${fSigned(pnl)} (${fPct(pnlPct, 2)})`,
+    `⏰ ${dubaiTime()} GST`,
+  ]
+  return sendGroupMessage(lines.join('\n'), userId)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -619,6 +636,171 @@ Heads up ${TEAM.join(', ')}! I'm watching the risk for you.
 — APEX AI 🛡️`
 
   return sendGroupMessage(msg, userId)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 13. PERIODIC STATUS REPORT — every 2h on the hour, replaces 15-min scan blasts
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export interface PeriodicReport {
+  // Portfolio (paper / dashboard)
+  portfolio: {
+    capital: number
+    realizedPnl?: number
+    winCount: number
+    lossCount: number
+    dailyPnl?: number
+  } | null
+  // Real money state
+  realMoney: {
+    spotUsdt: number | null     // null = couldn't fetch
+    fundingUsdt?: number | null
+    earnUsdt?: number | null
+    tradingMode: string         // 'live' | 'demo'
+    autoTradeEnabled: boolean
+  }
+  // Last-2h activity
+  activity: {
+    meetingsHeld: number
+    triggersFound: number
+    decisionsExecuted: number
+    decisionsRejected: number
+    blockedByRisk: number
+    macroPauses: number
+    realTradesOpened: number
+    realTradesClosed: number
+    realPnl2h: number
+  }
+  // Open positions (real)
+  openPositions: Array<{
+    instrument: string
+    direction: string
+    entryPrice: number
+    currentPrice: number
+    unrealizedPnl: number
+    unrealizedPnlPct: number
+  }>
+  // Market snapshot (active instruments)
+  markets: Array<{
+    instrument: string
+    price: number
+    change24h: number | null   // pct
+    rsi: number | null
+    regime: string | null      // 'trending' | 'ranging' | etc.
+    rangeStrength: number | null
+  }>
+  // Macro state
+  macro: {
+    paused: boolean
+    nextEvent: string | null
+    minutesUntil: number | null
+  }
+  // Daily-loss budget
+  dailyLossBudget: {
+    consumed: number   // negative = loss
+    limit: number      // negative
+    pctUsed: number    // 0..100
+  } | null
+  // Spend
+  budget?: { spent: number; remaining: number }
+  // Pending high-conviction triggers (queued / cooldown / blocked)
+  notableTriggers: Array<{ instrument: string; status: string }>
+}
+
+export async function notifyPeriodicReport(data: PeriodicReport, userId?: string): Promise<boolean> {
+  const lines: string[] = []
+  lines.push(`📊 *APEX STATUS — ${dubaiNow()} GST*`)
+  lines.push('━━━━━━━━━━━━━━━━━━')
+
+  // Portfolio
+  if (data.portfolio) {
+    const wl = `${data.portfolio.winCount}W / ${data.portfolio.lossCount}L`
+    const wr = data.portfolio.winCount + data.portfolio.lossCount > 0
+      ? ((data.portfolio.winCount / (data.portfolio.winCount + data.portfolio.lossCount)) * 100).toFixed(0) + '%'
+      : '—'
+    lines.push('💼 *Portfolio* (paper)')
+    lines.push(`  Capital: $${fInt(data.portfolio.capital)}   ${wl} (${wr})`)
+    if (data.portfolio.dailyPnl != null) {
+      lines.push(`  Daily P&L: ${fSigned(data.portfolio.dailyPnl)}`)
+    }
+  }
+
+  // Real money
+  const rm = data.realMoney
+  lines.push('')
+  lines.push('💰 *Real money* (Binance)')
+  lines.push(`  Spot USDT: ${rm.spotUsdt == null ? '—' : '$' + fInt(rm.spotUsdt)}`)
+  if (rm.fundingUsdt != null) lines.push(`  Funding USDT: $${fInt(rm.fundingUsdt)}`)
+  if (rm.earnUsdt != null)    lines.push(`  Earn USDT: $${fInt(rm.earnUsdt)}`)
+  const total = (rm.spotUsdt ?? 0) + (rm.fundingUsdt ?? 0) + (rm.earnUsdt ?? 0)
+  if (total > 0) lines.push(`  Total bankroll: $${fInt(total)}`)
+  lines.push(`  Mode: *${rm.tradingMode}* · auto-trade ${rm.autoTradeEnabled ? 'ON' : 'OFF'}`)
+
+  // Activity (last 2h)
+  const a = data.activity
+  lines.push('')
+  lines.push('⚡ *Last 2h*')
+  lines.push(`  Meetings: ${a.meetingsHeld}  ·  Triggers: ${a.triggersFound}`)
+  lines.push(`  Decisions: ${a.decisionsExecuted} executed / ${a.decisionsRejected} rejected`)
+  if (a.blockedByRisk > 0) lines.push(`  Blocked by risk: ${a.blockedByRisk}`)
+  if (a.macroPauses > 0)   lines.push(`  Macro pauses: ${a.macroPauses}`)
+  if (a.realTradesOpened + a.realTradesClosed > 0) {
+    lines.push(`  Real trades: ${a.realTradesOpened} opened / ${a.realTradesClosed} closed  P&L: ${fSigned(a.realPnl2h)}`)
+  }
+
+  // Open positions
+  if (data.openPositions.length > 0) {
+    lines.push('')
+    lines.push('📍 *Open positions* (real)')
+    for (const p of data.openPositions) {
+      const dir = p.direction === 'long' ? '🟢' : '🔴'
+      const sign = p.unrealizedPnl >= 0 ? '✅' : '🔻'
+      lines.push(`  ${dir} ${p.instrument}  entry $${f(p.entryPrice)} → $${f(p.currentPrice)}  ${sign} ${fSigned(p.unrealizedPnl)} (${fPct(p.unrealizedPnlPct, 2)})`)
+    }
+  }
+
+  // Markets snapshot
+  if (data.markets.length > 0) {
+    lines.push('')
+    lines.push('📈 *Markets*')
+    for (const m of data.markets) {
+      const chg = m.change24h != null ? fPct(m.change24h, 1).padStart(7) : '   —   '
+      const reg = m.regime ? `${m.regime}${m.rangeStrength != null ? `:${m.rangeStrength.toFixed(1)}` : ''}` : ''
+      const rsi = m.rsi != null ? `RSI ${m.rsi.toFixed(0)}` : ''
+      lines.push(`  ${m.instrument.padEnd(9)} $${f(m.price).padEnd(9)} ${chg}  ${rsi}  ${reg}`)
+    }
+  }
+
+  // Notable triggers
+  if (data.notableTriggers.length > 0) {
+    lines.push('')
+    lines.push('🎯 *Notable triggers*')
+    for (const t of data.notableTriggers.slice(0, 6)) {
+      lines.push(`  • ${t.instrument} — ${t.status}`)
+    }
+  }
+
+  // Macro pause
+  if (data.macro.paused && data.macro.nextEvent) {
+    lines.push('')
+    lines.push(`⚠ Macro pause: *${data.macro.nextEvent}* in ${data.macro.minutesUntil ?? '?'}min`)
+  }
+
+  // Daily-loss budget
+  if (data.dailyLossBudget) {
+    const b = data.dailyLossBudget
+    lines.push(`⛔ Daily loss budget: ${fSigned(b.consumed)} / ${fSigned(b.limit)}  (${b.pctUsed.toFixed(0)}% used)`)
+  }
+
+  // API spend
+  if (data.budget) {
+    lines.push(`🪙 AI spend today: $${data.budget.spent.toFixed(2)} spent / $${data.budget.remaining.toFixed(2)} left`)
+  }
+
+  lines.push('')
+  lines.push('— APEX 🤖')
+
+  return sendGroupMessage(lines.join('\n'), userId)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

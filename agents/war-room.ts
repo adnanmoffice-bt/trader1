@@ -14,6 +14,8 @@ import { validateOHLCV } from '@/lib/data-quality'
 import { getPrimaryExchange } from '@/lib/exchanges'
 import { checkSessionGate } from '@/lib/session-filter'
 import { checkCorrelationDedup } from '@/lib/correlation-dedup'
+import { getDerivativesSnapshot, evaluateDerivativesForLong, type DerivativesSnapshot } from '@/lib/derivatives'
+import { checkOrderBookHealth } from '@/lib/orderbook'
 import type { Instrument, OHLCV, Signal } from '@/types'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -354,6 +356,24 @@ async function runMeeting(
     return 'atr-extreme'
   }
 
+  // ── DERIVATIVES VETO — pre-debate funding / positioning gate ──
+  // Free Binance USDT-M perp data: funding rate, OI delta, retail and
+  // top-trader long/short ratios. Hard-veto cases (funding > 0.05%/8h,
+  // retail L/S > 2.5) get caught here BEFORE we burn ~$0.05 in agent
+  // tokens. Soft adjusts feed into conviction at decision time below.
+  // Fails open: null snap = no veto, no boost.
+  const derivSnap: DerivativesSnapshot | null = triggerDir === 'long'
+    ? await getDerivativesSnapshot(instrument)
+    : null
+  const derivGate = evaluateDerivativesForLong(derivSnap)
+  if (!derivGate.allowed) {
+    await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
+      message: `${instrument} @ $${f(price)} | ${allTriggers} → DERIVATIVES VETO: ${derivGate.reason}. Skipping debate.`,
+      data: { price, trigger: allTriggers, reason: 'derivatives-veto', funding: derivSnap?.fundingRate8h, retailLS: derivSnap?.retailLongShortRatio },
+    })
+    return 'derivatives-veto'
+  }
+
   // ── PHASE 2: TREND FILTER GATE — only buy in uptrends ──
   const trendWeak = forecast.smoothedTrend === 'down' && forecast.upProbability4h < 0.45
   if (trendWeak) {
@@ -491,12 +511,17 @@ async function runMeeting(
     reversal_trigger?: string
   }
 
+  // Derivatives summary for orchestrator context
+  const derivativesText = derivSnap
+    ? `\n── DERIVATIVES POSITIONING ──\nFunding 8h: ${(derivSnap.fundingRate8h * 100).toFixed(3)}%  (7d avg: ${(derivSnap.fundingRateAvg7d * 100).toFixed(3)}%)\nOI delta 4h: ${derivSnap.openInterestDeltaPct4h?.toFixed(1) ?? '?'}%\nRetail L/S: ${derivSnap.retailLongShortRatio?.toFixed(2) ?? '?'}\nTop trader L/S: ${derivSnap.topTraderLongShortRatio?.toFixed(2) ?? '?'}\nDerivatives note: ${derivGate.reason}\n`
+    : ''
+
   let parsed: OrchestratorDecision | null = null
   let rawDecisionText = ''
   try {
     const result = await callAgent<OrchestratorDecision>({
       system: orchDbPrompt ?? orchDefaultPrompt,
-      user: `${fullConvo(conv)}${macroHeader}\n${forecastText}\nFinal decision for ${instrument}. You have heard all 11 agents. Consider the LIVE WORLD STATE and QUANTITATIVE FORECAST above. If the forecast contradicts the agent consensus, explain why you trust one over the other. Respond with JSON only.`,
+      user: `${fullConvo(conv)}${macroHeader}\n${forecastText}${derivativesText}\nFinal decision for ${instrument}. You have heard all 11 agents. Consider the LIVE WORLD STATE, QUANTITATIVE FORECAST, and DERIVATIVES POSITIONING above. If the forecast or derivatives contradict the agent consensus, explain why you trust one over the others. Respond with JSON only.`,
       maxTokens: AGENT_TOKEN_LIMITS['orchestrator'],
       timeoutMs: 45000,
       expectJson: true,
@@ -510,15 +535,21 @@ async function runMeeting(
   // SAFETY: JSON parse fail → REJECT. Conviction < 70 → REJECT.
   // Forecast contradiction (quant models strongly disagree + low conviction) → REJECT.
   // Vote gate: need at least 3 more bulls than bears among debate agents.
+  // Derivatives soft-adjust feeds into the effective conviction.
   const forecastVeto = forecastContradict && (parsed?.conviction ?? 0) < 80
 
   const voteFor = conv.filter(m => /\b(bullish|buy\b|support(?:s|ing)?|execute|approve)\b/i.test(m.message) && m.role === 'speak' && m.agent !== 'orchestrator').length
   const voteAgainst = conv.filter(m => /\b(bearish|reject(?:ed)?|against\b|sell\b|wait\b|pass\b|veto)\b/i.test(m.message) && m.role === 'speak' && m.agent !== 'orchestrator').length
   const voteMarginOk = voteFor > voteAgainst + 2
 
+  // Effective conviction = parsed conviction + derivatives soft adjustment.
+  // Hard derivatives veto already short-circuited above. Soft +/-N here
+  // can lift a marginal LONG into execute or push a borderline one out.
+  const effectiveConviction = (parsed?.conviction ?? 0) + derivGate.convictionAdjust
+
   const minConviction = recovery.active ? recovery.minConfidence : 70
   const isExecute = parsed?.decision === 'EXECUTE'
-    && (parsed?.conviction ?? 0) >= minConviction
+    && effectiveConviction >= minConviction
     && !forecastVeto
     && voteMarginOk
   const decisionResponse = parsed
@@ -833,6 +864,19 @@ async function runMeeting(
                 await logExec('warn',
                   `${instrument}: insufficient USDT — balance $${conn.quoteBalance.toFixed(2)} < notional $${notionalUsd.toFixed(2)}`)
               } else {
+                // ── ORDER BOOK HEALTH (pre-exec) ──
+                // Fixes the "got filled, instant SL" pattern: if spread is
+                // wide or top-3 ask depth < 20x notional, the market buy
+                // would fill into a thin book and immediately revert.
+                // Fail-open: if depth fetch errors, allowed:true.
+                const bookHealth = await checkOrderBookHealth(instrument, notionalUsd, 'long')
+                if (!bookHealth.allowed) {
+                  await logExec('warn',
+                    `${instrument}: BLOCKED pre-exec — order book unhealthy: ${bookHealth.reason}`)
+                  // skip exec; demo trade was already opened so the signal
+                  // path still produces an audit trail
+                  return 'blocked-orderbook'
+                }
                 const result = await ex.marketBuy(instrument, notionalUsd)
                 if (!result) {
                   await logExec('error', `${instrument}: marketBuy returned null`)

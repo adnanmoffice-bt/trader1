@@ -49,6 +49,11 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 - [ ] Operator decision: add `TELEGRAM_BOT_TOKEN` to Vercel prod env, OR formally drop Telegram in favor of WhatsApp (Green API).
 - [ ] Operator decision (architecture): apply `supabase/schema.sql` to prod DB to create the 5 missing tables (`agent_knowledge`, `performance_snapshots`, `trade_analytics`, `trade_journal`, `polymarket_bets`), OR delete the dead code paths that reference them. Currently silently failing.
 - [ ] Watch tomorrow's first 24h after RANGING gate calibration (commit on 2026-04-28). If single-trigger weak-range entries cause >2 SLs in a row on the same instrument, tighten the `STRONG_TRIGGERS` set or raise `regime.strength` threshold from 0.5 → 0.4.
+- [ ] Monitor first 48h with the new gate stack (commits c538663…d2da47a, 2026-04-30). Watch demo_trades for: rejection counts per gate (`audit-10d.mjs` will surface these once the new return labels appear in `war_room_messages.data.reason`), Asia-chop window flow (should be ~0 entries 02:00-09:00 Dubai), and orderbook-block events. If a particular gate is rejecting > 80% of meetings on a single instrument over 48h, we've over-tightened — relax the threshold rather than removing the gate.
+- [ ] Implement positions-cron partial-fill + break-even-stop logic so `signals.take_profit_2` (set on every new LONG since c7524e5) actually fires. Plan: when a position hits TP1, close 50%, move SL to entry on the remaining 50%, leave TP at TP2. Big-EV upgrade — the audit math projects another +$540/10d on top of the TP-tightening alone.
+- [ ] Wire a real on-chain feed (CryptoQuant or Glassnode free tier) into `lib/onchain.ts` — interface is in place in war-room (`evaluateOnchainForLong`), war-room currently treats stub `null` as fail-open. With real data, LONG entries get hard-blocked on $50M+ net inflow / +8 boost on $50M+ net outflow.
+- [ ] Apply `supabase/schema.sql` to prod DB (creates `agent_knowledge`, `performance_snapshots`, `trade_analytics`, `trade_journal`, `polymarket_bets`) OR delete the dead code paths. Currently silently failing. Same item as last session — still pending.
+- [ ] Add heartbeat helper logs to `signals-cron`, `positions-cron`, `demo-cron`, `meta-agent-cron`, `morning-briefing-cron`, `daily-report-cron`, `weekly-report-cron`. Audit on 2026-04-30 showed only `market-data-cron`, `polymarket-scanner`, `budget-tracker`, and the new `status-report-cron` write `agent_logs` heartbeats. Without heartbeats we can't tell silent failures from "ran fine but had nothing to do". Pattern from `status-report-cron` (insert one row at end of each run) is the model.
 
 ---
 
@@ -58,12 +63,51 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-LOCK: agents/war-room.ts + lib/risk-controls.ts — Computer A — started 2026-04-30 12:50 Dubai
-       (multi-batch upgrade: session gate, correlation dedup, partial-TP/+BE, derivatives, MTF, news/CME/polymarket vetoes)
+_(none)_
 
 ---
 
 ## SESSION LOG (newest on top)
+
+### 2026-04-30 · 14:30 Dubai · Computer A (day)
+**Commits:** `a1c42a6` LOCK · `c538663` helpers · `13573f3` Tier 1 wiring · `c7524e5` TP calibration · `24e2600` derivatives + book · `4e0c4d6` MTF + macro-HIGH · `d2da47a` news + CME + onchain · _(this push)_ docs.
+
+Context:
+- After completing the 10-day system audit (4W/13L = 23.5% WR, -$308.65; 0 live trades), user asked me to "do all" of the recommended improvements.
+- LOCK was set on `agents/war-room.ts + lib/risk-controls.ts` and pushed before any code edit so Computer B would see it. Cleared in this commit.
+
+Changes (6 feature commits, all touching `agents/war-room.ts`; commit 1 also added 7 new lib modules + 1 helper to `lib/indicators.ts`):
+
+1. **`c538663 feat(signals): new helper modules`** — pure additions, no high-risk file edits. New: `lib/session-filter.ts`, `lib/correlation-dedup.ts`, `lib/derivatives.ts`, `lib/orderbook.ts`, `lib/news-impact.ts`, `lib/cme-gaps.ts`, `lib/onchain.ts` + `multiTimeframeConfluence()` exported from `lib/indicators.ts`. All fail-open.
+
+2. **`13573f3 feat(war-room): wire Tier 1 trade-discipline filters`** — pre-debate ATR sanity (block atrPct < 0.3% or > 5%), decision-time session gate (Dubai 02:00-09:00 needs conviction≥90 + macro≤MEDIUM, or 3+ triggers), decision-time correlation dedup (hard-block BTC↔ETH double-up; soft-flag alt buckets).
+
+3. **`c7524e5 feat(war-room): tighter TP for higher hit rate`** — `tpMult 4.5 → 3.0` (R:R 2.25→1.5), `tp2Mult 6.0 → 5.0` (R:R 3.0→2.5). R:R 1.5 = MIN_RR floor so existing risk gates pass. Backtest gate auto-revalidates. TP2 persists for future positions-cron partial-fill/BE-stop.
+
+4. **`24e2600 feat(war-room): wire Tier 2 derivatives + book check`** — pre-debate derivatives veto (funding > 0.05%/8h, retail L/S > 2.5), soft conviction adjusts (-12..+8) into `effectiveConviction`, derivatives data added to orchestrator user prompt, pre-exec spot order-book health check (spread + top-3 depth) with `return 'blocked-orderbook'` on fail.
+
+5. **`4e0c4d6 feat(war-room): MTF + macro-HIGH stricter gates`** — single-1H-trigger LONG with `longConfluenceCount===0` blocked pre-debate; macro `riskLevel === 'HIGH'` now requires 3+ triggers in confluence (EXTREME already pauses war-room above). MTF section added to orchestrator user prompt.
+
+6. **`d2da47a feat(war-room): wire Tier 3 external intelligence`** — post-decision pre-exec news veto (CryptoPanic + CoinDesk + CoinTelegraph last 60min RSS, Claude scores -100..+100, veto at ≤ -40, ~$0.005/call). Pre-debate CME gap nudge (BTC LONG only, +/-5 conviction). On-chain stub gate (interface ready for CryptoQuant/Glassnode wire-up).
+
+Effective conviction now aggregates: `parsed.conviction + derivGate.convictionAdjust + onchainGate.convictionAdjust + cmeGap.longBias`. Hard vetoes still short-circuit before the conviction calc.
+
+New return values from `runMeeting()` (all standard `speak(decision/close) → waBlocked → runPostMeetingBrief`): `'atr-extreme'`, `'derivatives-veto'`, `'mtf-veto'`, `'macro-high-strict'`, `'onchain-veto'`, `'blocked-session'`, `'blocked-correlation'`, `'blocked-news'`, `'blocked-orderbook'`. The `audit-10d.mjs` script (committed in this push) will surface these once they appear in `war_room_messages.data.reason`.
+
+Operator notes:
+- Auto-Subscribe disable confirmation still depends on tonight's 22:00 Dubai sweep test. Run `node scripts/test-binance-key.mjs` after 22:05 — if Spot USDT ≈ $500 (currently $500.02), the toggle stuck.
+- First live exec (if Auto-Subscribe is truly off) will now hit ALL the new gates: ATR sanity, derivatives, MTF, macro-HIGH, on-chain stub, session gate, correlation dedup, news veto, plus the pre-existing recovery / hardRiskCheck / daily-loss / backtest / signal-dedup / order-book check. Heavily filtered, intentionally — first-pass goal is FEWER trades with HIGHER expectancy, not more trades.
+- Estimated effect on the 10-day audit's trade list (back-of-envelope, holding signal generation constant):
+  - Session gate alone: 8 of the 17 closed trades wouldn't have opened (Dubai 02:00-09:00). Removes ~$580 of losses. Trade count drops 17 → 9, win rate 4/9 = 44%, expectancy roughly +$310.
+  - TP tightening (commit 3): on the 9 surviving trades, ~3 of the 6 historical SLs would have tagged +1.5R first → 3 conversions to wins. Adds ~$330. Combined estimated 10-day P&L: ~+$640.
+  - Correlation dedup, MTF, derivatives, news, CME, on-chain are all additive on top of that — exact deltas unknowable without rerunning real signals against history.
+
+Safety notes:
+- Build (`tsc --noEmit`) clean after every commit. No linter errors on touched files.
+- No edits to `lib/safety.ts`, `lib/risk-controls.ts`, `lib/exchanges/*` body, `app/api/cron/*` (commit 5 of the wallet-aggregator session was untouched), `supabase/schema.sql`. Sizing / SL placement / SL retry / emergency-close logic identical.
+- No SHORTS / SOL / BNB / BB_SQUEEZE re-enabled. Filters only TIGHTEN trade entry; no gate was removed or relaxed.
+- LOCK on `agents/war-room.ts + lib/risk-controls.ts` cleared.
+- Committed `scripts/audit-10d.mjs` (was untracked) for future post-mortems with the new gate labels.
 
 ### 2026-04-30 · 12:30 Dubai · Computer A (day)
 **Commit:** _(this push)_ — `feat(whatsapp): rich 2h status report cron + cleaner event message format`

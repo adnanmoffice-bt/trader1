@@ -12,6 +12,8 @@ import { buildMacroContext, formatMacroContext, type MacroSnapshot } from '@/lib
 import { generateForecast, formatForecast } from '@/lib/forecast'
 import { validateOHLCV } from '@/lib/data-quality'
 import { getPrimaryExchange } from '@/lib/exchanges'
+import { checkSessionGate } from '@/lib/session-filter'
+import { checkCorrelationDedup } from '@/lib/correlation-dedup'
 import type { Instrument, OHLCV, Signal } from '@/types'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -335,6 +337,23 @@ async function runMeeting(
     return 'long-only-filter'
   }
 
+  // ── ATR SANITY GATE — pre-debate volatility regime filter ──
+  // Audit 2026-04-30: 3 of 13 stop-outs in the 10-day window closed within
+  // 30 minutes — a noise-stop signature that maps to either ultra-compressed
+  // ATR (chop / no edge) or blow-off ATR (false breakout).
+  //   < 0.3% = compression, very few candles will reach +1R before reversing
+  //   > 5%   = exhaustion, SL too wide for safe sizing
+  // Rejecting both extremes early saves debate tokens and avoids the worst
+  // bands of the volatility distribution.
+  const atrPct = (ind.atr / price) * 100
+  if (atrPct < 0.3 || atrPct > 5) {
+    await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
+      message: `${instrument} @ $${f(price)} | ${allTriggers} → ATR ${atrPct.toFixed(2)}% out of band [0.3%-5%]. ${atrPct < 0.3 ? 'Compression' : 'Exhaustion'} regime — skipping.`,
+      data: { price, atr: ind.atr, atrPct, trigger: allTriggers, reason: 'atr-extreme' },
+    })
+    return 'atr-extreme'
+  }
+
   // ── PHASE 2: TREND FILTER GATE — only buy in uptrends ──
   const trendWeak = forecast.smoothedTrend === 'down' && forecast.upProbability4h < 0.45
   if (trendWeak) {
@@ -541,6 +560,70 @@ async function runMeeting(
     })
 
   if (isExecute && triggerDir) {
+    // ── SESSION-OF-DAY GATE ──
+    // Audit 2026-04-30: Asia-chop window (Dubai 02:00-09:00) had 0/8 win rate
+    // over 10 days. Block normal-conviction LONGs in that window unless we
+    // have very high conviction AND macro is calm, OR 3+ triggers in
+    // confluence. See lib/session-filter.ts for the full rule.
+    const sessionGate = checkSessionGate({
+      conviction: parsed?.conviction ?? 0,
+      macroRisk: macro?.riskLevel ?? null,
+      triggerCount: rawTriggers.length,
+    })
+    if (!sessionGate.allowed) {
+      await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'decision',
+        message: `SESSION GATE: ${sessionGate.reason}`,
+      })
+      await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
+        message: `BLOCKED by session gate: ${sessionGate.reason}. Meeting closed.`,
+      })
+      await waBlocked({ instrument, reason: sessionGate.reason, blocker: 'Session Gate' }).catch(() => {})
+      await runPostMeetingBrief({ instrument, decision: 'blocked', votesFor: voteFor, votesAgainst: voteAgainst, trigger: allTriggers ?? trigger, agentStances }).catch(() => {})
+      return 'blocked-session'
+    }
+
+    // ── CORRELATION DEDUP ──
+    // Audit 2026-04-30: BTC and ETH co-traded as a pair 3 out of 3 times in
+    // the 10-day window. Each pair both wins or both loses — same probability,
+    // 2x size, 2x variance. Block second LONG on a hard-correlated peer
+    // (BTC<->ETH only as hard pair; alt buckets are soft-warned).
+    const peerCutoff = new Date(Date.now() - 4 * 3600_000).toISOString()
+    const { data: recentPeerDecisions } = await db.from('war_room_messages')
+      .select('instrument, data')
+      .eq('role', 'decision')
+      .eq('agent', 'orchestrator')
+      .gte('created_at', peerCutoff)
+    const recentSameDirInstruments = new Set<string>()
+    for (const d of recentPeerDecisions ?? []) {
+      if (!d.instrument || d.instrument === instrument) continue
+      const dataDir = (d.data as { direction?: string } | null)?.direction
+      const dataExec = (d.data as { execute?: boolean } | null)?.execute
+      if (dataDir === triggerDir && dataExec === true) recentSameDirInstruments.add(d.instrument)
+    }
+    const { data: openPeerPositions } = await db.from('positions')
+      .select('instrument, direction')
+      .eq('direction', triggerDir)
+      .eq('is_demo', false)
+    const openSameDirInstruments = new Set((openPeerPositions ?? []).map(p => p.instrument as string))
+    const dedup = checkCorrelationDedup(instrument, { recentSameDirInstruments, openSameDirInstruments })
+    if (!dedup.allowed) {
+      await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'decision',
+        message: `CORRELATION DEDUP: ${dedup.reason}`,
+      })
+      await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
+        message: `BLOCKED by correlation dedup: ${dedup.reason}. Meeting closed.`,
+      })
+      await waBlocked({ instrument, reason: dedup.reason, blocker: 'Correlation Dedup' }).catch(() => {})
+      await runPostMeetingBrief({ instrument, decision: 'blocked', votesFor: voteFor, votesAgainst: voteAgainst, trigger: allTriggers ?? trigger, agentStances }).catch(() => {})
+      return 'blocked-correlation'
+    }
+    if (dedup.severity === 'soft' && dedup.conflictWith) {
+      // Soft conflict: flag but allow. Logged for later analysis.
+      await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'alert',
+        message: `Soft correlation flag: ${dedup.reason}`,
+      })
+    }
+
     // ── PHASE 3: Fixed ATR SL/TP — wider SL to survive noise, R:R >= 2:1 ──
     // Data: 1.5 ATR SL → 31 stopouts in 15min. 2 ATR gives room to breathe.
     const entry = price

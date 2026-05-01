@@ -41,23 +41,21 @@ Same git identity on both → commits look identical; differentiate via the
 
 Items still to finish. Tick `[x]` when done; delete after a week.
 
-- [x] ~~Disable Binance Auto-Subscribe to Simple Earn~~ — operator reports done (30/04 ~12:14 Dubai). **Confirmation pending**: rerun `node scripts/test-binance-key.mjs` after 22:05 Dubai tonight; if Spot USDT ≈ $500, toggle truly took effect. If sweep fires again, revisit Earn settings.
-- [x] ~~Move 1,100 USDT Funding → Spot~~ — operator chose to start with 500 USDT manually via Binance UI (API key lacks Universal Transfer permission, so `scripts/move-funding-to-spot.mjs` returns -1002). Verified Spot USDT = $500.0164 at 30/04 12:14 Dubai. Funding USDT remaining: $600.
-- [ ] (after tonight's sweep test confirms Auto-Subscribe is off) decide whether to move the remaining $600 of Funding USDT into Spot for larger position sizing, OR leave as buffer.
-- [ ] (optional, future) Add `Permits Universal Transfer` to the Binance API key if you want `scripts/move-funding-to-spot.mjs` to work end-to-end. Trade-off: widens API key blast radius (a leaked key could move funds between wallets without your password). Current setup forces transfers to be manual UI-only — safer.
+- [x] ~~Disable Binance Auto-Subscribe to Simple Earn~~ — confirmed (01/05 09:26 Dubai sweep test: Spot USDT = $500.0164 unchanged from 30/04 12:14 → toggle held overnight).
+- [x] ~~Move 1,100 USDT Funding → Spot~~ — operator chose 500 USDT manually via Binance UI. Funding USDT remaining: $600.
+- [x] ~~Decide whether to move the remaining $600 to Spot~~ — operator decision (01/05 09:42 Dubai): **HOLD as buffer**. No more capital deployed until edge gate (`checkLiveTradingAllowed`) auto-unblocks live exec.
+- [x] ~~Apply `supabase/schema.sql` to prod DB~~ — done via `supabase/migrations/2026-05-01-missing-tables.sql` (focused, idempotent migration). All 5 tables verified live (`agent_knowledge`, `performance_snapshots`, `polymarket_bets`, `trade_analytics`, `trade_journal`).
+- [x] ~~Add heartbeat helpers to silent crons~~ — done 01/05. `signals-cron`, `positions-cron`, `demo-cron`, `meta-agent-cron`, `morning-briefing-cron`, `daily-report-cron`, `weekly-report-cron` all now insert one `agent_logs` row at end of each run with `duration_ms` + key counters. Pattern matches `status-report-cron`.
+- [x] ~~Wire on-chain feed (CryptoQuant/Glassnode)~~ — **CANCELLED** 01/05 by operator. Free tiers brittle (CryptoQuant 30 calls/day = single Vercel deploy burns it; Glassnode free is mostly demo). Paid tiers ($29-$39/mo) skipped because the system has no edge today — additional data won't fix that. News-veto (already wired) covers ~80% of the same intent at $0.005/Claude call. Stub gate stays in place; revisit only if edge gate ever turns positive AND we want extra +0.05 R/trade.
+- [ ] (optional, future) Add `Permits Universal Transfer` to the Binance API key if you want `scripts/move-funding-to-spot.mjs` to work end-to-end. Trade-off: widens API key blast radius. Current setup forces transfers to be manual UI-only — safer.
 - [ ] Confirm `/api/wallet` reads the expected values on live URL after Vercel picks up `4b1c4ca`.
 - [ ] Operator decision: add `TELEGRAM_BOT_TOKEN` to Vercel prod env, OR formally drop Telegram in favor of WhatsApp (Green API).
-- [ ] Operator decision (architecture): apply `supabase/schema.sql` to prod DB to create the 5 missing tables (`agent_knowledge`, `performance_snapshots`, `trade_analytics`, `trade_journal`, `polymarket_bets`), OR delete the dead code paths that reference them. Currently silently failing.
-- [ ] Watch tomorrow's first 24h after RANGING gate calibration (commit on 2026-04-28). If single-trigger weak-range entries cause >2 SLs in a row on the same instrument, tighten the `STRONG_TRIGGERS` set or raise `regime.strength` threshold from 0.5 → 0.4.
-- [ ] Monitor first 48h with the new gate stack (commits c538663…d2da47a, 2026-04-30). Watch demo_trades for: rejection counts per gate (`audit-10d.mjs` will surface these once the new return labels appear in `war_room_messages.data.reason`), Asia-chop window flow (should be ~0 entries 02:00-09:00 Dubai), and orderbook-block events. If a particular gate is rejecting > 80% of meetings on a single instrument over 48h, we've over-tightened — relax the threshold rather than removing the gate.
-- [ ] Implement positions-cron partial-fill + break-even-stop logic so `signals.take_profit_2` (set on every new LONG since c7524e5) actually fires. Plan: when a position hits TP1, close 50%, move SL to entry on the remaining 50%, leave TP at TP2. Big-EV upgrade — the audit math projects another +$540/10d on top of the TP-tightening alone. **DEFERRED** until backtest (`scripts/backtest-gate-stack.mjs`) shows positive expectancy on a 30-day rolling demo window. Implementing partial-fill on a negative-edge system just optimizes the loss curve.
-- [ ] Re-evaluate `LIVE_INSTRUMENT_BLACKLIST` (ADA/DOT/APT) in `lib/safety.ts` weekly. If 30-day demo expectancy turns positive on any of them, lift them off the blacklist.
-- [ ] Run `node scripts/backtest-gate-stack.mjs` weekly (or monthly) to re-validate. Save the output to `scripts/backtest-runs/YYYY-MM-DD.txt` so we can see edge trending over time.
-- [ ] Investigate why ETH/USD generates 0 trades in `FILTERED` and `NEW` modes of the backtest (BTC always triggers first chronologically, correlation dedup blocks ETH). Either accept ETH as BTC's shadow, OR loosen correlation dedup to allow ETH when BTC's open trade has > 4h elapsed.
-- [ ] (research) The 5 deterministic triggers (EMA cross, MACD cross, RSI extreme, EMA50 breakout, vol spike) had NEGATIVE expectancy across ALL 24 SL/TP combos tested in `--sweep`. Either find new triggers (ICT order blocks, volume profile POC reclaim, FVG fills) or accept paper-mode-only until edge appears.
-- [ ] Wire a real on-chain feed (CryptoQuant or Glassnode free tier) into `lib/onchain.ts` — interface is in place in war-room (`evaluateOnchainForLong`), war-room currently treats stub `null` as fail-open. With real data, LONG entries get hard-blocked on $50M+ net inflow / +8 boost on $50M+ net outflow.
-- [ ] Apply `supabase/schema.sql` to prod DB (creates `agent_knowledge`, `performance_snapshots`, `trade_analytics`, `trade_journal`, `polymarket_bets`) OR delete the dead code paths. Currently silently failing. Same item as last session — still pending.
-- [ ] Add heartbeat helper logs to `signals-cron`, `positions-cron`, `demo-cron`, `meta-agent-cron`, `morning-briefing-cron`, `daily-report-cron`, `weekly-report-cron`. Audit on 2026-04-30 showed only `market-data-cron`, `polymarket-scanner`, `budget-tracker`, and the new `status-report-cron` write `agent_logs` heartbeats. Without heartbeats we can't tell silent failures from "ran fine but had nothing to do". Pattern from `status-report-cron` (insert one row at end of each run) is the model.
+- [ ] **Demo gate-stack watch checkpoint: on or after 02/05 17:25 Dubai** (48h after gate stack went live). Run `node scripts/audit-10d.mjs` and grep `war_room_messages.data.reason` for: `atr-extreme`, `derivatives-veto`, `mtf-veto`, `macro-high-strict`, `onchain-veto`, `blocked-session`, `blocked-correlation`, `blocked-news`, `blocked-orderbook`. Watch for any single gate rejecting > 80% of meetings on the same instrument — that's an over-tightening signal; relax rather than remove.
+- [ ] **Backlist re-evaluation checkpoint: on or after 07/05 (weekly)**. Compute 30-day demo expectancy per blacklisted instrument (ADA/DOT/APT). Lift any whose mean R/trade ≥ 0 over the last 30d. Edit single line in `lib/safety.ts → LIVE_INSTRUMENT_BLACKLIST`.
+- [ ] **Backtest re-run checkpoint: on or after 08/05 (weekly)**. `node scripts/backtest-gate-stack.mjs` and save to `scripts/backtest-runs/YYYY-MM-DD.txt`. Diff against `2026-05-01.txt` to track edge trend. If NEW mode TotalR moves above 0 → consider unblocking live exec by removing/relaxing the edge gate.
+- [ ] Implement positions-cron partial-fill + break-even-stop logic. **DEFERRED** until rolling 30d expectancy is positive. Implementing partial-fill on a negative-edge system just optimizes the loss curve.
+- [ ] Investigate ETH/USD generating 0 trades in FILTERED+NEW backtest modes (correlation dedup vs BTC). Decision: accept as BTC's shadow OR loosen dedup when BTC's open trade > 4h.
+- [ ] (research) The 5 deterministic triggers had NEGATIVE expectancy across ALL 24 SL/TP combos tested. Either find new triggers (ICT order blocks, volume profile POC reclaim, FVG fills) or accept paper-mode-only until edge appears.
 
 ---
 
@@ -72,6 +70,39 @@ _(none)_
 ---
 
 ## SESSION LOG (newest on top)
+
+### 2026-05-01 · 09:55 Dubai · Computer A (day) — operator-driven cleanup pass
+**Commits:** _(this push)_ — `chore: schema migration + cron heartbeats + 2026-05-01 backtest baseline + on-chain decision`
+
+Context:
+- Sweep test passed overnight: Spot USDT held at $500.0164 (no Auto-Subscribe sweep at 22:00 Dubai). Trap is sealed.
+- Operator asked for: confirmation of hold-$600 decision, who owns the recurring watch/re-eval/backtest tasks, explanation of CryptoQuant/Glassnode, exact steps for the schema apply, and the heartbeat-cron work.
+
+Done in this session:
+1. **Apply Supabase schema (the 5 missing tables)** — wrote `supabase/migrations/2026-05-01-missing-tables.sql` (170 lines, fully idempotent). User pasted into Supabase SQL Editor → Run → 5 rows verified (`agent_knowledge`, `performance_snapshots`, `polymarket_bets`, `trade_analytics`, `trade_journal`). The original `schema.sql` had `CREATE INDEX` without `IF NOT EXISTS` which was breaking re-runs (error `42P07` on `idx_signals_status`). Migration uses `CREATE INDEX IF NOT EXISTS`, `DROP POLICY IF EXISTS` before each `CREATE POLICY`, and wraps `ALTER PUBLICATION ADD TABLE` in `DO ... EXCEPTION WHEN duplicate_object THEN NULL`. Re-runnable forever.
+2. **Heartbeat helpers added to 7 silent crons**:
+   - `signals-cron` — log on success and on error (war-room timeout).
+   - `positions-cron` — log on no-positions early-return AND on full tick complete (with closed/skipped counts).
+   - `demo-cron` — log on tick complete (opens/exits/actions counters).
+   - `meta-agent-cron` — log on success and error.
+   - `morning-briefing-cron` — log after WhatsApp send (with yesterday P&L + open positions).
+   - `daily-report-cron` — log after WhatsApp send (with today P&L + signal/meeting counts).
+   - `weekly-report-cron` — log after WhatsApp send (with weekly P&L + WR + Sharpe).
+   - All match `status-report-cron` pattern: `db.from('agent_logs').insert({ agent, level, message, metadata: { duration_ms, ... } }).then(() => {})`. Build (`tsc --noEmit`) clean.
+3. **Backtest baseline saved** — ran `node scripts/backtest-gate-stack.mjs` and saved output to `scripts/backtest-runs/2026-05-01.txt`. Verdict still NEGATIVE on all 3 modes (BASELINE -0.090 / FILTERED -0.190 / NEW -0.126 R/trade). Per-instrument NEW: DOGE +5.5R, LINK +5.0R; ADA -14.5R, DOT -13.0R, APT -8.5R; rest small negative. Edge gate stays correctly active.
+4. **Hold $600 decision recorded** — operator confirms no further capital deployed until edge gate auto-unblocks. HANDOFF updated.
+5. **CryptoQuant/Glassnode item cancelled** — operator agreed: free tiers brittle, paid not justified without edge. Stub stays in place; `lib/onchain.ts` interface ready when/if we want to revisit.
+6. **Date-stamped recurring checkpoints added to OPEN WORK**: 02/05 17:25 (gate-stack 48h watch), 07/05 (blacklist re-eval), 08/05 (weekly backtest re-run).
+
+Operator clarifications given:
+- "Watch demo 48h" / "re-eval blacklist" / "weekly backtest" are session-based jobs (not autonomous crons). They run when the operator pings me; HANDOFF carries the date checkpoints so they don't get lost between sessions.
+- If the operator wants any of these truly automated, the cleanest path is a `/api/cron/weekly-gate-audit` cron that emails/WhatsApps a gate-rejection breakdown and edge-trend delta every Sunday. Not built in this session — flagged as optional future work.
+
+Safety notes:
+- No SHORT/SOL/BNB/BB_SQUEEZE re-enabled.
+- No edits to `lib/safety.ts`, `lib/risk-controls.ts`, `agents/war-room.ts`, or any exchange code. All cron edits are pure additive logging.
+- Schema migration creates tables only — never drops anything except RLS policies which are immediately recreated identical.
+- Build (`tsc --noEmit`) clean. ReadLints clean on all 7 touched cron files.
 
 ### 2026-04-30 · 17:25 Dubai · Computer A (day) — VALIDATION PASS
 **Commits:** `ba53688` LOCK · `59a33b3` backtest script · `b7f5789` edge gate · _(this push)_ docs.

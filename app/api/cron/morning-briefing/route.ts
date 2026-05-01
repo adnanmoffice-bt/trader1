@@ -18,6 +18,7 @@ export async function GET(req: NextRequest) {
   }
 
   const db = createServiceSupabase()
+  const t0 = Date.now()
 
   const { data: portfolio } = await db.from('portfolio')
     .select('capital, total_pnl')
@@ -106,6 +107,19 @@ export async function GET(req: NextRequest) {
   extras.push(`💰 AI Budget: $${budget.remaining.toFixed(2)} remaining`)
 
   await sendGroupMessage(extras.join('\n')).catch(() => {})
+
+  await db.from('agent_logs').insert({
+    agent: 'morning-briefing-cron',
+    level: 'ok',
+    message: `briefing sent · yesterday=$${yesterdayPnl.toFixed(0)} (${yesterdayWins}W/${yesterdayLosses}L) · unrealized=$${unrealizedPnl.toFixed(0)}`,
+    metadata: {
+      duration_ms: Date.now() - t0,
+      yesterday_pnl: +yesterdayPnl.toFixed(2),
+      unrealized_pnl: +unrealizedPnl.toFixed(2),
+      open_positions: openPositions ?? 0,
+      active_signals: activeSignals?.length ?? 0,
+    },
+  }).then(() => {})
 
   return NextResponse.json({
     success: true,

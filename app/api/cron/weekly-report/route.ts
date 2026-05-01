@@ -12,6 +12,7 @@ export async function GET(req: NextRequest) {
   }
 
   const db = createServiceSupabase()
+  const t0 = Date.now()
   const weekAgo = new Date(Date.now() - 7 * 86400_000).toISOString()
 
   // All trades closed this week (real + demo)
@@ -70,6 +71,19 @@ export async function GET(req: NextRequest) {
     worstTrade: worst ? `${worst.instrument} ${worst.direction} $${worst.pnl.toFixed(0)}` : 'None',
     sharpe,
   })
+
+  await db.from('agent_logs').insert({
+    agent: 'weekly-report-cron',
+    level: 'ok',
+    message: `weekly report sent · 7d=$${weeklyPnl.toFixed(0)} (${wins}W/${losses}L of ${allTrades.length}) · WR=${winRate.toFixed(1)}%`,
+    metadata: {
+      duration_ms: Date.now() - t0,
+      weekly_pnl: +weeklyPnl.toFixed(2),
+      trades: allTrades.length, wins, losses,
+      win_rate: +winRate.toFixed(2),
+      sharpe: sharpe ?? null,
+    },
+  }).then(() => {})
 
   return NextResponse.json({
     success: true,

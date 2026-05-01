@@ -20,10 +20,17 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  const t0 = Date.now()
   const db = createServiceSupabase()
   const mgr = new ExchangeManager()
   const { data: positions } = await db.from('positions').select('*')
   if (!positions?.length) {
+    await db.from('agent_logs').insert({
+      agent: 'positions-cron',
+      level: 'ok',
+      message: 'tick complete · no open positions',
+      metadata: { duration_ms: Date.now() - t0, positions_open: 0 },
+    }).then(() => {})
     return NextResponse.json({ success: true, message: 'No open positions', timestamp: new Date().toISOString() })
   }
 
@@ -252,6 +259,18 @@ export async function GET(req: NextRequest) {
     const suffix = pos.is_demo ? '[demo]' : exchangeVerified ? (forcedClose ? '[forced]' : '[verified]') : '[unverified]'
     closed.push(`${pos.instrument} ${reason} P&L: $${pnlAed.toFixed(0)} ${suffix}`)
   }
+
+  await db.from('agent_logs').insert({
+    agent: 'positions-cron',
+    level: closed.length > 0 ? 'ok' : 'info',
+    message: `tick complete · open=${positions.length} updated=${updated.length} closed=${closed.length} skipped=${skipped.length}`,
+    metadata: {
+      duration_ms: Date.now() - t0,
+      positions_open: positions.length,
+      positions_closed: closed.length,
+      closed_summary: closed.slice(0, 5),
+    },
+  }).then(() => {})
 
   return NextResponse.json({
     success: true,

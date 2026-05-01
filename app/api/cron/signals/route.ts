@@ -29,6 +29,13 @@ export async function GET(req: NextRequest) {
     )
     await Promise.race([runWarRoom(), timeout])
 
+    await db.from('agent_logs').insert({
+      agent: 'signals-cron',
+      level: 'ok',
+      message: `war-room run complete · expired=${expiredCount}`,
+      metadata: { duration_ms: Date.now() - t0, expired_signals: expiredCount },
+    }).then(() => {})
+
     return NextResponse.json({
       success: true,
       mode: 'war-room',
@@ -38,6 +45,12 @@ export async function GET(req: NextRequest) {
     })
   } catch (err) {
     console.error('[cron/signals] War Room error:', err)
+    await db.from('agent_logs').insert({
+      agent: 'signals-cron',
+      level: 'error',
+      message: `war-room failed: ${String(err).slice(0, 200)}`,
+      metadata: { duration_ms: Date.now() - t0, expired_signals: expiredCount },
+    }).then(() => {})
     return NextResponse.json({
       error: String(err).slice(0, 200),
       expired_signals: expiredCount,

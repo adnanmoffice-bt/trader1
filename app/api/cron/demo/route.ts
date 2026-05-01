@@ -306,6 +306,19 @@ export async function GET(req: NextRequest) {
 
   await updateSessionStats(db, session.id, Number(session.initial_capital))
 
+  const opens = actions.filter(a => a.includes('OPEN')).length
+  const exits = actions.filter(a => a.includes('stop_loss') || a.includes('take_profit') || a.includes('TIMEOUT')).length
+  await db.from('agent_logs').insert({
+    agent: 'demo-cron',
+    level: 'ok',
+    message: `tick complete · open=${currentOpenCount} actions=${actions.length} opens=${opens} exits=${exits}`,
+    metadata: {
+      duration_ms: Date.now() - t0,
+      session_id: session.id,
+      actions: actions.slice(0, 10),
+    },
+  }).then(() => {})
+
   return NextResponse.json({
     success: true,
     session_id: session.id,

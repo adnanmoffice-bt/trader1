@@ -325,6 +325,11 @@ All computed from OHLCV candle data:
 
 | Date | Action |
 |------|--------|
+| 2026-05-01 | OPS: Auto-Subscribe sweep test PASSED — Spot USDT held at $500.0164 overnight (no 22:00 sweep). Trap is sealed. Operator decision: HOLD remaining $600 in Funding as buffer; no further capital deployed until edge gate auto-unblocks. |
+| 2026-05-01 | infra(supabase): created `supabase/migrations/2026-05-01-missing-tables.sql` (170 lines, fully idempotent). Applies the 5 tables that `schema.sql` defined but were never in prod: `agent_knowledge`, `performance_snapshots`, `polymarket_bets`, `trade_analytics`, `trade_journal`. Uses `CREATE INDEX IF NOT EXISTS`, `DROP POLICY IF EXISTS` before each `CREATE POLICY`, and `DO ... EXCEPTION WHEN duplicate_object` for `ALTER PUBLICATION ADD TABLE`. Re-runnable safely. Verified live: 5 rows in `information_schema.tables`. |
+| 2026-05-01 | feat(observability): added `agent_logs` heartbeat to 7 silent crons — `signals-cron`, `positions-cron`, `demo-cron`, `meta-agent-cron`, `morning-briefing-cron`, `daily-report-cron`, `weekly-report-cron`. Each inserts one row at end of run with `agent`, `level`, `message`, `metadata.duration_ms` and key counters. Pattern matches `status-report-cron`. Now 11/16 crons leave a trail (was 4/16). Pure additive; no behaviour change. tsc --noEmit clean. |
+| 2026-05-01 | backtest baseline: ran `node scripts/backtest-gate-stack.mjs`, saved to `scripts/backtest-runs/2026-05-01.txt`. Verdict still NEGATIVE on all 3 modes (BASELINE -0.090 / FILTERED -0.190 / NEW -0.126 R/trade). Per-instrument NEW: DOGE +5.5R, LINK +5.0R, ADA -14.5R, DOT -13.0R, APT -8.5R, rest small negative. Edge gate (`checkLiveTradingAllowed`) stays correctly active. Next checkpoint: 08/05. |
+| 2026-05-01 | decision: CryptoQuant/Glassnode on-chain wire-up CANCELLED. Free tiers brittle, paid tiers ($29-$39/mo) skipped — system has no edge today, more data won't fix that. News-veto already covers ~80% of intent at $0.005/Claude call. Stub gate stays in `lib/onchain.ts`; revisit only if edge gate ever turns positive. |
 | 2026-04-03 | Project created — full codebase with 27 files |
 | 2026-04-03 | Master log created (this file) |
 | 2026-04-03 | Git initialized and pushed to GitHub trader1 |

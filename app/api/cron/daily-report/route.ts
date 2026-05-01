@@ -16,6 +16,7 @@ export async function GET(req: NextRequest) {
   }
 
   const db = createServiceSupabase()
+  const t0 = Date.now()
   // Use Dubai day boundary (UTC+4), not UTC midnight.
   const dayStartISO = dubaiDayStartUTC().toISOString()
 
@@ -109,6 +110,21 @@ AI spend: $${budget.spent.toFixed(2)} / $${budget.budget.toFixed(2)}
 — APEX AI`
 
   await sendGroupMessage(statsMsg).catch(() => {})
+
+  await db.from('agent_logs').insert({
+    agent: 'daily-report-cron',
+    level: 'ok',
+    message: `daily report sent · today=$${dailyPnl.toFixed(0)} (${wins}W/${losses}L of ${allTrades.length}) · unrealized=$${unrealizedPnl.toFixed(0)} · signals=${signalsToday ?? 0}`,
+    metadata: {
+      duration_ms: Date.now() - t0,
+      daily_pnl: +dailyPnl.toFixed(2),
+      unrealized_pnl: +unrealizedPnl.toFixed(2),
+      trades: allTrades.length,
+      wins, losses,
+      signals_today: signalsToday ?? 0,
+      meetings_today: meetingsToday ?? 0,
+    },
+  }).then(() => {})
 
   return NextResponse.json({
     success: true,

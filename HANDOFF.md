@@ -81,7 +81,7 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-_(none — cleared 2026-05-04 ~09:30 Dubai after Phase A+B+C ship + Phase D research)_
+LOCK: agents/war-room.ts — Computer A — started 2026-05-04 09:45 Dubai (regime-ranging gate removal — single-block deletion + tests)
 
 ---
 

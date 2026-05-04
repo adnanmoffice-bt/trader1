@@ -52,9 +52,12 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 - [ ] **Watch checkpoint: 06/05 (48h after Phase A-C ship)**. Run `node scripts/audit-gate-reasons.mjs` and confirm `data.reason` appears on ≥95% of close events (was 1.3%). Run `node scripts/audit-10d.mjs 48` and confirm AI spend per meeting dropped via Phase C1 model tiers. If anything regressed materially, the previous tip is `7b56b1e` and Phase A-C can be reverted as a single squash without losing Phase D research.
 - [x] ~~**Phase D — operator decision needed.**~~ **CLOSED 04/05** — see `WAR_ROOM_UPGRADE_PROPOSAL.md` §9. Liquidity-sweep does NOT survive proper validation. The earlier "+0.131 OOS" was a 19-day artifact (DB only had 47d of 1H candles, my "180d" tests were cycling the same 47d). After backfilling 365d via `scripts/backfill-price-history.mjs`, full 5-fold walk-forward shows median OOS +0.029 (FAIL on +0.05 bar), 8-variant sweep tests all FAIL, per-instrument tests give zero passes, sweep-as-confluence-filter HURTS expectancy. **Do NOT wire `lib/microstructure.ts` as a trigger.** Primitives stay in repo for future use.
 - [x] ~~**Phase D — combine sweep with CHOCH inversion**.~~ Tested as variant V1 in `scripts/kfold-sweep-variants.mjs` — best of the 8 variants but still FAILS (median OOS +0.026, mean WR 41.9%). Pure CHOCH-inversion (no sweep) is the one filter that preserves expectancy with marginal trade-count reduction (Strategy C in `kfold-confluence-filter.mjs`); could be added as a soft veto inside war-room IFF the per-gate impact study below is run first.
-- [ ] **NEW — per-gate impact study (highest research priority).** §9.7 finding: vanilla indicator triggers on 365d data run +0.007 R/trade with 4/5 folds positive (15,563 trades). Live war-room with full gate stack runs -0.135 R/trade (338 trades) on the same period. The cumulative gate stack is removing winners faster than losers — **the system loses ~18× more per trade than its underlying triggers do**. Need a script that mirrors war-room trigger logic and toggles each gate (ATR-extreme veto, derivatives veto, MTF veto, news veto, trend filter, session gate, correlation dedup, backtest gate, edge gate) ON/OFF independently across the 5 folds, measuring ΔExp/R per gate. Identify the 1-3 worst gates and remove or relax them.
-- [ ] **NEW — backfill 4H candles** before next trigger candidate. `scripts/backfill-price-history.mjs` currently fetches only 1h; extend with `--interval 4h` flag. 4H candles filter the noise that may be killing 1H mean-reversion strategies.
-- [ ] **NEW — pause on adding new gates.** Until the per-gate study above ships, no new gate goes into `agents/war-room.ts`. Future gates only land if they show ΔExp/R ≥ +0.02 R/trade across ≥3/5 folds in the per-gate study.
+- [x] ~~**NEW — per-gate impact study (highest research priority).**~~ **DONE 04/05.** `scripts/kfold-per-gate-impact.mjs` ships findings (`scripts/backtest-runs/per-gate-impact.txt`): regime-ranging gate is single largest negative contributor (+0.064 R/trade if removed). long-only-mode also flagged (+0.059 if removed) but workspace rule overrides. Optimal subset: `mtf-veto + trend-filtered + long-only-mode` (Exp/R +0.014). Patch shipped: regime-ranging gate wrapped in `if (false)` in `agents/war-room.ts`. 5 other gates left untouched pending more demo data. See `WAR_ROOM_UPGRADE_PROPOSAL.md` §10.
+- [x] ~~**NEW — backfill 4H candles**~~ **DONE 04/05.** 26,280 candles backfilled. 4H is WORSE than 1H at every config tested. Hypothesis falsified — stay on 1H. Cross-timeframe data: shorts even more profitable at 4H than 1H, but workspace rule still overrides.
+- [x] ~~**NEW — pause on adding new gates.**~~ Per-gate study now exists; pause is closed. New rule: future gates land in `agents/war-room.ts` only if `kfold-per-gate-impact.mjs` shows ΔExp/R ≥ +0.02 R/trade across ≥3/5 folds when added solo.
+- [ ] **NEW — 30d watch on regime-ranging removal**: 03/06 (≈30 days post-patch). Re-run `node scripts/kfold-per-gate-impact.mjs` on demo trade history. Confirm +0.064 R/trade lift materialised in live demo. If it didn't, revert is one line: `if (false)` → `if (true)` in `agents/war-room.ts` around the regime-ranging block.
+- [ ] **NEW — funding-rate primitive (failed standalone, may work as confluence).** `scripts/funding-rate-walkforward.mjs` shows funding-rate extremes alone are not robust (median OOS -0.053, curve-fit on train). Worth retesting as confluence: enter only when funding extreme AND RSI agrees AND price near swing extreme.
+- [ ] **NEW — per-gate study v2 (richer sim required).** Eight more gates need trade-history reconstruction: `news-veto`, `correlation-dedup`, `recovery-rr`, `recovery-positions`, `hard-risk-reject`, `daily-loss-limit`, `backtest-fail`, `loss-streak-cooldown`, `safety-block`. ~1 day of work to mirror them. Lower priority than the demo watch on the regime-ranging change.
 - [ ] **Telegram still imported in `app/api/cron/positions/route.ts` (lines 4, 256).** `TELEGRAM_BOT_TOKEN` not on Vercel prod → silent failures every position close. Operator decision pending: add the token, or remove the import.
 
 - [x] ~~Disable Binance Auto-Subscribe to Simple Earn~~ — confirmed (01/05 09:26 Dubai sweep test: Spot USDT = $500.0164 unchanged from 30/04 12:14 → toggle held overnight).
@@ -81,11 +84,72 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-LOCK: agents/war-room.ts — Computer A — started 2026-05-04 09:45 Dubai (regime-ranging gate removal — single-block deletion + tests)
+_(none — cleared 2026-05-04 ~12:30 Dubai after regime-ranging gate removal patch landed safely on `main`)_
 
 ---
 
 ## SESSION LOG (newest on top)
+
+### 2026-05-04 · 12:30 Dubai · Computer A (day) — Phase D depth: per-gate study, 4H test, funding-rate, regime-ranging patch
+**Commits:** `6a41437` (LOCK) → `5108130` (regime-ranging gate disabled) → _(this push)_ (research scripts + §10 docs + clear LOCK)
+
+Operator instruction: "da, radi sve" (do all 3 directions in parallel).
+
+Three research lines completed:
+
+**Direction #1 — Per-gate impact study (BIG WIN).** `scripts/kfold-per-gate-impact.mjs`
+mirrors war-room trigger detection (EMA12-26, MACD, RSI, EMA50, VolSpike) and 8
+testable gates. Run on 5-fold anchored WF, 365d, all 10 crypto symbols.
+- Baseline NO-GATES: +0.006 R/trade
+- Baseline ALL-GATES: -0.062 R/trade (gap = -0.069 = stack net-harmful)
+- Leave-one-out: regime-ranging is single biggest harmful (+0.064 R/trade if
+  removed). long-only-mode also flagged (+0.059 if removed) but workspace
+  rule overrides — see §10.4 for the discrepancy analysis.
+- Brute-force optimal subset (long-only forced ON): mtf-veto + trend-filtered
+  alone → +0.014 R/trade (n=1090, WR 41.7%). +0.076 R/trade vs current
+  config — meaningful but still below fee floor.
+
+**Direction #2 — 4H timeframe re-test (NEGATIVE).** Extended `backfill-price-history.mjs`
+to support `--interval 4h`. 26,280 candles backfilled. Re-ran per-gate study.
+4H is WORSE than 1H at every config: NO-GATES -0.038, ALL-GATES -0.028, best
+optimal subset -0.062. The "less noise" hypothesis is falsified. Stay on 1H.
+Cross-timeframe note: long-only-mode harm at 4H is +0.089 R/trade — even
+stronger evidence that shorts have edge in the data, still rule-overridden.
+
+**Direction #3 — Funding-rate primitive (NEGATIVE).** `scripts/funding-rate-walkforward.mjs`
+fetches 12,045 events from fapi.binance.com (365d × 11 perp symbols). Tests
+funding-extreme mean-reversion entries. Exploratory full-window pass shows
++0.041 R/trade at -0.05% threshold (n=166), but 5-fold WF reveals curve-fit:
+median OOS -0.053, only 1/5 folds positive. FAIL. Mean-reversion needs
+hold > 1d, but funding-cost decay over longer holds flips the math. Worth
+retesting as confluence with RSI + structure, not standalone.
+
+**Action — patch shipped.** `regime-ranging` gate in `agents/war-room.ts`
+wrapped in `if (false)` (preserves logic for one-line revert if needed).
+LOCK protocol followed: pushed lock commit first, applied patch, validated
+with tsc + eslint (both clean), committed `5108130`. Live exec still gated
+by 30d edge gate so blast radius is bounded to demo. Operator review can
+clean-delete the dead block + scaffolding after 30d of demo data confirms
+no regression.
+
+Files added this session:
+- scripts/kfold-per-gate-impact.mjs (with `--interval=4h` flag)
+- scripts/funding-rate-walkforward.mjs
+- scripts/backtest-runs/per-gate-impact.txt
+- scripts/backtest-runs/per-gate-impact-4h.txt
+- scripts/backtest-runs/funding-rate-walkforward.txt
+- scripts/backtest-runs/2026-05-04-postpatch.txt (regression canary)
+
+Files modified:
+- agents/war-room.ts (regime-ranging gate disabled, single block, ~12 LOC delta)
+- scripts/backfill-price-history.mjs (positional arg parser supports interval)
+- WAR_ROOM_UPGRADE_PROPOSAL.md (§10 added — full three-direction findings)
+- HANDOFF.md (this entry, OPEN WORK ticked, LOCK cleared)
+
+Next-session entry point:
+- Watch checkpoint 06/05 (48h after Phase A-C: data.reason coverage + AI cost).
+- Watch checkpoint 03/06 (30d post-patch: re-run per-gate study on the new
+  demo trade history; confirm +0.064 R/trade materialised live).
 
 ### 2026-05-04 · 12:00 Dubai · Computer A (day) — Phase D corrected with proper 365d data
 **Commits:** _(this push)_ (backfill + 5-fold WF + corrected Phase D verdict)

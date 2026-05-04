@@ -505,6 +505,212 @@ Replace §8.6's recommended-next-steps with this priority list:
   `…-variants.txt`, `…-per-instrument.txt`, `confluence-filter-test.txt`,
   `2026-05-04-postbackfill.txt`
 
+---
+
+## 10. Phase D — three-direction depth pass (added 2026-05-04, third session)
+
+§9 closed the microstructure path as net-negative. Operator instruction "do
+everything" launched three parallel research lines on top of the now-deep
+365d 1H dataset.
+
+### 10.1 Per-gate impact study (highest-ROI finding)
+
+`scripts/kfold-per-gate-impact.mjs` mirrors war-room trigger logic
+(EMA12-26, MACD, RSI, EMA50, VolSpike) and 8 gates (regime-ranging,
+atr-extreme, mtf-veto, trend-filtered, cooldown, session-gate,
+duplicate-signal, long-only-mode). Tested on 5-fold WF, 365d, all 10
+crypto symbols. Stops: SL=2.0×ATR, TP=3.0×ATR, max-hold 48h.
+
+**Baselines:**
+
+| Config | n | WR | Exp/R |
+|--------|---|-----|-------|
+| NO GATES | 14,031 | 41.4% | +0.006 |
+| ALL GATES ON (current war-room equivalent) | 558 | 39.2% | -0.062 |
+
+**Gap: -0.069 R/trade.** The gate stack as a whole is net-harmful by
+~7 basis points per trade.
+
+**Per-gate leave-one-out (Δ = ExpR(without G) − ExpR(all on); positive
+Δ = G is harmful):**
+
+| Gate | n change | ExpR without G | Δ ExpR | Verdict |
+|------|----------|----------------|--------|---------|
+| regime-ranging | +217 | +0.002 | **+0.064** | **HARMFUL — remove** |
+| long-only-mode | +3,288 | -0.004 | **+0.059** | (data says HARMFUL, workspace rule overrides — see 10.4) |
+| atr-extreme | +6 | -0.059 | +0.003 | neutral |
+| cooldown | 0 | -0.062 | +0.000 | neutral |
+| duplicate-signal | 0 | -0.062 | +0.000 | neutral |
+| session-gate | +179 | -0.066 | -0.004 | neutral |
+| trend-filtered | +997 | -0.079 | -0.016 | mildly helpful when stacked |
+| mtf-veto | +315 | -0.082 | -0.020 | mildly helpful when stacked |
+
+**Solo (each gate alone, Δ vs no-gates):**
+
+| Gate | n | ExpR solo | Δ ExpR | Verdict solo |
+|------|---|-----------|--------|--------------|
+| trend-filtered | 8,984 | +0.042 | +0.035 | HELPFUL solo |
+| mtf-veto | 9,582 | +0.027 | +0.021 | HELPFUL solo |
+| atr-extreme | 13,847 | +0.005 | -0.001 | neutral |
+| cooldown | 14,031 | +0.006 | +0.000 | neutral |
+| duplicate-signal | 14,031 | +0.006 | +0.000 | neutral |
+| session-gate | 9,986 | -0.004 | -0.010 | neutral |
+| regime-ranging | 9,334 | -0.021 | -0.027 | HARMFUL solo |
+| long-only-mode | 7,062 | -0.037 | -0.043 | HARMFUL solo |
+
+**Optimal-subset search** (long-only-mode FORCED ON per workspace rule,
+brute-force over 128 subsets of the other 7 gates, n ≥ 200 filter):
+
+| Rank | n | WR | Exp/R | Active gates (besides long-only) |
+|------|---|-----|-------|----------------------------------|
+| 1 | 1,090 | 41.7% | **+0.014** | mtf-veto, trend-filtered |
+| 2-4 | 1,090 | 41.7% | +0.014 | (above) ± cooldown ± duplicate-signal |
+| 5 | 2,015 | 41.2% | +0.013 | trend-filtered |
+| 6-8 | 2,015 | 41.2% | +0.013 | (above) ± cooldown ± duplicate-signal |
+
+**Net effect:** removing 5 gates and keeping only mtf-veto + trend-filtered
++ long-only-mode lifts Exp/R from -0.062 to +0.014 (+0.076 R/trade
+improvement). On $5K capital × 1.5% risk-per-trade = +$1.05 expected per
+trade vs current -$4.65.
+
+This is still NOT enough to enable live execution: round-trip Binance
+spot fees + slippage are ~0.2-0.3% which on a 3-ATR TP move (~3-6%) is
+~5-10% of a winner. After fees, +0.014 R/trade is roughly breakeven.
+But it's a meaningful step from "loses money in production" to
+"breakeven in production".
+
+### 10.2 Action taken — `regime-ranging` gate disabled in `agents/war-room.ts`
+
+Single-block patch this session (commit on `main`):
+
+- The `regime-ranging` if-block is wrapped in `if (false)` — gate logic
+  preserved for one-line revert if needed.
+- The `STRONG_TRIGGERS`/`weakRange`/`hasStrongTrigger`/`allowWeakRangeSingle`
+  scaffolding is left in place; the operator can clean-delete after 30d
+  of demo data confirms no regression.
+- Live execution is still gated by `checkLiveTradingAllowed` (30d edge
+  gate). Patch only affects DEMO meetings. Blast radius bounded.
+
+`mtf-veto`, `trend-filtered`, `long-only-mode`, `atr-extreme`, `cooldown`,
+`duplicate-signal`, `session-gate` are NOT modified in this patch — their
+data is mixed (mildly helpful when stacked, no impact at all, or rule-
+overridden). Operator can run `node scripts/kfold-per-gate-impact.mjs`
+again after the regime-ranging removal has 30d of demo data and decide
+whether to relax further.
+
+### 10.3 4H timeframe re-test (negative result)
+
+`scripts/backfill-price-history.mjs 365 4h` extended to backfill 4H
+candles (26,280 candles total), then `kfold-per-gate-impact.mjs --interval=4h`
+re-ran the same study at 4H.
+
+| Config | n (4H) | WR | Exp/R |
+|--------|--------|-----|-------|
+| NO GATES | 3,160 | 40.9% | -0.038 |
+| ALL GATES ON | 121 | 42.1% | -0.028 |
+| Best optimal subset (long-only forced) | 314 | 39.2% | -0.062 |
+
+**4H is WORSE than 1H** at every level. The "less noise" hypothesis is
+falsified — 4H aggregation removes the working triggers (1H EMA crosses
+that lead price action) faster than it removes the noise. **Stay on 1H.**
+
+Cross-timeframe note: `long-only-mode` solo costs **-0.143 R/trade** at
+4H (vs -0.043 at 1H). The data signal that shorts have edge is even
+stronger at 4H than at 1H. Workspace rule still overrides.
+
+### 10.4 Long-only-mode discrepancy — data vs workspace rule
+
+Both the 1H and 4H per-gate studies show shorts have positive expectancy
+in the trigger family on 365d real data:
+
+- 1H solo: removing long-only-mode → +0.059 R/trade, n +3,288
+- 4H solo: removing long-only-mode → +0.089 R/trade, n +827
+- 4H solo: ExpR(no shorts) = -0.181 vs no-gates baseline -0.038
+  — long-only-mode at 4H solo is actively destroying edge
+
+**The workspace rule (`apex-trading.mdc`, `context-load.mdc`) explicitly
+forbids re-enabling shorts due to documented historical losses.** This is
+a hard constraint — the data and the rule disagree, the rule wins.
+
+Plausible reasons for the conflict:
+- Backtest doesn't model funding costs on perp shorts (basis decay
+  hurts shorts asymmetrically when funding is positive)
+- Backtest doesn't model the ~0.05% extra slippage typical on alt-coin
+  short fills (low borrow availability)
+- Operator's lived experience may have included a specific period
+  (e.g. the 2024 bull run) when shorts were systematically wrong AND
+  the system was sized too aggressively
+- The trigger family may have changed since the loss period — the bias
+  could have flipped
+
+**Recommended:** keep the rule. Re-evaluate manually if and when the
+operator wants to revisit, with these specific data points as input.
+
+### 10.5 Funding-rate primitive (negative result)
+
+`scripts/funding-rate-walkforward.mjs` — fetches 365d × 11 perp symbols
+from `fapi.binance.com/fapi/v1/fundingRate` (12,045 funding events),
+runs same 5-fold anchored WF.
+
+Hypothesis: funding-rate extremes (longs paying ≥ 0.05%/8h or shorts
+paying ≤ -0.05%/8h) mark crowded positioning and should mean-revert.
+
+Strategy: enter at the 1H candle close following the funding event,
+SL=2×ATR, TP=3×ATR, max-hold 24h.
+
+Exploratory pass on full 365d:
+
+| Side | Threshold | n | WR | Exp/R |
+|------|-----------|---|-----|-------|
+| long | rate ≤ -0.01% | 1,320 | 42.0% | -0.043 |
+| long | rate ≤ -0.05% | 166 | 48.2% | +0.041 |
+| long | rate ≤ -0.10% | 52 | 42.3% | +0.012 |
+
+Promising on the full window — but 5-fold WF reveals classic curve-fit:
+
+| Fold | Best train thr | Train Exp/R | OOS Exp/R | OOS WR |
+|------|----------------|-------------|-----------|--------|
+| 1 | -0.01% | +0.237 | +0.194 | 50.0% |
+| 2 | -0.01% | +0.223 | -0.062 | 43.6% |
+| 3 | -0.01% | +0.056 | -0.053 | 41.3% |
+| 4 | -0.10% | +0.061 | (no signals) | — |
+| 5 | -0.10% | +0.061 | -0.173 | 36.4% |
+
+**Median OOS Exp/R: -0.053. 1/5 folds positive. FAIL.**
+
+Funding extremes regress to mean over 1-3 days, not the 24h window we
+tested. A longer hold window may help, but funding-cost decay during
+the hold flips the equation. Not pursuing further without a more robust
+signal model (e.g. funding + price-divergence confluence).
+
+### 10.6 Updated next-session priorities
+
+1. **30d watch on regime-ranging removal**: re-run `kfold-per-gate-impact.mjs`
+   on the new demo trade history to confirm the +0.064 R/trade lift
+   materialised in live demo. If it didn't, revert (single-line `if (false)`
+   → `if (true)` change).
+2. **Per-gate study v2 — gates 9-17 that need richer simulation**:
+   `news-veto`, `correlation-dedup`, `recovery-rr`, `recovery-positions`,
+   `hard-risk-reject`, `daily-loss-limit`, `backtest-fail`,
+   `loss-streak-cooldown`, `safety-block`. Build trade-history and account-
+   state simulators.
+3. **Replace funding-rate single-signal with funding-divergence
+   confluence**: only trigger when funding extreme AND 1H RSI agrees AND
+   price within 1×ATR of a swing extreme. ~3-fold reduction in trade
+   count, hopefully meaningful lift.
+4. **Multi-asset basket signal**: when ≥6 of 10 alts have funding ≤ -0.05%
+   simultaneously, that's a market-wide capitulation signal. Trade BTC.
+
+### 10.7 References — §10 added in this session
+
+- `scripts/kfold-per-gate-impact.mjs` — per-gate study (1H + 4H via flag)
+- `scripts/funding-rate-walkforward.mjs` — funding primitive
+- `agents/war-room.ts` — single-block patch (regime-ranging removed)
+- `scripts/backfill-price-history.mjs` — extended to support `--interval` flag
+- Output dumps: `scripts/backtest-runs/per-gate-impact.txt` (1H),
+  `per-gate-impact-4h.txt` (4H), `funding-rate-walkforward.txt`,
+  `2026-05-04-postpatch.txt` (regression-canary backtest)
+
 ### 8.7 References (Phase D additions)
 - Inner Circle Trader (ICT) — original publisher of order block / FVG concepts in
   retail-trading material (no peer-reviewed source; concepts validated empirically

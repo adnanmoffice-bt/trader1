@@ -55,8 +55,19 @@ const SYMBOLS = {
 }
 
 const DAYS = parseInt(process.argv[2] ?? '365', 10)
-const FILTER = process.argv[3] ? new Set(process.argv[3].split(',').map(s => s.trim())) : null
-const INTERVAL = '1h'
+// Filter list (e.g. "BTC/USD,ETH/USD") and interval can come in either order.
+// If the 3rd arg looks like an interval token ("1h"/"4h"/"1d"/"15m") we treat
+// it as the interval; otherwise it's a filter list. Same for arg 4.
+function classify(arg) {
+  if (!arg) return { kind: 'none' }
+  if (/^(1m|5m|15m|30m|1h|2h|4h|6h|8h|12h|1d|3d|1w)$/i.test(arg.trim())) return { kind: 'interval', value: arg.trim().toLowerCase() }
+  if (arg.includes('/') || arg.includes(',')) return { kind: 'filter', value: new Set(arg.split(',').map(s => s.trim()).filter(Boolean)) }
+  return { kind: 'none' }
+}
+const a3 = classify(process.argv[3])
+const a4 = classify(process.argv[4])
+const FILTER = a3.kind === 'filter' ? a3.value : a4.kind === 'filter' ? a4.value : null
+const INTERVAL = a3.kind === 'interval' ? a3.value : a4.kind === 'interval' ? a4.value : '1h'
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 

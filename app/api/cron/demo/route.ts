@@ -7,8 +7,15 @@ import type { OHLCV } from '@/types'
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
-// Same profitable instruments as war-room (SOL, BNB blacklisted — 0% win rate)
-const DEMO_INSTRUMENTS = ['BTC/USD', 'ETH/USD', 'XAU/USD'] as const
+// Same profitable instruments as war-room.
+// Blacklist:
+//   SOL/USD, BNB/USD — 0% WR before Apr 17 (-$3.5K paper loss)
+//   XAU/USD — Binance PAXGUSDT venue is structurally unprofitable
+//     (4 demo trades last 14d, 0% WR, -$283; 20 trades all-time, 15% WR, -$686).
+//     Triggers have a raw 1H edge (kfold +0.046 R/trade) but PAXGUSDT
+//     fees+slippage destroy it. See docs/GOLD_OIL_VENUE_DECISION.md.
+//     Re-enable only if executed via a CFD broker (IG/Pepperstone/Saxo).
+const DEMO_INSTRUMENTS = ['BTC/USD', 'ETH/USD'] as const
 // All values in USD — no currency conversion needed
 const RISK_PER_TRADE = 0.015  // 1.5% (was 3% — too aggressive)
 const MIN_SCORE = 78           // raised from 70 after audit 2026-04-21 — 3/3 losses were at score=83

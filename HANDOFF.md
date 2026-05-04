@@ -60,6 +60,7 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 - [ ] **NEW — per-gate study v2 (richer sim required).** Eight more gates need trade-history reconstruction: `news-veto`, `correlation-dedup`, `recovery-rr`, `recovery-positions`, `hard-risk-reject`, `daily-loss-limit`, `backtest-fail`, `loss-streak-cooldown`, `safety-block`. ~1 day of work to mirror them. Lower priority than the demo watch on the regime-ranging change.
 - [x] ~~**Gold/oil — operator question 2026-05-04 09:48 Dubai.**~~ **ANSWERED.** Gold IS in war-room rotation but PAXGUSDT venue is structurally broken: 70× thinner than BTC, 0.30R/trade fee burden, every gate config is net-negative after fees (raw +0.053 → net -0.247). XAU added to `LIVE_INSTRUMENT_BLACKLIST` (commit on `main`). Oil not in rotation — no Binance pair, would burn AI cost without execution path. Full venue analysis + recommendations in `docs/GOLD_OIL_VENUE_DECISION.md`. Operator decision needed: open an IG / Saxo / OANDA CFD account (~1h KYC) to unlock both markets, OR accept gold+oil as paper-only on Binance.
 - [ ] **NEW — operator decision: open CFD account for gold/oil execution?** Recommended IG (UAE-licensed via DFSA, ~$250 min deposit, API via IG Labs). Without it, gold stays demo-only forever and oil never enters rotation. See `docs/GOLD_OIL_VENUE_DECISION.md` §Recommendation.
+- [x] ~~**Triage of 138-trade -$6,421 paper loss**~~ **DONE 04/05.** Operator showed Trade Analytics screen ("opet gubis"). `scripts/audit-recent-losses.mjs` shows the loss is concentrated PRE 2026-04-17 (102 trades, 9.8% WR, -$6,106) when SOL/BNB/BB_SQUEEZE were still in rotation. Post-cutoff: 36 trades, 27.8% WR, -$315; last 14d: 24 trades, 29.2% WR, -$132 (basically breakeven). All four root causes are already disabled (SOL/BNB Apr 17, BB_SQUEEZE workspace rule, XAU live blacklist 04/05 + demo blacklist 04/05). Demo cron `DEMO_INSTRUMENTS` now `['BTC/USD','ETH/USD']` only — XAU was bleeding ~$71/trade in demo too.
 - [ ] **Telegram still imported in `app/api/cron/positions/route.ts` (lines 4, 256).** `TELEGRAM_BOT_TOKEN` not on Vercel prod → silent failures every position close. Operator decision pending: add the token, or remove the import.
 
 - [x] ~~Disable Binance Auto-Subscribe to Simple Earn~~ — confirmed (01/05 09:26 Dubai sweep test: Spot USDT = $500.0164 unchanged from 30/04 12:14 → toggle held overnight).
@@ -91,6 +92,47 @@ _(none — cleared 2026-05-04 ~13:00 Dubai after XAU blacklist patch landed)_
 ---
 
 ## SESSION LOG (newest on top)
+
+### 2026-05-04 · 15:35 Dubai · Computer A (day) — "opet gubis" triage of 138-trade -$6,421 paper loss
+
+**Commits:** _(this push)_ (XAU pulled from demo cron + audit script + HANDOFF entry)
+
+Operator showed Trade Analytics screen: "138 closed trades, -$6,421 USD".
+First confirmed it's all `demo_trades` (paper) — real Binance Spot wallet
+untouched, live exec still gated by `checkLiveTradingAllowed()`.
+
+`scripts/audit-recent-losses.mjs` (new) breaks down the 138 trades and
+the picture is much less dramatic than the all-time number suggests:
+
+| Window                       | Trades | WR    | Total $    | Avg $/trade |
+|------------------------------|--------|-------|------------|-------------|
+| Pre 2026-04-17 (legacy cfg)  | 102    | 9.8%  | -6,105.93  | -59.86      |
+| Post 2026-04-17 (current)    | 36     | 27.8% | -315.22    | -8.76       |
+| Last 14 days only            | 24     | 29.2% | -132.51    | -5.52       |
+
+Root-cause attribution of the -$6,421:
+- **BB_SQUEEZE trigger**: 40 trades, 7.5% WR, **-$3,338** — workspace rule
+  forbids re-enabling, no new ones since rule landed.
+- **SOL/USD**: 25 trades, 4% WR, -$1,901 — last trade 2026-04-16, blacklisted.
+- **BNB/USD**: 20 trades, 5% WR, -$1,631 — last trade 2026-04-16, blacklisted.
+- **XAU/USD**: 20 trades, 15% WR, -$686 — 4 of those in the last 14 days
+  alone (-$283), all losses, confirming this morning's PAXGUSDT venue analysis.
+
+Action this session:
+- Pulled `XAU/USD` from `app/api/cron/demo/route.ts → DEMO_INSTRUMENTS`.
+  Now `['BTC/USD','ETH/USD']` only. XAU is already in `LIVE_INSTRUMENT_BLACKLIST`
+  (live), this also stops it from accumulating fake demo losses on the dashboard.
+  Comment in code points future agents at `docs/GOLD_OIL_VENUE_DECISION.md` for
+  the re-enable conditions (CFD broker only).
+- All-time numbers will keep showing the legacy loss until trades pre-Apr-17
+  are archived; no archival done — the historical record stays intact for
+  research. The dashboard's "SESSION" view already filters to current session.
+
+Net: post-cutoff 36-trade sample is at -$8.76/trade with 27.8% WR. That
+matches the Apr-23 backtest prediction (~-0.13 R/trade × 1.5% × $5,000
+= -$10/trade). The regime-ranging fix shipped this morning is projected
+to add +0.064 R/trade = +$4.80/trade — i.e. push average to roughly
+breakeven. We'll see in the 30d demo window (next checkpoint 03/06).
 
 ### 2026-05-04 · 13:00 Dubai · Computer A (day) — Gold/oil venue analysis, XAU live-blacklisted
 **Commits:** `ece0a64` (LOCK) → _(this push)_ (XAU blacklist + venue doc + clear LOCK)

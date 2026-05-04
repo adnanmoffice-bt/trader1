@@ -58,6 +58,8 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 - [ ] **NEW — 30d watch on regime-ranging removal**: 03/06 (≈30 days post-patch). Re-run `node scripts/kfold-per-gate-impact.mjs` on demo trade history. Confirm +0.064 R/trade lift materialised in live demo. If it didn't, revert is one line: `if (false)` → `if (true)` in `agents/war-room.ts` around the regime-ranging block.
 - [ ] **NEW — funding-rate primitive (failed standalone, may work as confluence).** `scripts/funding-rate-walkforward.mjs` shows funding-rate extremes alone are not robust (median OOS -0.053, curve-fit on train). Worth retesting as confluence: enter only when funding extreme AND RSI agrees AND price near swing extreme.
 - [ ] **NEW — per-gate study v2 (richer sim required).** Eight more gates need trade-history reconstruction: `news-veto`, `correlation-dedup`, `recovery-rr`, `recovery-positions`, `hard-risk-reject`, `daily-loss-limit`, `backtest-fail`, `loss-streak-cooldown`, `safety-block`. ~1 day of work to mirror them. Lower priority than the demo watch on the regime-ranging change.
+- [x] ~~**Gold/oil — operator question 2026-05-04 09:48 Dubai.**~~ **ANSWERED.** Gold IS in war-room rotation but PAXGUSDT venue is structurally broken: 70× thinner than BTC, 0.30R/trade fee burden, every gate config is net-negative after fees (raw +0.053 → net -0.247). XAU added to `LIVE_INSTRUMENT_BLACKLIST` (commit on `main`). Oil not in rotation — no Binance pair, would burn AI cost without execution path. Full venue analysis + recommendations in `docs/GOLD_OIL_VENUE_DECISION.md`. Operator decision needed: open an IG / Saxo / OANDA CFD account (~1h KYC) to unlock both markets, OR accept gold+oil as paper-only on Binance.
+- [ ] **NEW — operator decision: open CFD account for gold/oil execution?** Recommended IG (UAE-licensed via DFSA, ~$250 min deposit, API via IG Labs). Without it, gold stays demo-only forever and oil never enters rotation. See `docs/GOLD_OIL_VENUE_DECISION.md` §Recommendation.
 - [ ] **Telegram still imported in `app/api/cron/positions/route.ts` (lines 4, 256).** `TELEGRAM_BOT_TOKEN` not on Vercel prod → silent failures every position close. Operator decision pending: add the token, or remove the import.
 
 - [x] ~~Disable Binance Auto-Subscribe to Simple Earn~~ — confirmed (01/05 09:26 Dubai sweep test: Spot USDT = $500.0164 unchanged from 30/04 12:14 → toggle held overnight).
@@ -84,11 +86,65 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-LOCK: lib/safety.ts — Computer A — started 2026-05-04 09:55 Dubai (XAU/USD → LIVE_INSTRUMENT_BLACKLIST after PAXGUSDT venue analysis)
+_(none — cleared 2026-05-04 ~13:00 Dubai after XAU blacklist patch landed)_
 
 ---
 
 ## SESSION LOG (newest on top)
+
+### 2026-05-04 · 13:00 Dubai · Computer A (day) — Gold/oil venue analysis, XAU live-blacklisted
+**Commits:** `ece0a64` (LOCK) → _(this push)_ (XAU blacklist + venue doc + clear LOCK)
+
+Operator question: "sve odradi, i zasto ne trejdujemo naftu i zlato?"
+(do everything, and why aren't we trading oil and gold?)
+
+Honest answer surfaced:
+- Gold IS in war-room rotation (`agents/war-room.ts → ALL_INSTRUMENTS`
+  line 31) but routed through Binance PAXGUSDT, which is structurally
+  too thin to be profitable. Quality audit (`scripts/audit-xau-quality.mjs`)
+  found PAXGUSDT median bar volume = $755K vs BTCUSDT $52M (70× thinner),
+  12.4% doji-like bars vs 0.5% on BTC.
+- Per-gate study on XAU only (`scripts/kfold-xau-only.mjs`, with 0.30R
+  fee adjustment for PAXGUSDT round-trip slippage) — every gate
+  combination tested is NEGATIVE after fees (raw +0.053 → net -0.247
+  in the current war-room config). The trigger family DOES find raw edge
+  in gold (+0.04 to +0.07 R/trade), but the venue eats it.
+- Oil isn't in the rotation at all because Binance has no oil pair.
+  Yahoo Finance gives prices but no execution path.
+
+Patch shipped (LOCK protocol followed):
+- `lib/safety.ts → LIVE_INSTRUMENT_BLACKLIST`: added 'XAU/USD' alongside
+  ADA/DOT/APT, with full justification comment.
+- War-room continues to debate XAU and demo-trade it. Live execution is
+  blocked at the safety-gate layer.
+- tsc clean, eslint clean.
+
+Documentation:
+- `docs/GOLD_OIL_VENUE_DECISION.md` (new) — full venue analysis +
+  4 ranked options for the operator to choose from. Recommended: open
+  an IG (or similar CFD) account for gold + oil + forex + indices in
+  one account. KYC ~1h. Spreads 5× tighter than PAXGUSDT.
+
+OPEN WORK updated: gold/oil question marked answered with the venue
+recommendation as a new operator decision item.
+
+Files added:
+- scripts/audit-xau-quality.mjs
+- scripts/kfold-xau-only.mjs
+- scripts/backtest-runs/xau-quality.txt
+- scripts/backtest-runs/xau-only-pergate.txt
+- docs/GOLD_OIL_VENUE_DECISION.md
+
+Files modified:
+- lib/safety.ts (XAU added to live blacklist)
+- scripts/backfill-price-history.mjs (XAU/USD → PAXGUSDT mapping added)
+- HANDOFF.md (this entry, OPEN WORK updated, LOCK cleared)
+- price_history table: 8760 1H + 2190 4H XAU candles backfilled
+
+Next-session entry point unchanged:
+- 06/05 Phase A-C 48h watch
+- 03/06 30d watch on regime-ranging removal
+- ANY-TIME: operator decides on CFD account for gold/oil
 
 ### 2026-05-04 · 12:30 Dubai · Computer A (day) — Phase D depth: per-gate study, 4H test, funding-rate, regime-ranging patch
 **Commits:** `6a41437` (LOCK) → `5108130` (regime-ranging gate disabled) → _(this push)_ (research scripts + §10 docs + clear LOCK)

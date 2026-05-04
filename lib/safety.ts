@@ -222,6 +222,19 @@ const MIN_TRADES_FOR_GATE = 20         // need at least 20 closed trades to eval
  */
 export const LIVE_INSTRUMENT_BLACKLIST = new Set<string>([
   'ADA/USD', 'DOT/USD', 'APT/USD',
+  // XAU/USD added 2026-05-04 after PAXGUSDT venue analysis. Per
+  // scripts/audit-xau-quality.mjs and scripts/kfold-xau-only.mjs:
+  //   - PAXGUSDT median bar quote vol $755K (BTC: $52M — 70× thinner)
+  //   - 12.4% doji-like bars (BTC: 0.5%)
+  //   - Round-trip spread + fee ≈ 0.20% on a 0.33% avg ATR move
+  //     → fee burden ≈ 0.30R per round trip
+  //   - Trigger family RAW edge at current war-room config: +0.053 R/trade
+  //     After fee adjustment: -0.247 R/trade  (every gate combo is net-neg)
+  // The trigger family CAN find edge in gold — the venue can't sustain it.
+  // XAU stays in war-room rotation for paper trading + signal value.
+  // Lift this only after the operator routes XAU execution to a venue with
+  // <0.05% round-trip slippage (CFD broker, IBKR, etc — see CONTEXT.md).
+  'XAU/USD',
 ])
 
 export interface LiveTradingGate {

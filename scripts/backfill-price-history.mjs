@@ -52,6 +52,12 @@ const SYMBOLS = {
   'MATIC/USD': 'POLUSDT',
   'NEAR/USD': 'NEARUSDT',
   'APT/USD': 'APTUSDT',
+  // XAU added 2026-05-04: previously skipped because PAXGUSDT is thin
+  // ($15M daily vol, ~0.1% spread). Including it now to reconcile with
+  // war-room rotation (XAU/USD has been in ALL_INSTRUMENTS the whole time).
+  // Backtests must be read with the spread caveat in mind — assume real
+  // fills will be 0.05-0.15% worse than the candle close.
+  'XAU/USD': 'PAXGUSDT',
 }
 
 const DAYS = parseInt(process.argv[2] ?? '365', 10)

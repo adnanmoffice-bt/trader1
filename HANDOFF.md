@@ -41,8 +41,13 @@ Same git identity on both → commits look identical; differentiate via the
 
 Items still to finish. Tick `[x]` when done; delete after a week.
 
-- [ ] **URGENT — Anthropic credit balance is exhausted.** Meta-agent daily review has been failing 03/05 and 04/05 with `"Your credit balance is too low to access the Anthropic API"` (see `agent_logs.agent='meta-agent-cron' level='error'`). News-veto gate and war-room debate would also fail when invoked. Operator action: top up at https://console.anthropic.com/ → Plans & Billing.
-- [ ] **War-room close-reason logging gap.** `scripts/audit-gate-reasons.mjs` shows 3829 / 3880 (98.7%) of `war_room_messages` close events have NO `data.reason`. Only `atr-extreme` (28) and `mtf-veto` (23) fire explicit reasons. Pre-debate short-circuits (data quality, cooldown, balance gate, no triggers) write `role='close'` with empty data. Until reasons are persisted on every close path, the gate-stack 48h watch checkpoint cannot detect over-tightening. **Fix**: add `data.reason` (e.g. `'cooldown'`, `'no-triggers'`, `'balance'`, `'data-quality'`) to every `speak({ role: 'close', ... })` call in `agents/war-room.ts`. High-risk file — needs LOCK + careful pass.
+- [x] ~~URGENT — Anthropic credit balance is exhausted.~~ Operator topped up $50 on 04/05 ~07:55 Dubai. Meta-agent and news-veto resume on next runs (no code change needed; the failures were 400 invalid_request_error from billing).
+- [ ] **War-room close-reason logging gap** (= Phase A1 in `WAR_ROOM_UPGRADE_PROPOSAL.md`). `scripts/audit-gate-reasons.mjs` shows 3829 / 3880 (98.7%) of `war_room_messages` close events have NO `data.reason`. Add `data.reason` to every `speak({ role: 'close', ... })` in `agents/war-room.ts`. High-risk file — LOCK + careful pass. Cheapest fix in the upgrade proposal.
+- [ ] **War-room upgrade — Phase A2** (structured stance JSON for all 10 debate agents) — kills the regex vote tally. See proposal §4.A2.
+- [ ] **War-room upgrade — Phase A3** (persist meeting decisions to `agent_knowledge`) — table exists, never written to. See proposal §4.A3.
+- [ ] **War-room upgrade — Phase B1** (judge-based selection over Master+Orchestrator synthesis) — addresses the literature's strongest finding (synthesis loses 0/42 in Maryanskyy 2026). See proposal §4.B1.
+- [ ] **War-room upgrade — Phase B2** (heterogeneous trading beliefs per meeting) — breaks the static-prompt belief-entrenchment failure mode. See proposal §4.B2.
+- [ ] **War-room upgrade — Phase C1** (mixed model tiers — Haiku for retrieval-style agents, sonnet-4 only for deep-reasoning). Saves 30-50% per meeting. See proposal §4.C1.
 - [ ] **Telegram still imported in `app/api/cron/positions/route.ts` (lines 4, 256).** `TELEGRAM_BOT_TOKEN` not on Vercel prod → silent failures every position close. Operator decision pending: add the token, or remove the import.
 
 - [x] ~~Disable Binance Auto-Subscribe to Simple Earn~~ — confirmed (01/05 09:26 Dubai sweep test: Spot USDT = $500.0164 unchanged from 30/04 12:14 → toggle held overnight).
@@ -74,6 +79,39 @@ _(none)_
 ---
 
 ## SESSION LOG (newest on top)
+
+### 2026-05-04 · 08:00 Dubai · Computer A (day) — research pass + nav simplification
+**Commits:** _(this push)_ — `feat(ui): simplify nav to 3 primary tabs + categorised MORE dropdown; docs: WAR_ROOM_UPGRADE_PROPOSAL`
+
+Context:
+- Operator topped up $50 Anthropic credits — meta-agent + news-veto auto-recover.
+- Operator: "war-room must be fixed... look at 100 latest commits + analyses online for how war rooms should work, upgrade it... and improve navigation, still too complicated."
+
+Done in this session:
+1. **Reviewed last 100 commits** of `adnanmoffice-bt/trader1` and the 1,212-line `agents/war-room.ts`. Mapped current 12-agent architecture to the academic literature.
+2. **Web research pass** — pulled 2024–2026 multi-agent trading literature: TradingAgents (Tauric, 64K stars), ContestTrade (FinStep-AI), DReaMAD (belief-entrenchment fix), the Selection Bottleneck paper (Maryanskyy 2026), Single-Agent vs Multi-Agent under fixed token budget paper, Nature SciRep on adversarial influence in MAD.
+3. **Wrote `WAR_ROOM_UPGRADE_PROPOSAL.md`** at repo root. Section 3 enumerates 10 concrete problems with the current war-room mapped to file/line. Section 4 ranks 4 phases (A-D) with 10 sub-items by ROI and risk. **Read this before any war-room edit.** Implementation requires LOCK + separate session per phase — not done in this session.
+4. **Simplified navigation** in `components/NavBar.tsx`:
+   - **3 primary tabs** (was 5): HOME, WAR ROOM, ANALYTICS.
+   - **One categorised MORE dropdown** (was two CHARTS+LAB) with sections: Trading (Signals, Journal, Simulation), Charts (Multi-Chart, Heatmap, Screener, Calendar), Diagnostics (AI Log, Investor).
+   - **Polymarket hidden from nav** (frozen — page still reachable via URL).
+   - Right side: SETTINGS button (was tiny "SET"), theme toggle, clock, EXIT.
+   - All `<a>` → `<Link>` for client-side routing (zero full-page reloads).
+   - tsc clean, eslint clean.
+
+Headline TODOs that came out of the research (now in OPEN WORK):
+- Phase A1: universal `data.reason` on every close path (fixes the 98.7% logging gap from yesterday's audit). Cheapest fix in the proposal.
+- Phase A2: structured stance JSON on all 10 debate agents (kills the regex vote tally).
+- Phase A3: persist final decisions + outcomes to `agent_knowledge` (table exists, never written to).
+- Phase B1 (judge-based selection) replaces the current synthesis pattern that the literature says loses 0/42 vs single-model baseline.
+
+Operator note (Bosnian → English): the operator's literal request was to fix the war-room, but the research pass clarified that the real problem (per the 180d backtest) is **the deterministic trigger set has no edge**. War-room engineering can lift WR ~5-10% but cannot manufacture edge from triggers that don't have it. Phase D (new triggers) is therefore non-negotiable for live exec to ever unblock.
+
+Safety notes:
+- No edits to `agents/war-room.ts`, `lib/safety.ts`, `lib/risk-controls.ts`, `lib/exchanges/*`, `supabase/schema.sql`. Pure docs + nav.
+- No SHORT/SOL/BNB/BB_SQUEEZE re-enabled.
+- Edge gate (Hard Truth #39) still active.
+- Build (`tsc --noEmit`) clean. Lint (`eslint .`) 0 errors / 6 pre-existing warnings.
 
 ### 2026-05-04 · 07:50 Dubai · Computer A (day) — system audit + cleanup pass
 **Commits:** _(this push)_ — `chore: freeze polymarket cron, schedule perf+analytics crons, ESLint v9 flat config, audit-10d checkpoint`

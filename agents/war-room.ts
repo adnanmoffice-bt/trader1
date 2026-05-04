@@ -325,37 +325,18 @@ async function runMeeting(
   const triggerDir = rawTriggers[0]?.direction ?? null
   const allTriggers = rawTriggers.map(t => t.name).join(' + ') || null
 
-  // RANGING gate — relaxed 2026-04-28 after audit showed 100% rejection on
-  // BTC/ETH/XAU/etc for the full 24-72h window with this gate set to "always
-  // need 2+ triggers in any ranging market".
-  //
-  // detectRegime() strength scale for 'ranging':
-  //   strength = max(0, 1 - |emaSpread%|)
-  //   strength 0.0  → emaSpread ≈ 1%  (right at trending boundary)
-  //   strength 0.5  → emaSpread ≈ 0.5%
-  //   strength 1.0  → emaSpread ≈ 0%  (perfectly flat)
-  //
-  // So strength<0.5 = "weak range, almost trending". In that state we allow a
-  // single STRONG trigger (EMA crosses / MACD cross / EMA50 breakout). RSI
-  // Extreme alone or Volume Spike alone are still gated.
-  // Strong ranges (strength>=0.5) keep the original 2+ trigger requirement.
-  //
-  // Three downstream gates still apply to single-trigger weak-range entries:
-  //   1. trend filter (forecast.smoothedTrend !== 'down')
-  //   2. quickBacktest >= 35% win rate
-  //   3. 12-agent vote margin > 2
-  // Plus daily-loss limit, drawdown tier, cooldown — so this is a calibrated
-  // relaxation, not a removal.
-  const STRONG_TRIGGERS = new Set([
-    'EMA 12/26 Cross',
-    'MACD Crossover',
-    'EMA 50 Breakout',
-  ])
-  const weakRange = regime.regime === 'ranging' && regime.strength < 0.5
-  const hasStrongTrigger = rawTriggers.some(t => STRONG_TRIGGERS.has(t.name))
-  const allowWeakRangeSingle = weakRange && hasStrongTrigger && rawTriggers.length >= 1
-
-  if (regime.regime === 'ranging' && rawTriggers.length < 2 && !allowWeakRangeSingle) {
+  // RANGING gate — REMOVED 2026-05-04 based on per-gate impact study
+  // (`scripts/kfold-per-gate-impact.mjs`, 5-fold WF on 365d real data,
+  // see `WAR_ROOM_UPGRADE_PROPOSAL.md` §10). Findings:
+  //   - Stack with regime-ranging ON: Exp/R = -0.062
+  //   - Stack with regime-ranging OFF: Exp/R = +0.002 (Δ +0.064 R/trade)
+  //   - Solo: regime-ranging ON alone reduces Exp/R from +0.006 to -0.021
+  //     (i.e. it actively destroys edge, not just filters trade count).
+  // The gate was rejecting more winners than losers across 5 OOS folds.
+  // Downstream gates (trend filter, quickBacktest, 12-agent vote, daily-loss
+  // limit, drawdown tier, cooldown) remain in place. The intermediate
+  // 2026-04-28 relaxation is superseded.
+  if (false) {
     await speak(db, meetingId, instrument, conv, {
       agent: 'orchestrator', role: 'close',
       message: `${instrument} @ $${f(price)} | ${allTriggers} detected but market is RANGING (strength:${regime.strength.toFixed(1)}). Need 2+ triggers for confluence in range-bound markets.`,

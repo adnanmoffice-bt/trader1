@@ -348,6 +348,163 @@ in-sample-to-out-of-sample degradation, retains +0.131 R/trade OOS at 47.3% WR.
    workspace rule prohibits short-trade re-enablement. That decision belongs to the
    operator after a 30-day demo-only test.
 
+---
+
+## 9. Phase D — REVISED FINDINGS after 365d backfill (added 2026-05-04, second session)
+
+### 9.1 Critical data correction
+
+`scripts/audit-price-history.mjs` (run 2026-05-04 ~09:00 Dubai) revealed that all
+"180d" claims in §8 above were against a `price_history` that only held **47 days
+of 1H candles**. Earlier `sweep-liquidity-sweep.mjs` was fetching the same 47d
+window repeatedly when asked for 180d, producing inflated trade counts. The
+"+0.131 OOS R/trade" headline was on **19 days of test data**, not 72 — well below
+any meaningful sample size.
+
+### 9.2 Corrective action: 365d backfill
+
+`scripts/backfill-price-history.mjs` now pulls 12 months of 1H klines from
+Binance for all 12 mapped crypto pairs (POLUSDT for MATIC, no XAU because PAXGUSDT
+is too illiquid). 105,120 candles upserted. Idempotent — safe to re-run.
+
+### 9.3 Honest 5-fold anchored walk-forward results
+
+`scripts/kfold-liquidity-sweep.mjs` re-runs the validation on the corrected 365d
+dataset. Folds: train [0d, T+f×60d], test [T+f×60d, T+(f+1)×60d] for f=0..4,
+T=65d. Total OOS coverage 300d, ~5,700 trades.
+
+Vanilla liquidity-sweep, per-fold params re-optimised on train (greedy), tested OOS:
+
+| Fold | Train params           | Train Exp/R | OOS Exp/R | OOS WR |
+|------|------------------------|-------------|-----------|--------|
+| 1    | lb=40 sl=2.5 tp=4.0 cf=n | +0.030    | +0.029    | 44.0%  |
+| 2    | lb=40 sl=1.5 tp=1.5 cf=n | +0.020    | -0.057    | 47.1%  |
+| 3    | lb=40 sl=1.5 tp=1.5 cf=n | -0.003    | +0.134    | 56.7%  |
+| 4    | lb=20 sl=1.5 tp=1.5 cf=n | +0.031    | -0.005    | 49.9%  |
+| 5    | lb=20 sl=1.5 tp=2.0 cf=n | +0.026    | +0.030    | 44.4%  |
+
+**Verdict: FAIL.** Median OOS +0.029 (target +0.05). Mean WR 48.4%. 3/5 folds
+positive but the negative folds are larger in magnitude.
+
+### 9.4 Variant tests (filtering on top of vanilla sweep)
+
+`scripts/kfold-sweep-variants.mjs` — 8 variants on FIXED params (lb=40, sl=2.5,
+tp=4.0, confirm=YES) without per-fold reoptimisation. Mean OOS Exp/R per variant:
+
+| ID  | Filter                          | Median  | Mean    | Pos | WR    |
+|-----|---------------------------------|---------|---------|-----|-------|
+| V0  | baseline (sweep all)            | +0.008  | -0.025  | 3/5 | 41.6% |
+| V1  | + CHOCH inversion veto          | +0.026  | -0.014  | 3/5 | 41.9% |
+| V2  | + trend-aligned (1H 200EMA)     | -0.034  | -0.010  | 2/5 | 41.5% |
+| V3  | + counter-trend (1H 200EMA)     | +0.010  | -0.010  | 3/5 | 42.5% |
+| V4  | + top-5 instruments             | -0.009  | -0.022  | 2/5 | 41.6% |
+| V5  | + top-3 instruments (AVAX/MATIC/NEAR) | -0.086 | -0.052 | 1/5 | 40.0% |
+| V6  | + ATR band 0.5%-3.5%            | -0.001  | -0.030  | 2/5 | 41.5% |
+| V7  | + CHOCH inv + top-5             | -0.017  | -0.016  | 2/5 | 41.7% |
+
+**No variant clears the bar.** AVAX/MATIC/NEAR — the apparent stars of §8.3 —
+are now **the worst-performing subset** when validated across regimes. The
+original signal was a 47-day regime artifact.
+
+### 9.5 Per-instrument 5-fold WF (`scripts/kfold-sweep-per-instrument.mjs`)
+
+| Symbol     | Median  | Mean    | Pos | Mean WR |
+|------------|---------|---------|-----|---------|
+| APT/USD    | +0.103  | +0.006  | 3/5 | 41.6%   |
+| DOGE/USD   | +0.098  | +0.036  | 4/5 | 44.7%   |
+| LINK/USD   | +0.059  | +0.080  | 5/5 | 45.8%   |
+| ADA/USD    | +0.014  | -0.022  | 3/5 | 41.0%   |
+| BTC/USD    | +0.003  | +0.011  | 4/5 | 43.7%   |
+| NEAR/USD   | -0.056  | -0.081  | 2/5 | 37.9%   |
+| ETH/USD    | -0.090  | -0.070  | 1/5 | 41.4%   |
+| MATIC/USD  | -0.103  | -0.050  | 1/5 | 40.4%   |
+| AVAX/USD   | -0.111  | +0.010  | 2/5 | 43.4%   |
+| DOT/USD    | -0.129  | -0.148  | 1/5 | 37.5%   |
+
+**Zero instruments pass** the (median ≥ +0.05 AND ≥3/5 folds positive AND
+WR > 48%) filter. LINK is the only one with all 5 folds positive but its
+WR (45.8%) sits below the threshold.
+
+### 9.6 Confluence-filter hypothesis (`scripts/kfold-confluence-filter.mjs`)
+
+Last hypothesis worth testing: does sweep work as a CONFIRMATION FILTER on top
+of indicator triggers (rather than as a primary)? Ran 5-fold WF on 365d:
+
+| Strategy                                | Median  | Mean    | Pos | WR    | n      |
+|-----------------------------------------|---------|---------|-----|-------|--------|
+| A: indicator-only (vanilla)             | +0.007  | +0.010  | 4/5 | 41.5% | 15,563 |
+| B: indicator + recent-sweep CONFIRM     | -0.046  | -0.021  | 2/5 | 40.8% |  4,213 |
+| C: indicator + sweep + no-CHOCH         | +0.006  | +0.012  | 4/5 | 41.4% | 13,119 |
+| D: indicator + (sweep AND no-CHOCH)     | -0.083  | -0.026  | 2/5 | 40.3% |  3,220 |
+
+**Sweep adds zero value as a confirmation filter.** Strategies B and D have
+LOWER expectancy than vanilla indicator triggers. The CHOCH-inversion filter
+alone (strategy C) preserves expectancy with marginal trade-count reduction.
+
+### 9.7 The actually important finding (unexpected)
+
+Strategy A above is *vanilla indicator-only* on the 365d backfilled
+`price_history`. It produces **+0.007 R/trade, 4/5 folds positive, 15,563
+trades**. The live `agents/war-room.ts` configured with all its filters
+(`scripts/backtest-gate-stack.mjs` NEW mode) produces **-0.135 R/trade,
+338 trades**. The same trigger family with the live gate stack on top
+loses **18× more per trade than the vanilla version**.
+
+This means the live system is **gate-driven net-negative**: layering
+ATR-veto + derivatives-veto + MTF-veto + news-veto + trend-filter +
+session-gate + correlation-dedup + backtest-gate on top of trigger detection
+**removes winners faster than it removes losers**. The "filter stack is
+saving us from worse" assumption that led to those gates being added one by
+one over the past month was wrong.
+
+### 9.8 What this overturns vs §8
+
+- ❌ Liquidity-sweep is NOT a viable primary trigger.
+- ❌ AVAX/MATIC/NEAR have NOT shown reliable per-instrument edge.
+- ❌ Sweep + CHOCH inversion is NOT a winning combination.
+- ❌ Sweep as confluence filter is NOT a winning combination.
+- ✅ CHOCH-inversion alone (without sweep) is a roughly-neutral filter that
+  preserves expectancy while modestly reducing trade count. Could become a
+  veto inside `agents/war-room.ts` **after** a per-gate impact study (see 9.9).
+- ✅ Vanilla indicator triggers, evaluated cleanly, are roughly breakeven
+  on the 365d window — not the catastrophe the live backtest implied.
+
+### 9.9 Concrete next-session work (operator decision)
+
+Replace §8.6's recommended-next-steps with this priority list:
+
+1. **Per-gate impact study (highest priority).** Mirror the live war-room
+   trigger stack (EMA-cross, MACD-cross, RSI-extreme, EMA50-break, vol-spike)
+   in a script that toggles each gate ON/OFF independently and measures
+   ΔExp/R per gate across the 5 folds. Identify the 1-3 gates most
+   responsible for the -0.135 figure and either remove or relax them. This
+   is the cheapest path to flipping live expectancy from negative to
+   neutral/positive.
+2. **Test 4H timeframe**. Backfill 4H klines (`scripts/backfill-price-history.mjs`
+   takes a flag; 4H needs a small change to fetch with `interval=4h`). Re-run
+   the same 5-fold WF on 4H candles. Hypothesis: 1H is too noisy for
+   liquidity-sweep mean-reversion; 4H may filter the noise.
+3. **Drop the microstructure scaffold from any wiring plan.** `lib/microstructure.ts`
+   stays in the repo as primitives that any future strategy can use, but the
+   "wire as DEMO-only trigger" path is closed.
+4. **Stop adding gates without the per-gate test in step 1.** Every gate
+   added in the last month was justified individually but the cumulative
+   effect is the ~18× edge degradation. Future gates only land in
+   `agents/war-room.ts` if they show ΔExp/R ≥ +0.02 R/trade across ≥3/5
+   folds in the per-gate study.
+
+### 9.10 References — Phase D corrections
+
+- `scripts/audit-price-history.mjs` — DB depth audit
+- `scripts/backfill-price-history.mjs` — Binance klines backfill
+- `scripts/kfold-liquidity-sweep.mjs` — anchored 5-fold WF, sweep alone
+- `scripts/kfold-sweep-variants.mjs` — 8-variant comparison
+- `scripts/kfold-sweep-per-instrument.mjs` — per-instrument 5-fold WF
+- `scripts/kfold-confluence-filter.mjs` — sweep-as-confluence-filter test
+- Output dumps: `scripts/backtest-runs/liquidity-sweep-kfold.txt`,
+  `…-variants.txt`, `…-per-instrument.txt`, `confluence-filter-test.txt`,
+  `2026-05-04-postbackfill.txt`
+
 ### 8.7 References (Phase D additions)
 - Inner Circle Trader (ICT) — original publisher of order block / FVG concepts in
   retail-trading material (no peer-reviewed source; concepts validated empirically

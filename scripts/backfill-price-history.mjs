@@ -1,0 +1,129 @@
+#!/usr/bin/env node
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE D — Backfill price_history to N months from Binance public klines API
+//
+// Why this exists:
+//   audit-price-history.mjs revealed the DB only has ~47d of 1H candles.
+//   The earlier Phase D walk-forward "OOS at +0.131" was on 19d of test data
+//   — too thin to be statistically meaningful. This script fills in the
+//   missing history so 5-fold walk-forward becomes possible.
+//
+// Usage:
+//   node scripts/backfill-price-history.mjs            # default 365 days
+//   node scripts/backfill-price-history.mjs 540        # ~18 months
+//   node scripts/backfill-price-history.mjs 365 BTC/USD,ETH/USD   # subset
+//
+// Safety:
+//   - Read-only against Binance (public klines, no auth).
+//   - Writes via Supabase upsert with ON CONFLICT on (symbol,interval,timestamp)
+//     so re-running is idempotent and never clobbers existing rows.
+//   - Sleeps 200ms between batches to stay under Binance 1200 wt/min limit.
+//   - Skips XAU/USD by default (PAXGUSDT exists but its illiquidity makes the
+//     candles useless for backtesting; pass it explicitly if you want it).
+// ─────────────────────────────────────────────────────────────────────────────
+
+import fs from 'node:fs'
+import path from 'node:path'
+function loadEnvLocal() {
+  const p = path.resolve(process.cwd(), '.env.local')
+  if (!fs.existsSync(p)) return
+  for (const line of fs.readFileSync(p, 'utf8').split(/\r?\n/)) {
+    const m = line.match(/^([A-Z0-9_]+)\s*=\s*(.*)$/)
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^['"]|['"]$/g, '')
+  }
+}
+loadEnvLocal()
+const URL_ = process.env.NEXT_PUBLIC_SUPABASE_URL
+const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
+if (!URL_ || !KEY) { console.error('Missing Supabase env'); process.exit(1) }
+const headers = { apikey: KEY, Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates' }
+
+const BINANCE = 'https://api.binance.com/api/v3'
+const SYMBOLS = {
+  'BTC/USD': 'BTCUSDT',
+  'ETH/USD': 'ETHUSDT',
+  'SOL/USD': 'SOLUSDT',
+  'BNB/USD': 'BNBUSDT',
+  'DOGE/USD': 'DOGEUSDT',
+  'AVAX/USD': 'AVAXUSDT',
+  'LINK/USD': 'LINKUSDT',
+  'ADA/USD': 'ADAUSDT',
+  'DOT/USD': 'DOTUSDT',
+  'MATIC/USD': 'POLUSDT',
+  'NEAR/USD': 'NEARUSDT',
+  'APT/USD': 'APTUSDT',
+}
+
+const DAYS = parseInt(process.argv[2] ?? '365', 10)
+const FILTER = process.argv[3] ? new Set(process.argv[3].split(',').map(s => s.trim())) : null
+const INTERVAL = '1h'
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+
+async function fetchKlinesRange(binanceSym, startMs, endMs) {
+  const out = []
+  let current = startMs
+  let page = 0
+  while (current < endMs) {
+    const url = `${BINANCE}/klines?symbol=${binanceSym}&interval=${INTERVAL}&startTime=${current}&endTime=${endMs}&limit=1000`
+    const res = await fetch(url)
+    if (!res.ok) {
+      console.error(`  Binance ${res.status} on ${binanceSym} page ${page}: ${(await res.text()).slice(0, 120)}`)
+      break
+    }
+    const data = await res.json()
+    if (!Array.isArray(data) || data.length === 0) break
+    out.push(...data.map(k => ({
+      timestamp: new Date(k[0]).toISOString(),
+      open: parseFloat(k[1]), high: parseFloat(k[2]), low: parseFloat(k[3]),
+      close: parseFloat(k[4]), volume: parseFloat(k[5]),
+    })))
+    current = data[data.length - 1][6] + 1
+    page++
+    await sleep(200)
+  }
+  return out
+}
+
+async function upsertBatch(rows) {
+  // Insert in chunks of 500 to stay under any payload limit
+  const chunkSize = 500
+  let inserted = 0
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const chunk = rows.slice(i, i + chunkSize)
+    const r = await fetch(`${URL_}/rest/v1/price_history?on_conflict=symbol,interval,timestamp`, {
+      method: 'POST', headers, body: JSON.stringify(chunk),
+    })
+    if (!r.ok) {
+      console.error(`  upsert ${r.status}: ${(await r.text()).slice(0, 200)}`)
+      break
+    }
+    inserted += chunk.length
+  }
+  return inserted
+}
+
+async function main() {
+  const endMs = Date.now()
+  const startMs = endMs - DAYS * 86400_000
+  console.log(`\nBackfill ${DAYS}d of ${INTERVAL} klines from ${new Date(startMs).toISOString()} to ${new Date(endMs).toISOString()}`)
+  if (FILTER) console.log(`Filter: ${[...FILTER].join(', ')}`)
+  console.log()
+
+  const targetSyms = Object.entries(SYMBOLS).filter(([k]) => !FILTER || FILTER.has(k))
+  let grandTotal = 0
+  for (const [sym, binSym] of targetSyms) {
+    const t0 = Date.now()
+    process.stdout.write(`${sym.padEnd(12)}-> ${binSym.padEnd(10)}  fetching... `)
+    const klines = await fetchKlinesRange(binSym, startMs, endMs)
+    process.stdout.write(`${klines.length} candles  upserting... `)
+    const rows = klines.map(k => ({ symbol: sym, interval: INTERVAL, ...k }))
+    const inserted = await upsertBatch(rows)
+    const dt = ((Date.now() - t0) / 1000).toFixed(1)
+    console.log(`${inserted} ok  (${dt}s)`)
+    grandTotal += inserted
+  }
+  console.log(`\nDone. Total ${grandTotal} candles upserted across ${targetSyms.length} symbols.`)
+}
+
+main().catch(e => { console.error(e); process.exit(1) })

@@ -50,8 +50,11 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 - [x] ~~**War-room upgrade — Phase C1**~~ (mixed model tiers) — done 04/05. `AGENT_TIER` map: correlation/scalper/trend/market-analyst/trade-reviewer → Haiku; rest → Sonnet. Expected ~30-40% input-token cost reduction.
 - [x] ~~**War-room upgrade — Phase C3**~~ (single-agent fallback) — done 04/05. When budget remaining < 30% OR 3+ losses in last 6h, runMeeting skips the 10-agent debate + master judge. Hard cap raised to <15% remaining; voteMargin gate bypassed in minimal mode (compensated by stricter conviction floor of 80).
 - [ ] **Watch checkpoint: 06/05 (48h after Phase A-C ship)**. Run `node scripts/audit-gate-reasons.mjs` and confirm `data.reason` appears on ≥95% of close events (was 1.3%). Run `node scripts/audit-10d.mjs 48` and confirm AI spend per meeting dropped via Phase C1 model tiers. If anything regressed materially, the previous tip is `7b56b1e` and Phase A-C can be reverted as a single squash without losing Phase D research.
-- [ ] **Phase D — operator decision needed.** `scripts/explore-microstructure.mjs` + `scripts/sweep-liquidity-sweep.mjs` + `scripts/walkforward-liquidity-sweep.mjs` show LIQUIDITY-SWEEP is the only +EV primitive (+0.131 R/trade out-of-sample on 60/40 split, lookback=40 SL=2.5 TP=4.0 confirm=YES). NOT yet wired into `war-room.ts`. Recommended next: backfill `price_history` to 12mo, run 5-fold walk-forward; if median OOS > +0.05 R/trade, wire as DEMO-ONLY trigger for 30d before considering live. See `WAR_ROOM_UPGRADE_PROPOSAL.md` §8.
-- [ ] **Phase D — combine sweep with CHOCH inversion**. CHOCH-flip is -0.341 R/trade (severe trap) — useful as inverted filter on sweep entries. Implement in `lib/microstructure.ts → computeMicrostructureScore()` already; needs a wiring decision.
+- [x] ~~**Phase D — operator decision needed.**~~ **CLOSED 04/05** — see `WAR_ROOM_UPGRADE_PROPOSAL.md` §9. Liquidity-sweep does NOT survive proper validation. The earlier "+0.131 OOS" was a 19-day artifact (DB only had 47d of 1H candles, my "180d" tests were cycling the same 47d). After backfilling 365d via `scripts/backfill-price-history.mjs`, full 5-fold walk-forward shows median OOS +0.029 (FAIL on +0.05 bar), 8-variant sweep tests all FAIL, per-instrument tests give zero passes, sweep-as-confluence-filter HURTS expectancy. **Do NOT wire `lib/microstructure.ts` as a trigger.** Primitives stay in repo for future use.
+- [x] ~~**Phase D — combine sweep with CHOCH inversion**.~~ Tested as variant V1 in `scripts/kfold-sweep-variants.mjs` — best of the 8 variants but still FAILS (median OOS +0.026, mean WR 41.9%). Pure CHOCH-inversion (no sweep) is the one filter that preserves expectancy with marginal trade-count reduction (Strategy C in `kfold-confluence-filter.mjs`); could be added as a soft veto inside war-room IFF the per-gate impact study below is run first.
+- [ ] **NEW — per-gate impact study (highest research priority).** §9.7 finding: vanilla indicator triggers on 365d data run +0.007 R/trade with 4/5 folds positive (15,563 trades). Live war-room with full gate stack runs -0.135 R/trade (338 trades) on the same period. The cumulative gate stack is removing winners faster than losers — **the system loses ~18× more per trade than its underlying triggers do**. Need a script that mirrors war-room trigger logic and toggles each gate (ATR-extreme veto, derivatives veto, MTF veto, news veto, trend filter, session gate, correlation dedup, backtest gate, edge gate) ON/OFF independently across the 5 folds, measuring ΔExp/R per gate. Identify the 1-3 worst gates and remove or relax them.
+- [ ] **NEW — backfill 4H candles** before next trigger candidate. `scripts/backfill-price-history.mjs` currently fetches only 1h; extend with `--interval 4h` flag. 4H candles filter the noise that may be killing 1H mean-reversion strategies.
+- [ ] **NEW — pause on adding new gates.** Until the per-gate study above ships, no new gate goes into `agents/war-room.ts`. Future gates only land if they show ΔExp/R ≥ +0.02 R/trade across ≥3/5 folds in the per-gate study.
 - [ ] **Telegram still imported in `app/api/cron/positions/route.ts` (lines 4, 256).** `TELEGRAM_BOT_TOKEN` not on Vercel prod → silent failures every position close. Operator decision pending: add the token, or remove the import.
 
 - [x] ~~Disable Binance Auto-Subscribe to Simple Earn~~ — confirmed (01/05 09:26 Dubai sweep test: Spot USDT = $500.0164 unchanged from 30/04 12:14 → toggle held overnight).
@@ -83,6 +86,80 @@ _(none — cleared 2026-05-04 ~09:30 Dubai after Phase A+B+C ship + Phase D rese
 ---
 
 ## SESSION LOG (newest on top)
+
+### 2026-05-04 · 12:00 Dubai · Computer A (day) — Phase D corrected with proper 365d data
+**Commits:** _(this push)_ (backfill + 5-fold WF + corrected Phase D verdict)
+
+Operator request: "continue, what next" — Phase D was supposed to validate
+liquidity-sweep on a longer dataset before any wiring decision.
+
+Critical data correction discovered at session start:
+- `scripts/audit-price-history.mjs` (new) showed `price_history` only held
+  ~47d of 1H candles per symbol, not 180d. The previous "180d sweep" results
+  in §8 of the proposal were running over the same 47d window repeatedly.
+  The "+0.131 R/trade OOS" headline was on **19 days of test data**.
+
+Backfill:
+- New: `scripts/backfill-price-history.mjs` — pulls 12 months of 1H klines
+  from Binance (idempotent upsert on (symbol,interval,timestamp), handles
+  POLUSDT for MATIC, skips XAU because PAXGUSDT is illiquid).
+- 105,120 candles upserted across 12 crypto symbols. 8,760/symbol = exactly
+  365 days of 1H data.
+
+Validation run (proper this time):
+- `scripts/kfold-liquidity-sweep.mjs` (new) — 5-fold ANCHORED walk-forward
+  (train [0,T], test [T,T+60d] for T = 65, 125, 185, 245, 305 days). 300d
+  total OOS coverage, ~5,700 trades. **Median OOS Exp/R: +0.029 (FAIL on
+  the +0.05 bar). 3/5 folds positive but the negative folds are larger.**
+- `scripts/kfold-sweep-variants.mjs` (new) — 8 variants on FIXED params
+  (no per-fold reoptimisation): baseline, CHOCH-inversion, trend-aligned,
+  counter-trend, top-5, top-3, ATR-band, CHOCH+top-5. **No variant clears
+  the bar.** AVAX/MATIC/NEAR — the apparent stars of §8 — turn out to be
+  the WORST subset on the full dataset.
+- `scripts/kfold-sweep-per-instrument.mjs` (new) — per-symbol 5-fold WF.
+  **Zero instruments pass.** LINK is the only one with all 5 folds positive
+  but its WR (45.8%) is below the 48% threshold.
+- `scripts/kfold-confluence-filter.mjs` (new) — sweep as confirmation
+  filter on top of indicator triggers. Sweep-confirmation HURTS expectancy
+  (-0.046 vs +0.007 vanilla). **Sweep adds zero value as either primary
+  or filter.**
+
+The actually-important finding (unexpected):
+- Strategy A in confluence-filter test = vanilla indicator triggers on
+  raw `price_history`, no gates: **+0.007 R/trade, 4/5 folds positive,
+  15,563 trades**.
+- `scripts/backtest-gate-stack.mjs` (live war-room logic, NEW mode):
+  **-0.135 R/trade, 338 trades**.
+- Same trigger family, same period, only difference is the gate stack on
+  top: ATR-veto, derivatives-veto, MTF-veto, news-veto, trend-filter,
+  session-gate, correlation-dedup, backtest-gate.
+- **The gate stack is removing winners faster than losers.** The system
+  loses ~18× more per trade than its underlying triggers do.
+
+Documentation:
+- `WAR_ROOM_UPGRADE_PROPOSAL.md` §9 (new) — full corrected Phase D
+  conclusion, retracts §8.6 recommendations, lists what's overturned,
+  defines next-session per-gate impact study as the highest-priority
+  research item.
+
+OPEN WORK updated:
+- Phase D microstructure path: CLOSED. `lib/microstructure.ts` stays in
+  repo but is not wired anywhere.
+- Per-gate impact study replaces it as the top research priority.
+- Pause on adding new gates until that study ships.
+- New OPEN item: 4H candle backfill before next trigger candidate.
+
+What's NOT in this commit (deliberate):
+- No code changes to `agents/war-room.ts` or any other live code path.
+  Pure research + documentation. Safe to deploy or revert without affecting
+  paper trading.
+- No new gates added.
+- No microstructure wiring of any kind.
+
+Next session entry point:
+- 06/05 watch checkpoint (48h after Phase A-C ship): `scripts/audit-gate-reasons.mjs`
+  + `scripts/audit-10d.mjs 48`.
+- Then: design and run the per-gate impact study described in §9.9.
 
 ### 2026-05-04 · 09:30 Dubai · Computer A (day) — Phase A+B+C shipped, Phase D research depth pass
 **Commits:** `bf8bfff` (LOCK) → `7b56b1e` (Phase A1-A3 + B1-B2 + C1) → `bdf367f` (Phase C3) → _(this push)_ (Phase D research scaffold + docs)

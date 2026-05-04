@@ -178,14 +178,28 @@ export async function runWarRoom(): Promise<void> {
   const rotateIdx = new Date().getUTCHours() % ALL_INSTRUMENTS.length
   const rotatedInstruments = [...ALL_INSTRUMENTS.slice(rotateIdx), ...ALL_INSTRUMENTS.slice(0, rotateIdx)]
 
+  // Phase C3 — detect bleeding tape (3+ losses in last 6h) once per cron tick.
+  const recentLossWindow = new Date(Date.now() - 6 * 3600_000).toISOString()
+  const { data: recentLosses6h } = await db.from('demo_trades')
+    .select('pnl').not('exit_time', 'is', null).gte('exit_time', recentLossWindow)
+  const lossStreakTrips = (recentLosses6h ?? []).filter(t => +(t.pnl ?? 0) < 0).length >= 3
+
   for (const instrument of rotatedInstruments) {
     const meetingId = crypto.randomUUID()
     try {
       const budgetNow = await getDailyBudgetStatus()
       const atMeetingCap = meetingsHeld >= MAX_MEETINGS_PER_CYCLE
       const budgetLow = budgetNow.remaining < 0.30
+      const veryLow = budgetNow.remaining < 0.15
 
-      const result = await runMeeting(db, meetingId, instrument, coolingDown.has(instrument), atMeetingCap || budgetLow, macroText, macro, recovery)
+      // Hard cap: if at meeting cap OR catastrophic budget exhaustion, stop.
+      // Soft cap: budget low or loss-streak → minimal-mode meeting (orchestrator
+      // only, no 10-agent debate). Per Edmunds 2025, single agent under tight
+      // budget often outperforms committee.
+      const hardStop = atMeetingCap || veryLow
+      const minimalMode = !hardStop && (budgetLow || lossStreakTrips)
+
+      const result = await runMeeting(db, meetingId, instrument, coolingDown.has(instrument), hardStop, macroText, macro, recovery, minimalMode)
       scanResults.push({ symbol: instrument, status: result })
 
       if (result !== 'no trigger' && result !== 'cooldown' && result !== 'error' && result !== 'budget-capped') {
@@ -218,6 +232,7 @@ async function runMeeting(
   onCooldown = false, capReached = false,
   macroText = '', macro: MacroSnapshot | null = null,
   recovery: RecoveryMode = { active: false, drawdownPct: 0, maxRiskPct: 0.02, maxPositions: 3, minConfidence: 70, minRR: 2.0, message: 'Normal' },
+  minimalMode = false,
 ): Promise<string> {
   const conv: Msg[] = []
 
@@ -491,8 +506,8 @@ async function runMeeting(
 
   const triggerLabel = rawTriggers.length > 1 ? `${allTriggers} (${rawTriggers.length} signals)` : trigger
   await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'open',
-    message: `MEETING: ${instrument} @ $${f(price)}. ${triggerLabel} detected → ${triggerDir?.toUpperCase()}. RSI:${ind.rsi.toFixed(0)} ATR:${ind.atr.toFixed(2)} Vol:${ind.volume_ratio.toFixed(1)}x.${forecastNote} MC P(up 4h): ${(forecast.upProbability4h * 100).toFixed(0)}%. Calling all agents.`,
-    data: { price, rsi: ind.rsi, atr: ind.atr, trigger: allTriggers, triggerDir, triggerCount: rawTriggers.length, forecastSignal: forecast.combinedSignal, forecastContradict },
+    message: `MEETING: ${instrument} @ $${f(price)}. ${triggerLabel} detected → ${triggerDir?.toUpperCase()}. RSI:${ind.rsi.toFixed(0)} ATR:${ind.atr.toFixed(2)} Vol:${ind.volume_ratio.toFixed(1)}x.${forecastNote} MC P(up 4h): ${(forecast.upProbability4h * 100).toFixed(0)}%. ${minimalMode ? 'MINIMAL MODE — orchestrator-only.' : 'Calling all agents.'}`,
+    data: { price, rsi: ind.rsi, atr: ind.atr, trigger: allTriggers, triggerDir, triggerCount: rawTriggers.length, forecastSignal: forecast.combinedSignal, forecastContradict, minimalMode },
   })
 
   await waOpen({
@@ -529,31 +544,49 @@ async function runMeeting(
   const macroHeader = macroText ? `\n\n${macroText}\n` : ''
   const riskNote = macro?.riskLevel === 'HIGH' ? '\n⚠️ ELEVATED MACRO RISK — apply extra scrutiny to this trade.\n' : ''
 
+  // ── PHASE C3 — minimal-mode short-circuit ──
+  // Budget low or 3+ losses in last 6h → skip the 10-agent debate entirely
+  // and let the orchestrator decide using only deterministic context. Saves
+  // 80%+ of meeting cost on bad days; the deterministic gates are what blocks
+  // most bad trades anyway.
+  if (minimalMode) {
+    await speak(db, meetingId, instrument, conv, {
+      agent: 'orchestrator', role: 'alert',
+      message: `MINIMAL MODE: skipping 10-agent debate (budget low or 3+ recent losses). Orchestrator will decide on deterministic context only.`,
+      data: { reason: 'minimal-mode-active', mode: 'single-agent' },
+    })
+  }
+
   // ── 1–7: DEBATE AGENTS — get compact context to save tokens ──
 
-  await agentSpeak(db, meetingId, instrument, conv, 'macro-agent', promptCtx,
+  if (!minimalMode) await agentSpeak(db, meetingId, instrument, conv, 'macro-agent', promptCtx,
     `${convoFor(conv, 'macro-agent')}${macroHeader}\nCurrent date: ${new Date().toLocaleDateString('en')}. Asset: ${instrument}. Direction: ${triggerDir}. Analyze the LIVE world state above and its impact on this trade.`)
 
-  await agentSpeak(db, meetingId, instrument, conv, 'correlation-agent', promptCtx,
+  if (!minimalMode) await agentSpeak(db, meetingId, instrument, conv, 'correlation-agent', promptCtx,
     `${convoFor(conv, 'correlation-agent')}${riskNote}\nAll asset prices: ${priceCtx}\nVIX:${macro?.vix ?? '?'} DXY:${macro?.dxy ?? '?'} US10Y:${macro?.us10y ?? '?'}% Oil:$${macro?.oilWTI ?? '?'}\n\nDoes cross-asset and macro data support ${triggerDir} on ${instrument}?`)
 
-  await agentSpeak(db, meetingId, instrument, conv, 'bull-agent', promptCtx,
+  if (!minimalMode) await agentSpeak(db, meetingId, instrument, conv, 'bull-agent', promptCtx,
     `${convoFor(conv, 'bull-agent')}${riskNote}\nMake the case FOR ${triggerDir?.toUpperCase()} ${instrument} at $${f(price)}. RSI:${ind.rsi.toFixed(0)} ATR:${ind.atr.toFixed(2)} BB%B:${(ind.bb.percentB * 100).toFixed(0)}% EMA20:${ind.ema_20.toFixed(2)} EMA50:${ind.ema_50.toFixed(2)} EMA200:${ind.ema_200.toFixed(2)} MACD:${ind.macd.histogram > 0 ? '+' : ''}${ind.macd.histogram.toFixed(2)} Vol:${ind.volume_ratio.toFixed(1)}x`)
 
-  await agentSpeak(db, meetingId, instrument, conv, 'bear-agent', promptCtx,
+  if (!minimalMode) await agentSpeak(db, meetingId, instrument, conv, 'bear-agent', promptCtx,
     `${convoFor(conv, 'bear-agent')}\n\nStress-test this trade. RSI:${ind.rsi.toFixed(0)} ATR:${ind.atr.toFixed(2)} BB%B:${(ind.bb.percentB * 100).toFixed(0)}% EMA20:${ind.ema_20.toFixed(2)} EMA50:${ind.ema_50.toFixed(2)} EMA200:${ind.ema_200.toFixed(2)} Vol:${ind.volume_ratio.toFixed(1)}x. What could go wrong?`)
 
-  await agentSpeak(db, meetingId, instrument, conv, 'scalper-agent', promptCtx,
+  if (!minimalMode) await agentSpeak(db, meetingId, instrument, conv, 'scalper-agent', promptCtx,
     `${convoFor(conv, 'scalper-agent')}\n\nIs there a scalp opportunity on ${instrument} at $${f(price)} right now? RSI:${ind.rsi.toFixed(0)} ATR:${ind.atr.toFixed(2)} BB%B:${(ind.bb.percentB * 100).toFixed(0)}%`)
 
-  await agentSpeak(db, meetingId, instrument, conv, 'trend-agent', promptCtx,
+  if (!minimalMode) await agentSpeak(db, meetingId, instrument, conv, 'trend-agent', promptCtx,
     `${convoFor(conv, 'trend-agent')}\n\nEMA20:${ind.ema_20.toFixed(2)} EMA50:${ind.ema_50.toFixed(2)} EMA200:${ind.ema_200.toFixed(2)} Price:$${f(price)} RSI:${ind.rsi.toFixed(0)} MACD hist:${ind.macd.histogram.toFixed(2)}. Trend picture for ${instrument}?`)
 
   const liveHeadlines = macro?.headlines?.length ? `\nLIVE HEADLINES: ${macro.headlines.join(' | ')}` : ''
-  await agentSpeak(db, meetingId, instrument, conv, 'market-analyst', promptCtx,
+  if (!minimalMode) await agentSpeak(db, meetingId, instrument, conv, 'market-analyst', promptCtx,
     `${convoFor(conv, 'market-analyst')}\n\nRecent news: ${newsCtx}${liveHeadlines}\nEconomic calendar: ${macro?.upcomingEvents?.map(e => `${e.impact === 'high' ? 'HIGH' : e.impact} ${e.country} ${e.title}`).join(', ') || 'No events'}\n\nSentiment assessment for ${instrument}?`)
 
   // ── 8–10: DECISION AGENTS — get FULL context for quality ──
+  // Risk-manager and signal-generator are the load-bearing pair; we keep
+  // them in minimal mode so the orchestrator still sees an explicit risk
+  // gate and signal-quality check. Trade-reviewer (Haiku) is cheap, also
+  // kept. Pure-debate roles (bull/bear/scalper/trend/etc) are the ones
+  // skipped above.
 
   await agentSpeak(db, meetingId, instrument, conv, 'signal-generator', promptCtx,
     `${convoFor(conv, 'signal-generator')}\n\n${forecastText}\nGenerate the signal for ${instrument} at $${f(price)}, ATR=${ind.atr.toFixed(2)}. Use the quantitative forecast above to validate your entry/SL/TP levels.`)
@@ -561,7 +594,7 @@ async function runMeeting(
   await agentSpeak(db, meetingId, instrument, conv, 'risk-manager', promptCtx,
     `${convoFor(conv, 'risk-manager')}\n\nRisk decision for ${instrument}? Open positions: ${openPos ?? 0}/3. Recent losses: ${recentLosses}/10.\nMACRO RISK: ${macro?.riskLevel ?? '?'} | VIX:${macro?.vix ?? '?'} | Yield curve:${macro?.yieldCurve ?? '?'} | Events 24h: ${macro?.upcomingEvents?.filter(e => e.impact === 'high').length ?? 0}\nFORECAST: MC P(up 4h):${(forecast.upProbability4h * 100).toFixed(0)}% | Vol regime:${forecast.volRegime} (${forecast.volRatio}x) | Max DD:${(forecast.mcMaxDrawdown * 100).toFixed(1)}% | Signal:${forecast.combinedSignal}/100 ${forecast.combinedLabel}`)
 
-  await agentSpeak(db, meetingId, instrument, conv, 'trade-reviewer', promptCtx,
+  if (!minimalMode) await agentSpeak(db, meetingId, instrument, conv, 'trade-reviewer', promptCtx,
     `${convoFor(conv, 'trade-reviewer')}\n\nRecent trade history: ${tradeHist}\n\nPerformance context for ${instrument}?`)
 
   // ── 11: MASTER JUDGE AGENT — Phase B1 ──
@@ -578,7 +611,7 @@ async function runMeeting(
     groupthink_warning: boolean
   }
   let judge: MasterJudgeOutput | null = null
-  try {
+  if (!minimalMode) try {
     const masterDbPrompt = await getActivePrompt(db, 'master-agent')
     const masterDefault = AGENT_PROMPTS['master-agent'](promptCtx)
     judge = await callAgent<MasterJudgeOutput>({
@@ -682,10 +715,13 @@ async function runMeeting(
   const forecastVeto = forecastContradict && (parsed?.conviction ?? 0) < 80
 
   // Phase A2 — structured tally replaces brittle regex.
+  // Phase C3 — in minimal mode, only sig-gen + risk-manager (+ trade-reviewer)
+  // spoke. We can't gate on a 12-agent vote margin we never collected, so
+  // require a STRICTER conviction floor instead (bumped to 80 below).
   const tally = tallyVotes(conv)
   const voteFor = tally.bull
   const voteAgainst = tally.bear
-  const voteMarginOk = voteFor > voteAgainst + 2
+  const voteMarginOk = minimalMode ? true : (voteFor > voteAgainst + 2)
 
   // Effective conviction = parsed conviction + soft adjustments from
   // derivatives, on-chain (when wired), CME gap (BTC only).
@@ -696,7 +732,8 @@ async function runMeeting(
     + onchainGate.convictionAdjust
     + (cmeGap?.longBias ?? 0)
 
-  const minConviction = recovery.active ? recovery.minConfidence : 70
+  // Phase C3: minimal mode requires HIGHER conviction (no debate sanity-check).
+  const minConviction = minimalMode ? 80 : (recovery.active ? recovery.minConfidence : 70)
   const isExecute = parsed?.decision === 'EXECUTE'
     && effectiveConviction >= minConviction
     && !forecastVeto

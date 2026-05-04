@@ -1,4 +1,4 @@
-import { callAgent, getDailyBudgetStatus } from '@/lib/anthropic'
+import { callAgent, getDailyBudgetStatus, MODEL_SONNET, MODEL_FAST } from '@/lib/anthropic'
 import { computeIndicators, technicalScore, detectBBSqueeze, detectEMACross, detectRSIExtreme, detectMACDCross, detectVolumeSpike, detectEMA50Breakout, quickBacktest, detectRegime, multiTimeframeConfluence } from '@/lib/indicators'
 import { createServiceSupabase } from '@/lib/supabase'
 import { sendSignalAlert } from '@/lib/telegram'
@@ -6,7 +6,7 @@ import { notifySignal as waSignal, notifyWarRoomDecision as waDecision, notifyWa
 import { checkSafety, getRecoveryMode, checkLiveTradingAllowed } from '@/lib/safety'
 import type { RecoveryMode } from '@/lib/safety'
 import { hardRiskCheck, checkDailyLossLimit, getTradeStats, riskBasedPositionSize } from '@/lib/risk-controls'
-import { AGENT_PROMPTS, AGENT_TOKEN_LIMITS, type AgentId, type PromptContext } from '@/agents/agent-prompts'
+import { AGENT_PROMPTS, AGENT_TOKEN_LIMITS, AGENT_TIER, STRUCTURED_OUTPUT_FOOTER, STRUCTURED_STANCE_AGENTS, type AgentId, type PromptContext } from '@/agents/agent-prompts'
 import { runPostMeetingBrief } from '@/agents/meta-agent'
 import { buildMacroContext, formatMacroContext, type MacroSnapshot } from '@/lib/macro-context'
 import { generateForecast, formatForecast } from '@/lib/forecast'
@@ -43,7 +43,9 @@ const FULL_CONTEXT_AGENTS: Set<AgentId> = new Set([
   'signal-generator', 'risk-manager', 'master-agent', 'orchestrator',
 ])
 
-interface Msg { agent: string; role: string; message: string; data?: Record<string, unknown> }
+type Stance = 'BULL' | 'BEAR' | 'NEUTRAL'
+interface StanceData { stance?: Stance; conviction?: number; key_arg?: string; full_analysis?: string; structured?: boolean; reason?: string; [k: string]: unknown }
+interface Msg { agent: string; role: string; message: string; data?: StanceData }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONVERSATION CONTEXT — compact vs full
@@ -77,13 +79,18 @@ export async function runWarRoom(): Promise<void> {
     await say(db, crypto.randomUUID(), null, {
       agent: 'orchestrator', role: 'alert',
       message: `WAR ROOM PAUSED: Daily AI budget exhausted ($${budget.spent.toFixed(2)}/$${budget.budget.toFixed(2)}). Resumes tomorrow.`,
+      data: { reason: 'budget-exhausted', spent: budget.spent, budget: budget.budget },
     })
     return
   }
 
   const safety = await checkSafety()
   if (!safety.safe) {
-    await say(db, crypto.randomUUID(), null, { agent: 'orchestrator', role: 'alert', message: `WAR ROOM BLOCKED: ${safety.reason}` })
+    await say(db, crypto.randomUUID(), null, {
+      agent: 'orchestrator', role: 'alert',
+      message: `WAR ROOM BLOCKED: ${safety.reason}`,
+      data: { reason: 'safety-block', detail: safety.reason },
+    })
     return
   }
 
@@ -92,6 +99,7 @@ export async function runWarRoom(): Promise<void> {
     await say(db, crypto.randomUUID(), null, {
       agent: 'orchestrator', role: 'alert',
       message: `⚠️ ${recovery.message} | Max risk: ${(recovery.maxRiskPct * 100).toFixed(1)}% | Max positions: ${recovery.maxPositions} | Min confidence: ${recovery.minConfidence}% | Min R:R: ${recovery.minRR}x`,
+      data: { reason: 'recovery-mode-active', mode: recovery.message, maxRiskPct: recovery.maxRiskPct, maxPositions: recovery.maxPositions },
     })
   }
 
@@ -104,6 +112,7 @@ export async function runWarRoom(): Promise<void> {
     await say(db, crypto.randomUUID(), null, {
       agent: 'orchestrator', role: 'alert',
       message: `WAR ROOM PAUSED: ${macro.noTradeReason} | VIX:${macro.vix ?? '?'} F&G:${macro.fearGreed ?? '?'} Risk:${macro.riskLevel}`,
+      data: { reason: 'macro-extreme', vix: macro.vix, fearGreed: macro.fearGreed, riskLevel: macro.riskLevel },
     })
     return
   }
@@ -125,6 +134,7 @@ export async function runWarRoom(): Promise<void> {
       await say(db, crypto.randomUUID(), null, {
         agent: 'orchestrator', role: 'alert',
         message: `WAR ROOM PAUSED: 3 consecutive losses. Mandatory 2h cooldown (${(2 - hoursSinceLastLoss).toFixed(1)}h remaining). Protecting capital.`,
+        data: { reason: 'loss-streak-cooldown', hoursSinceLastLoss, remainingHours: 2 - hoursSinceLastLoss },
       })
       return
     }
@@ -149,6 +159,7 @@ export async function runWarRoom(): Promise<void> {
     await say(db, crypto.randomUUID(), null, {
       agent: 'orchestrator', role: 'alert',
       message: `WAR ROOM PAUSED: high-impact event "${ev.title}" in ${minutesUntil}min. Resumes after release.`,
+      data: { reason: 'imminent-high-impact-event', event: ev.title, minutesUntil },
     })
     return
   }
@@ -181,7 +192,11 @@ export async function runWarRoom(): Promise<void> {
         meetingsHeld++
       }
     } catch (err) {
-      await say(db, meetingId, instrument, { agent: 'orchestrator', role: 'alert', message: `Error: ${String(err).slice(0, 150)}` })
+      await say(db, meetingId, instrument, {
+        agent: 'orchestrator', role: 'alert',
+        message: `Error: ${String(err).slice(0, 150)}`,
+        data: { reason: 'meeting-exception', error: String(err).slice(0, 200) },
+      })
       scanResults.push({ symbol: instrument, status: 'error' })
     }
   }
@@ -211,7 +226,11 @@ async function runMeeting(
     .order('timestamp', { ascending: false }).limit(200)
 
   if (!candles || candles.length < 30) {
-    await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close', message: `${instrument}: insufficient data (${candles?.length ?? 0} candles). Skipped.` })
+    await speak(db, meetingId, instrument, conv, {
+      agent: 'orchestrator', role: 'close',
+      message: `${instrument}: insufficient data (${candles?.length ?? 0} candles). Skipped.`,
+      data: { reason: 'insufficient-candles', candleCount: candles?.length ?? 0 },
+    })
     return 'no trigger'
   }
 
@@ -223,8 +242,10 @@ async function runMeeting(
   // Data quality gate
   const dq = validateOHLCV(ohlcv, instrument)
   if (!dq.valid) {
-    await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
+    await speak(db, meetingId, instrument, conv, {
+      agent: 'orchestrator', role: 'close',
       message: `${instrument}: DATA QUALITY FAIL — ${dq.issues.join('; ')}. Skipped.`,
+      data: { reason: 'data-quality', issues: dq.issues },
     })
     return 'data-quality'
   }
@@ -320,24 +341,29 @@ async function runMeeting(
   const allowWeakRangeSingle = weakRange && hasStrongTrigger && rawTriggers.length >= 1
 
   if (regime.regime === 'ranging' && rawTriggers.length < 2 && !allowWeakRangeSingle) {
-    await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
+    await speak(db, meetingId, instrument, conv, {
+      agent: 'orchestrator', role: 'close',
       message: `${instrument} @ $${f(price)} | ${allTriggers} detected but market is RANGING (strength:${regime.strength.toFixed(1)}). Need 2+ triggers for confluence in range-bound markets.`,
+      data: { reason: 'regime-ranging', regimeStrength: regime.strength, triggerCount: rawTriggers.length, trigger: allTriggers },
     })
     return 'regime-filtered'
   }
 
   if (!trigger) {
-    await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
+    await speak(db, meetingId, instrument, conv, {
+      agent: 'orchestrator', role: 'close',
       message: `${instrument} @ $${f(price)} | RSI:${ind.rsi.toFixed(0)} MACD:${ind.macd.histogram > 0 ? '+' : '-'}${Math.abs(ind.macd.histogram).toFixed(2)} BB:${(ind.bb.percentB * 100).toFixed(0)}% Vol:${ind.volume_ratio.toFixed(1)}x EMA:${price > ind.ema_50 ? '↑' : '↓'} | No trigger. Adjourned.`,
-      data: { price, rsi: ind.rsi, macd_hist: ind.macd.histogram, bb_pctb: ind.bb.percentB, volume_ratio: ind.volume_ratio, trigger: null },
+      data: { reason: 'no-trigger', price, rsi: ind.rsi, macd_hist: ind.macd.histogram, bb_pctb: ind.bb.percentB, volume_ratio: ind.volume_ratio, trigger: null },
     })
     return 'no trigger'
   }
 
   // ── LONG-ONLY MODE — shorts have 0% win rate (0W/37L = -$3,405). Block all shorts. ──
   if (triggerDir === 'short') {
-    await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
+    await speak(db, meetingId, instrument, conv, {
+      agent: 'orchestrator', role: 'close',
       message: `${instrument} @ $${f(price)} | ${allTriggers} → SHORT blocked. LONG-ONLY mode active (0W/37L short history). Waiting for LONG setup.`,
+      data: { reason: 'long-only-mode', trigger: allTriggers },
     })
     return 'long-only-filter'
   }
@@ -429,25 +455,28 @@ async function runMeeting(
   // ── PHASE 2: TREND FILTER GATE — only buy in uptrends ──
   const trendWeak = forecast.smoothedTrend === 'down' && forecast.upProbability4h < 0.45
   if (trendWeak) {
-    await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
+    await speak(db, meetingId, instrument, conv, {
+      agent: 'orchestrator', role: 'close',
       message: `${instrument} @ $${f(price)} | ${allTriggers} → LONG but trend is DOWN (MC ${(forecast.upProbability4h * 100).toFixed(0)}% up). Skipping — don't buy in downtrend.`,
-      data: { price, trigger: allTriggers, trendFilter: true, trendDir: forecast.smoothedTrend, mcUp: forecast.upProbability4h },
+      data: { reason: 'trend-filtered', price, trigger: allTriggers, trendDir: forecast.smoothedTrend, mcUp: forecast.upProbability4h },
     })
     return 'trend-filtered'
   }
 
   if (onCooldown) {
-    await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
+    await speak(db, meetingId, instrument, conv, {
+      agent: 'orchestrator', role: 'close',
       message: `${instrument} @ $${f(price)} | ${allTriggers} detected but on cooldown (debated <${COOLDOWN_MIN}min ago). Adjourned.`,
-      data: { price, trigger: allTriggers, cooldown: true },
+      data: { reason: 'cooldown', price, trigger: allTriggers, cooldownMin: COOLDOWN_MIN },
     })
     return 'cooldown'
   }
 
   if (capReached) {
-    await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
+    await speak(db, meetingId, instrument, conv, {
+      agent: 'orchestrator', role: 'close',
       message: `${instrument} @ $${f(price)} | ${allTriggers} detected but meeting cap reached this cycle (${MAX_MEETINGS_PER_CYCLE}/cycle) or budget low. Queued for next run.`,
-      data: { price, trigger: allTriggers, capReached: true },
+      data: { reason: 'meeting-cap-or-budget-low', price, trigger: allTriggers, maxPerCycle: MAX_MEETINGS_PER_CYCLE },
     })
     return 'budget-capped'
   }
@@ -535,19 +564,53 @@ async function runMeeting(
   await agentSpeak(db, meetingId, instrument, conv, 'trade-reviewer', promptCtx,
     `${convoFor(conv, 'trade-reviewer')}\n\nRecent trade history: ${tradeHist}\n\nPerformance context for ${instrument}?`)
 
-  // ── 11: MASTER AGENT — full context for final synthesis ──
-
-  await agentSpeak(db, meetingId, instrument, conv, 'master-agent', promptCtx,
-    `${convoFor(conv, 'master-agent')}\n\n${forecastText}\nSummarize the full debate AND the quantitative forecast. Do the models agree with the agents? Tally votes. Give your weighted recommendation.`)
+  // ── 11: MASTER JUDGE AGENT — Phase B1 ──
+  // The judge does NOT add new analysis. It ranks the 10 prior agents 1-10 on
+  // argument quality, picks top-3, returns JSON. Orchestrator gets only the
+  // top-3 rich arguments instead of synthesised summary (Maryanskyy 2026
+  // findings: judge selection beats synthesis in ~80% of cases).
+  interface JudgeRanking { agent: string; score: number; reason: string }
+  interface MasterJudgeOutput {
+    rankings: JudgeRanking[]
+    top3_agent_ids: string[]
+    consensus_stance: 'BULL' | 'BEAR' | 'NEUTRAL' | 'SPLIT'
+    majority_stance_count: number
+    groupthink_warning: boolean
+  }
+  let judge: MasterJudgeOutput | null = null
+  try {
+    const masterDbPrompt = await getActivePrompt(db, 'master-agent')
+    const masterDefault = AGENT_PROMPTS['master-agent'](promptCtx)
+    judge = await callAgent<MasterJudgeOutput>({
+      system: masterDbPrompt ?? masterDefault,
+      user: `${fullConvo(conv)}\n\nRank these 10 agents on argument quality. Return JSON only.`,
+      maxTokens: AGENT_TOKEN_LIMITS['master-agent'],
+      timeoutMs: 30000,
+      expectJson: true,
+      model: MODEL_SONNET,
+    })
+    await speak(db, meetingId, instrument, conv, {
+      agent: 'master-agent', role: 'speak',
+      message: `JUDGE: top-3 = ${judge.top3_agent_ids.join(', ')} | consensus ${judge.consensus_stance} (${judge.majority_stance_count}) | groupthink ${judge.groupthink_warning}`,
+      data: { structured: true, top3: judge.top3_agent_ids, consensus: judge.consensus_stance, groupthink: judge.groupthink_warning },
+    })
+  } catch (err) {
+    await speak(db, meetingId, instrument, conv, { agent: 'master-agent', role: 'alert', message: `Judge JSON failed: ${String(err).slice(0, 100)}` })
+  }
 
   // ── WhatsApp: Send debate summary ──
   const debateAgents = conv
-    .filter(m => m.role === 'speak' && m.agent !== 'orchestrator')
+    .filter(m => m.role === 'speak' && m.agent !== 'orchestrator' && m.agent !== 'master-agent')
     .map(m => {
-      const bullish = /bullish|long|buy|support|for|approve|momentum|breakout|upside/i.test(m.message)
-      const bearish = /bearish|reject|against|caution|risk|short|sell|overbought|trap|downside/i.test(m.message)
-      const stance = bullish && !bearish ? 'bullish' as const : bearish && !bullish ? 'bearish' as const : 'neutral' as const
-      return { name: m.agent, stance, summary: m.message.slice(0, 80) }
+      const stance: 'bullish' | 'bearish' | 'neutral' = m.data?.stance === 'BULL' ? 'bullish'
+        : m.data?.stance === 'BEAR' ? 'bearish'
+        : m.data?.stance === 'NEUTRAL' ? 'neutral'
+        : (() => {
+            const bull = /bullish|long|buy|support|for|approve|momentum|breakout|upside/i.test(m.message)
+            const bear = /bearish|reject|against|caution|risk|short|sell|overbought|trap|downside/i.test(m.message)
+            return bull && !bear ? 'bullish' : bear && !bull ? 'bearish' : 'neutral'
+          })()
+      return { name: m.agent, stance, summary: (m.data?.key_arg ?? m.message).slice(0, 80) }
     })
   await waDebate({ instrument, agents: debateAgents }).catch(e => console.error('[war-room] waDebate WhatsApp error:', e))
 
@@ -576,15 +639,35 @@ async function runMeeting(
     ? `\n── CME GAP ──\nBTC=F last close: $${cmeGap.cmeClose.toFixed(0)}  |  spot: $${cmeGap.spotPrice.toFixed(0)}  |  gap ${cmeGap.gapPct >= 0 ? '+' : ''}${cmeGap.gapPct.toFixed(2)}%  fillDir: ${cmeGap.fillDirection}\n`
     : ''
 
+  // Phase B1 — judge-curated top-3 arguments (full_analysis) take precedence
+  // over the full debate digest when feeding the orchestrator. This kills the
+  // synthesis-failure pattern where the orchestrator drowns in 11 voices.
+  const topAgentIds = (judge?.top3_agent_ids ?? []).filter(id =>
+    conv.some(m => m.agent === id && m.role === 'speak'),
+  )
+  const top3Block = topAgentIds.length > 0
+    ? `\n── TOP-3 ARGUMENTS (per Master Judge) ──\n${topAgentIds.map((id, i) => {
+        const m = conv.find(mm => mm.agent === id && mm.role === 'speak')
+        const analysis = (m?.data?.full_analysis ?? m?.message ?? '').slice(0, 600)
+        const stance = m?.data?.stance ?? 'UNKNOWN'
+        const conv_ = m?.data?.conviction ?? '?'
+        return `${i + 1}. [${id}] stance=${stance} conviction=${conv_}\n   ${analysis}`
+      }).join('\n\n')}\n`
+    : ''
+  const judgeBlock = judge
+    ? `\n── JUDGE CONSENSUS ──\n${judge.consensus_stance} (${judge.majority_stance_count} agents in majority)${judge.groupthink_warning ? ' — ⚠️ GROUPTHINK WARNING' : ''}\n`
+    : ''
+
   let parsed: OrchestratorDecision | null = null
   let rawDecisionText = ''
   try {
     const result = await callAgent<OrchestratorDecision>({
       system: orchDbPrompt ?? orchDefaultPrompt,
-      user: `${fullConvo(conv)}${macroHeader}\n${forecastText}${derivativesText}${mtfText}${cmeGapText}\nFinal decision for ${instrument}. You have heard all 11 agents. Consider the LIVE WORLD STATE, QUANTITATIVE FORECAST, DERIVATIVES POSITIONING, MULTI-TIMEFRAME alignment, and CME GAP (BTC only) above. If any of these contradict the agent consensus, explain why you trust one over the others. Respond with JSON only.`,
+      user: `${top3Block}${judgeBlock}${macroHeader}\n${forecastText}${derivativesText}${mtfText}${cmeGapText}\nFinal decision for ${instrument}. The Master Judge ranked the 10 debate agents — you are seeing the top-3 rich arguments above (not all 10) so you can focus on quality. Consider the LIVE WORLD STATE, QUANTITATIVE FORECAST, DERIVATIVES POSITIONING, MULTI-TIMEFRAME alignment, and CME GAP (BTC only) above. If a judge groupthink_warning is present, weight the dissenting top-3 voice extra heavily. Respond with JSON only.`,
       maxTokens: AGENT_TOKEN_LIMITS['orchestrator'],
       timeoutMs: 45000,
       expectJson: true,
+      model: MODEL_SONNET,
     })
     parsed = result
     rawDecisionText = JSON.stringify(result)
@@ -598,8 +681,10 @@ async function runMeeting(
   // Derivatives soft-adjust feeds into the effective conviction.
   const forecastVeto = forecastContradict && (parsed?.conviction ?? 0) < 80
 
-  const voteFor = conv.filter(m => /\b(bullish|buy\b|support(?:s|ing)?|execute|approve)\b/i.test(m.message) && m.role === 'speak' && m.agent !== 'orchestrator').length
-  const voteAgainst = conv.filter(m => /\b(bearish|reject(?:ed)?|against\b|sell\b|wait\b|pass\b|veto)\b/i.test(m.message) && m.role === 'speak' && m.agent !== 'orchestrator').length
+  // Phase A2 — structured tally replaces brittle regex.
+  const tally = tallyVotes(conv)
+  const voteFor = tally.bull
+  const voteAgainst = tally.bear
   const voteMarginOk = voteFor > voteAgainst + 2
 
   // Effective conviction = parsed conviction + soft adjustments from
@@ -647,11 +732,17 @@ async function runMeeting(
   } catch (e) { console.error('[war-room] audit log insert error:', e) }
 
   const agentStances = conv
-    .filter(m => m.role === 'speak' && m.agent !== 'orchestrator')
+    .filter(m => m.role === 'speak' && m.agent !== 'orchestrator' && m.agent !== 'master-agent')
     .map(m => {
-      const b = /bullish|long|buy|support|for|approve|execute/i.test(m.message)
-      const br = /bearish|short|sell|reject|against|caution|risk/i.test(m.message)
-      return { agent: m.agent, stance: (b && !br ? 'bull' : br && !b ? 'bear' : 'neutral') as 'bull' | 'bear' | 'neutral' }
+      let stance: 'bull' | 'bear' | 'neutral'
+      if (m.data?.structured && m.data?.stance) {
+        stance = m.data.stance === 'BULL' ? 'bull' : m.data.stance === 'BEAR' ? 'bear' : 'neutral'
+      } else {
+        const b = /bullish|long|buy|support|for|approve|execute/i.test(m.message)
+        const br = /bearish|short|sell|reject|against|caution|risk/i.test(m.message)
+        stance = b && !br ? 'bull' : br && !b ? 'bear' : 'neutral'
+      }
+      return { agent: m.agent, stance }
     })
 
   if (isExecute && triggerDir) {
@@ -668,9 +759,11 @@ async function runMeeting(
     if (!sessionGate.allowed) {
       await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'decision',
         message: `SESSION GATE: ${sessionGate.reason}`,
+        data: { reason: 'session-gate', detail: sessionGate.reason },
       })
       await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
         message: `BLOCKED by session gate: ${sessionGate.reason}. Meeting closed.`,
+        data: { reason: 'blocked-session', detail: sessionGate.reason },
       })
       await waBlocked({ instrument, reason: sessionGate.reason, blocker: 'Session Gate' }).catch(() => {})
       await runPostMeetingBrief({ instrument, decision: 'blocked', votesFor: voteFor, votesAgainst: voteAgainst, trigger: allTriggers ?? trigger, agentStances }).catch(() => {})
@@ -704,9 +797,11 @@ async function runMeeting(
     if (!dedup.allowed) {
       await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'decision',
         message: `CORRELATION DEDUP: ${dedup.reason}`,
+        data: { reason: 'correlation-dedup', detail: dedup.reason, conflictWith: dedup.conflictWith },
       })
       await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
         message: `BLOCKED by correlation dedup: ${dedup.reason}. Meeting closed.`,
+        data: { reason: 'blocked-correlation', detail: dedup.reason, conflictWith: dedup.conflictWith },
       })
       await waBlocked({ instrument, reason: dedup.reason, blocker: 'Correlation Dedup' }).catch(() => {})
       await runPostMeetingBrief({ instrument, decision: 'blocked', votesFor: voteFor, votesAgainst: voteAgainst, trigger: allTriggers ?? trigger, agentStances }).catch(() => {})
@@ -730,9 +825,11 @@ async function runMeeting(
     if (!newsGate.allowed) {
       await speak(db, meetingId, instrument, conv, { agent: 'market-analyst', role: 'decision',
         message: `NEWS VETO: score ${newsGate.score} — ${newsGate.reason}. Top: ${newsGate.topHeadlines.slice(0,2).join(' | ').slice(0, 200)}`,
+        data: { reason: 'news-veto', score: newsGate.score, headlineCount: newsGate.headlineCount },
       })
       await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
         message: `BLOCKED by news veto: ${newsGate.reason}. Meeting closed.`,
+        data: { reason: 'blocked-news', score: newsGate.score, detail: newsGate.reason },
       })
       await waBlocked({ instrument, reason: `News score ${newsGate.score}: ${newsGate.reason}`, blocker: 'News Impact' }).catch(() => {})
       await runPostMeetingBrief({ instrument, decision: 'blocked', votesFor: voteFor, votesAgainst: voteAgainst, trigger: allTriggers ?? trigger, agentStances }).catch(() => {})
@@ -788,21 +885,21 @@ async function runMeeting(
 
     // Recovery mode: enforce stricter R:R
     if (recovery.active && rr < recovery.minRR) {
-      await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'decision', message: `RECOVERY MODE: R:R ${rr.toFixed(2)} < ${recovery.minRR} minimum in ${recovery.message}` })
-      await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close', message: `BLOCKED by recovery mode R:R requirement.` })
+      await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'decision', message: `RECOVERY MODE: R:R ${rr.toFixed(2)} < ${recovery.minRR} minimum in ${recovery.message}`, data: { reason: 'recovery-rr', rr, minRR: recovery.minRR } })
+      await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close', message: `BLOCKED by recovery mode R:R requirement.`, data: { reason: 'blocked-recovery-rr', rr, minRR: recovery.minRR } })
       return 'blocked'
     }
     // Recovery mode: enforce position limit
     if (recovery.active && (openPos ?? 0) >= recovery.maxPositions) {
-      await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'decision', message: `RECOVERY MODE: ${openPos} positions >= ${recovery.maxPositions} max in recovery mode` })
-      await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close', message: `BLOCKED by recovery mode position limit.` })
+      await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'decision', message: `RECOVERY MODE: ${openPos} positions >= ${recovery.maxPositions} max in recovery mode`, data: { reason: 'recovery-positions', openPos, maxPositions: recovery.maxPositions } })
+      await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close', message: `BLOCKED by recovery mode position limit.`, data: { reason: 'blocked-recovery-positions', openPos, maxPositions: recovery.maxPositions } })
       return 'blocked'
     }
 
     const riskCheck = hardRiskCheck(rr, entry, sl, openPos ?? 0)
     if (!riskCheck.allowed) {
-      await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'decision', message: `HARD REJECT: ${riskCheck.reason}` })
-      await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close', message: `BLOCKED by risk rules: ${riskCheck.reason}. Meeting closed.` })
+      await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'decision', message: `HARD REJECT: ${riskCheck.reason}`, data: { reason: 'hard-risk-reject', detail: riskCheck.reason } })
+      await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close', message: `BLOCKED by risk rules: ${riskCheck.reason}. Meeting closed.`, data: { reason: 'blocked-hard-risk', detail: riskCheck.reason } })
       await waBlocked({ instrument, reason: riskCheck.reason, blocker: 'Risk Manager' }).catch(e => console.error('[war-room] waBlocked error:', e))
       await runPostMeetingBrief({ instrument, decision: 'blocked', votesFor: voteFor, votesAgainst: voteAgainst, trigger: allTriggers ?? trigger, agentStances }).catch(() => {})
       return 'blocked'
@@ -812,8 +909,8 @@ async function runMeeting(
     const capitalUsd = portfolio?.capital ?? 5000
     const dailyCheck = await checkDailyLossLimit(capitalUsd)
     if (!dailyCheck.allowed) {
-      await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'decision', message: `DAILY LIMIT: ${dailyCheck.reason}` })
-      await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close', message: `BLOCKED by daily loss limit. Meeting closed.` })
+      await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'decision', message: `DAILY LIMIT: ${dailyCheck.reason}`, data: { reason: 'daily-loss-limit', detail: dailyCheck.reason } })
+      await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close', message: `BLOCKED by daily loss limit. Meeting closed.`, data: { reason: 'blocked-daily-loss', detail: dailyCheck.reason } })
       await waBlocked({ instrument, reason: dailyCheck.reason, blocker: 'Daily Loss Limit' }).catch(e => console.error('[war-room] waBlocked error:', e))
       await runPostMeetingBrief({ instrument, decision: 'blocked', votesFor: voteFor, votesAgainst: voteAgainst, trigger: allTriggers ?? trigger, agentStances }).catch(() => {})
       return 'blocked'
@@ -829,8 +926,9 @@ async function runMeeting(
     if (!bt.passed) {
       await speak(db, meetingId, instrument, conv, { agent: 'risk-manager', role: 'decision',
         message: `BACKTEST FAIL: ${strategyType} win rate ${(bt.winRate * 100).toFixed(0)}% (${bt.wins}W/${bt.losses}L) on recent data — below 35% threshold`,
+        data: { reason: 'backtest-fail', strategyType, wins: bt.wins, losses: bt.losses, winRate: bt.winRate },
       })
-      await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close', message: `BLOCKED by backtest validation. Meeting closed.` })
+      await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close', message: `BLOCKED by backtest validation. Meeting closed.`, data: { reason: 'blocked-backtest', strategyType, winRate: bt.winRate } })
       await waBlocked({ instrument, reason: `Backtest failed: ${bt.wins}W/${bt.losses}L (${(bt.winRate * 100).toFixed(0)}%)`, blocker: 'Backtest Validation' }).catch(e => console.error('[war-room] waBlocked error:', e))
       await runPostMeetingBrief({ instrument, decision: 'blocked', votesFor: voteFor, votesAgainst: voteAgainst, trigger: allTriggers ?? trigger, agentStances }).catch(() => {})
       return 'blocked'
@@ -844,6 +942,7 @@ async function runMeeting(
     if ((recentSignalCount ?? 0) > 0) {
       await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
         message: `DUPLICATE: ${triggerDir} ${instrument} signal already exists from last 60 min. Skipped.`,
+        data: { reason: 'duplicate-signal', direction: triggerDir, windowMinutes: 60 },
       })
       await runPostMeetingBrief({ instrument, decision: 'blocked', votesFor: voteFor, votesAgainst: voteAgainst, trigger: allTriggers ?? trigger, agentStances }).catch(() => {})
       return 'blocked'
@@ -1136,8 +1235,10 @@ async function runMeeting(
 
     await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
       message: `EXECUTED: ${triggerDir.toUpperCase()} ${instrument} @ $${f(entry)} | SL:$${f(sl)} TP:$${f(tp)} R:R ${rr}x | Size:${sizing.units.toFixed(4)} ($${sizing.notionalUsd.toFixed(0)}) Risk:${(sizing.riskPct * 100).toFixed(1)}% | Vote: ${voteFor}-${voteAgainst} | FC:${forecast.combinedLabel}. Meeting closed.`,
+      data: { reason: 'executed', direction: triggerDir, entry, sl, tp, rr, votesFor: voteFor, votesAgainst: voteAgainst, conviction: parsed?.conviction ?? 0 },
     })
     await runPostMeetingBrief({ instrument, decision: 'executed', direction: triggerDir, entry, sl, tp, rr, votesFor: voteFor, votesAgainst: voteAgainst, trigger: allTriggers ?? trigger, agentStances }).catch(() => {})
+    await recordMeetingDecision(db, { instrument, direction: triggerDir, decision: 'executed', conviction: parsed?.conviction ?? 0, votesFor: voteFor, votesAgainst: voteAgainst, trigger: allTriggers ?? trigger, entry, sl, tp, rr })
     return 'executed'
   } else {
     await waDecision({
@@ -1148,8 +1249,10 @@ async function runMeeting(
 
     await speak(db, meetingId, instrument, conv, { agent: 'orchestrator', role: 'close',
       message: `REJECTED: No trade on ${instrument}. Vote: ${voteFor} for, ${voteAgainst} against. Meeting closed.`,
+      data: { reason: 'rejected-orchestrator', votesFor: voteFor, votesAgainst: voteAgainst, conviction: parsed?.conviction ?? 0, forecastVeto, voteMarginOk: voteFor > voteAgainst + 2 },
     })
     await runPostMeetingBrief({ instrument, decision: 'rejected', votesFor: voteFor, votesAgainst: voteAgainst, trigger: allTriggers ?? trigger, agentStances }).catch(() => {})
+    await recordMeetingDecision(db, { instrument, direction: triggerDir ?? 'long', decision: 'rejected', conviction: parsed?.conviction ?? 0, votesFor: voteFor, votesAgainst: voteAgainst, trigger: allTriggers ?? trigger })
     return 'rejected'
   }
 }
@@ -1161,10 +1264,79 @@ async function runMeeting(
 async function getActivePrompt(db: ReturnType<typeof createServiceSupabase>, agentId: string): Promise<string | null> {
   try {
     const { data } = await db.from('agent_knowledge')
-      .select('content').eq('agent_id', agentId).eq('type', 'prompt').eq('active', true)
-      .order('version', { ascending: false }).limit(1).single()
+      .select('content').eq('agent_id', agentId).eq('type', 'rule').eq('active', true)
+      .order('created_at', { ascending: false }).limit(1).single()
     return data?.content ?? null
   } catch { return null }
+}
+
+// ─── Phase A3 — persist every meeting decision to agent_knowledge ────────────
+// Lets the meta-agent and future per-agent scoring read decision history without
+// re-parsing war_room_messages.
+interface DecisionRecord {
+  instrument: string
+  direction: string
+  decision: 'executed' | 'rejected' | 'blocked'
+  conviction: number
+  votesFor: number
+  votesAgainst: number
+  trigger: string | null
+  entry?: number
+  sl?: number
+  tp?: number
+  rr?: number
+  blockerReason?: string
+}
+
+async function recordMeetingDecision(db: ReturnType<typeof createServiceSupabase>, rec: DecisionRecord): Promise<void> {
+  try {
+    await db.from('agent_knowledge').insert({
+      agent_id: 'orchestrator',
+      type: 'observation',
+      title: `${rec.instrument} ${rec.direction.toUpperCase()} ${rec.decision.toUpperCase()}`,
+      content: rec.decision === 'executed'
+        ? `Executed ${rec.direction} ${rec.instrument} @ ${rec.entry?.toFixed(2)} | SL:${rec.sl?.toFixed(2)} TP:${rec.tp?.toFixed(2)} R:R ${rec.rr?.toFixed(2)} | conviction ${rec.conviction}% | votes ${rec.votesFor}-${rec.votesAgainst} | trigger ${rec.trigger ?? 'n/a'}`
+        : `${rec.decision} ${rec.direction} ${rec.instrument} | conviction ${rec.conviction}% | votes ${rec.votesFor}-${rec.votesAgainst} | trigger ${rec.trigger ?? 'n/a'}${rec.blockerReason ? ` | blocker ${rec.blockerReason}` : ''}`,
+      context: rec as unknown as Record<string, unknown>,
+      confidence: 50,
+      active: true,
+    })
+  } catch (e) { console.error('[war-room] recordMeetingDecision error:', e) }
+}
+
+// ─── Phase B2 — heterogeneous trading beliefs (per meeting) ──────────────────
+// Each meeting picks one bias per agent, deterministically from the meetingId,
+// to break the "all 12 agents start from identical static prompt" failure mode
+// (DReaMAD belief-entrenchment, arXiv 2503.16814). Keeps the underlying
+// analysis prompt unchanged; just nudges the agent's framing.
+const BELIEF_VARIANTS: Record<string, string[]> = {
+  'macro-agent': [
+    'You lean HAWKISH today: assume the Fed is willing to keep rates higher for longer.',
+    'You lean DOVISH today: assume the Fed is closer to easing than the consensus expects.',
+    'You are perfectly NEUTRAL today: only data, no policy bias.',
+  ],
+  'bull-agent': [
+    'Your default bias is AGGRESSIVE: take asymmetric upside seriously, but still flag invalidation.',
+    'Your default bias is CONSERVATIVE BULL: only call LONG if structure and trend agree.',
+  ],
+  'bear-agent': [
+    'Your default bias is FORENSIC: hunt for distribution, exhaustion, supply traps.',
+    'Your default bias is REGIME-AWARE: only flag bearish setup when macro is risk-off.',
+  ],
+  'trend-agent': [
+    'You weight 1H momentum > HTF this meeting.',
+    'You weight HTF (4H/1D) > 1H this meeting.',
+  ],
+}
+
+function pickBelief(meetingId: string, agentId: string): string {
+  const variants = BELIEF_VARIANTS[agentId]
+  if (!variants?.length) return ''
+  // Deterministic hash from meetingId so runs are reproducible.
+  let h = 0
+  for (const c of meetingId + agentId) h = (h * 31 + c.charCodeAt(0)) | 0
+  const idx = Math.abs(h) % variants.length
+  return `\n[BELIEF ROTATION]: ${variants[idx]}\n`
 }
 
 async function agentSpeak(
@@ -1175,13 +1347,95 @@ async function agentSpeak(
   try {
     const dbPrompt = await getActivePrompt(db, agentId)
     const defaultPrompt = AGENT_PROMPTS[agentId](promptCtx)
-    const system = dbPrompt ?? defaultPrompt
+    const baseSystem = dbPrompt ?? defaultPrompt
+
+    // Phase A2 — append structured-output footer for the 10 debate agents.
+    // Master + orchestrator already have their own JSON schemas baked in.
+    const wantsStructured = STRUCTURED_STANCE_AGENTS.has(agentId)
+    const beliefRotation = pickBelief(meetingId, agentId)
+    const system = beliefRotation + baseSystem + (wantsStructured ? STRUCTURED_OUTPUT_FOOTER : '')
+
+    // Phase C1 — model tier per agent.
+    const tier = AGENT_TIER[agentId] ?? 'DEEP'
+    const model = tier === 'FAST' ? MODEL_FAST : MODEL_SONNET
     const maxTokens = AGENT_TOKEN_LIMITS[agentId] ?? 800
-    const response = await callAgent<string>({ system, user: userMsg, maxTokens, timeoutMs: 30000 })
-    await speak(db, meetingId, instrument, conv, { agent: agentId, role: 'speak', message: response })
+
+    const raw = await callAgent<string>({ system, user: userMsg, maxTokens, timeoutMs: 30000, model })
+
+    // Try to parse structured stance JSON. On failure fall back to raw text +
+    // regex-based stance extraction so a malformed response never crashes a
+    // meeting.
+    let stance: Stance | undefined
+    let conviction: number | undefined
+    let keyArg: string | undefined
+    let fullAnalysis: string | undefined
+    let structured = false
+    if (wantsStructured) {
+      const parsed = tryParseStanceJson(raw)
+      if (parsed) {
+        stance = parsed.stance
+        conviction = parsed.conviction
+        keyArg = parsed.key_arg
+        fullAnalysis = parsed.full_analysis
+        structured = true
+      }
+    }
+
+    // Message stored: prefer key_arg when structured (so the WhatsApp digest
+    // and downstream prompts get a punchy line), else raw output.
+    const message = structured && keyArg ? keyArg : raw
+
+    await speak(db, meetingId, instrument, conv, {
+      agent: agentId, role: 'speak', message,
+      data: { stance, conviction, key_arg: keyArg, full_analysis: fullAnalysis, structured },
+    })
   } catch (err) {
     await speak(db, meetingId, instrument, conv, { agent: agentId, role: 'alert', message: `[timeout/error] ${String(err).slice(0, 80)}` })
   }
+}
+
+// Tolerant JSON parser for the structured-stance schema.
+// Accepts:
+//   - bare JSON object
+//   - JSON wrapped in markdown ```json fences
+//   - JSON with leading explanatory prose, as long as the braces balance
+function tryParseStanceJson(raw: string): { stance: Stance; conviction: number; key_arg: string; full_analysis: string } | null {
+  const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim()
+  // Greedy first {...} block
+  const m = cleaned.match(/\{[\s\S]*\}/)
+  if (!m) return null
+  try {
+    const obj = JSON.parse(m[0]) as Record<string, unknown>
+    const stance = String(obj.stance ?? '').toUpperCase()
+    if (stance !== 'BULL' && stance !== 'BEAR' && stance !== 'NEUTRAL') return null
+    const conviction = Math.max(0, Math.min(100, Number(obj.conviction ?? 0)))
+    const key_arg = String(obj.key_arg ?? '').slice(0, 200)
+    const full_analysis = String(obj.full_analysis ?? '').slice(0, 1000)
+    return { stance: stance as Stance, conviction, key_arg, full_analysis }
+  } catch { return null }
+}
+
+// Phase A2 — count votes from structured stances (with regex fallback for any
+// agent that emitted free text).
+function tallyVotes(conv: Msg[]): { bull: number; bear: number; neutral: number; bullConviction: number; bearConviction: number } {
+  let bull = 0, bear = 0, neutral = 0
+  let bullConviction = 0, bearConviction = 0
+  for (const m of conv) {
+    if (m.role !== 'speak' || m.agent === 'orchestrator' || m.agent === 'master-agent') continue
+    if (m.data?.structured && m.data?.stance) {
+      if (m.data.stance === 'BULL') { bull++; bullConviction += m.data.conviction ?? 0 }
+      else if (m.data.stance === 'BEAR') { bear++; bearConviction += m.data.conviction ?? 0 }
+      else neutral++
+    } else {
+      // Fallback: original regex tally
+      const isBull = /\b(bullish|buy\b|support(?:s|ing)?|execute|approve)\b/i.test(m.message)
+      const isBear = /\b(bearish|reject(?:ed)?|against\b|sell\b|wait\b|pass\b|veto)\b/i.test(m.message)
+      if (isBull && !isBear) bull++
+      else if (isBear && !isBull) bear++
+      else neutral++
+    }
+  }
+  return { bull, bear, neutral, bullConviction, bearConviction }
 }
 
 async function speak(db: ReturnType<typeof createServiceSupabase>, meetingId: string, instrument: string | null, conv: Msg[], msg: Msg) {

@@ -756,6 +756,85 @@ Rules:
 - Do NOT include any text outside the JSON object`
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PHASE A2 — STRUCTURED OUTPUT FOOTER (appended to every debate-agent prompt)
+//
+// Every debate agent must emit JSON so we can:
+//   - tally votes by `stance` instead of brittle regex over free text
+//   - feed `key_arg` to the Master/judge for ranking
+//   - keep `full_analysis` for the WhatsApp debate digest
+//
+// agentSpeak() in war-room.ts parses this JSON; on parse failure it falls back
+// to the raw text so the meeting still completes (graceful degrade).
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const STRUCTURED_OUTPUT_FOOTER = `
+
+CRITICAL OUTPUT FORMAT:
+Respond with EXACTLY this JSON object as your ENTIRE response. No markdown fences. No explanation outside the JSON.
+
+{
+  "stance": "BULL" | "BEAR" | "NEUTRAL",
+  "conviction": <integer 0-100>,
+  "key_arg": "<one sentence, max 140 characters, the strongest single argument behind your stance>",
+  "full_analysis": "<your full reasoning, max 800 characters>"
+}
+
+Rules:
+- "stance" MUST be exactly "BULL", "BEAR", or "NEUTRAL"
+- "conviction" reflects how confident you are in YOUR stance (not in the trade)
+- A NEUTRAL agent MUST have conviction <= 50
+- Do NOT include any text outside the JSON object`
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE B1 — JUDGE-BASED SELECTION (replaces synthesis)
+//
+// Master Agent's old role: "synthesize the debate". Per Maryanskyy 2026
+// (Selection Bottleneck), synthesis loses 0/42 vs single-model baseline; judge
+// based selection wins 81%. New role: rank the 10 prior agents 1-10 on
+// argument quality, pick top-3, and return them ranked. Orchestrator now
+// receives only those top-3 rich arguments instead of all 11 compressed ones.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const masterJudgeAgent: PromptBuilder = (ctx) => `You are the Quality Judge. You DO NOT add any new analysis. You evaluate the quality of the prior 10 agents' arguments and pick the 3 strongest, regardless of whether they're bullish or bearish.
+
+Each prior agent emitted a JSON object: { stance, conviction, key_arg, full_analysis }. You will receive all of them in the debate transcript.
+
+JUDGING CRITERIA (apply ALL):
+
+1. DATA-DRIVEN: arguments citing specific levels / metrics / regimes score higher than vague directional claims.
+2. INTERNAL CONSISTENCY: does the agent's stance match their full_analysis? Hidden contradictions = downgrade.
+3. RISK MANAGEMENT WEIGHT: Risk Manager's stance gets +1 score bonus when their reasoning is sound (capital protection is paramount).
+4. COUNTER-EVIDENCE AWARENESS: agents who acknowledge bear cases score higher than one-sided takes.
+5. DISSENT VALUE: a sole strong dissenter from majority consensus is MORE valuable than a 7th agent agreeing with the consensus. Do not penalise the dissenter for being alone.
+6. NOVEL INFORMATION: arguments adding information not already given by earlier agents score higher than restatements.
+
+GROUPTHINK PENALTY:
+- If 8+ agents share the same stance, apply -1 to any agent in the majority unless their argument adds something genuinely new.
+- This counters belief entrenchment (DReaMAD findings).
+
+For ${ctx.instrument} ${ctx.triggerDir ?? 'long'} setup at $${ctx.price.toFixed(2)}, evaluate every agent and return the JSON below.
+
+CRITICAL OUTPUT FORMAT:
+Respond with EXACTLY this JSON object as your ENTIRE response. No markdown fences.
+
+{
+  "rankings": [
+    { "agent": "<agentId>", "score": <integer 1-10>, "reason": "<one sentence>" }
+    /* ... one entry per agent that spoke, ordered descending by score */
+  ],
+  "top3_agent_ids": ["<best>", "<2nd>", "<3rd>"],
+  "consensus_stance": "BULL" | "BEAR" | "NEUTRAL" | "SPLIT",
+  "majority_stance_count": <integer>,
+  "groupthink_warning": <boolean>
+}
+
+Rules:
+- top3_agent_ids MUST be 3 distinct agent ids that appear in rankings
+- consensus_stance is "SPLIT" if BULL count and BEAR count are within 1 of each other
+- groupthink_warning is true when 8+ agents share the same stance
+- DO NOT include text outside the JSON`
+
+// ─────────────────────────────────────────────────────────────────────────────
 // EXPORTS
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -770,21 +849,51 @@ export const AGENT_PROMPTS: Record<AgentId, PromptBuilder> = {
   'signal-generator':   signalGenerator,
   'risk-manager':       riskManager,
   'trade-reviewer':     tradeReviewer,
-  'master-agent':       masterAgent,
+  'master-agent':       masterJudgeAgent,
   'orchestrator':       orchestrator,
 }
 
+// Set of agents that emit structured stance JSON (Phase A2).
+// `master-agent` and `orchestrator` already use their own JSON schemas.
+export const STRUCTURED_STANCE_AGENTS: Set<AgentId> = new Set([
+  'macro-agent', 'correlation-agent', 'bull-agent', 'bear-agent',
+  'scalper-agent', 'trend-agent', 'market-analyst',
+  'signal-generator', 'risk-manager', 'trade-reviewer',
+])
+
 export const AGENT_TOKEN_LIMITS: Record<AgentId, number> = {
-  'macro-agent':        600,
-  'correlation-agent':  600,
-  'bull-agent':         600,
-  'bear-agent':         600,
-  'scalper-agent':      500,
-  'trend-agent':        600,
-  'market-analyst':     600,
+  'macro-agent':        700,
+  'correlation-agent':  700,
+  'bull-agent':         700,
+  'bear-agent':         700,
+  'scalper-agent':      600,
+  'trend-agent':        700,
+  'market-analyst':     700,
   'signal-generator':   1000,
   'risk-manager':       1000,
-  'trade-reviewer':     600,
-  'master-agent':       1000,
+  'trade-reviewer':     700,
+  'master-agent':       1200,
   'orchestrator':       1000,
+}
+
+// PHASE C1 — Mixed model tiers.
+//   FAST = Haiku (cheap, fast, fine for retrieval / sentiment / pattern recall)
+//   DEEP = Sonnet (default — multi-step reasoning)
+//   The actual model strings live in lib/anthropic.ts (MODEL, MODEL_FAST).
+// Cost saving on a typical 12-agent meeting: roughly 30-40% of input tokens
+// move from sonnet (3.0/15.0 per Mtok) to haiku (0.8/4.0 per Mtok).
+export type AgentTier = 'FAST' | 'DEEP'
+export const AGENT_TIER: Record<AgentId, AgentTier> = {
+  'macro-agent':        'DEEP',
+  'correlation-agent':  'FAST',
+  'bull-agent':         'DEEP',
+  'bear-agent':         'DEEP',
+  'scalper-agent':      'FAST',
+  'trend-agent':        'FAST',
+  'market-analyst':     'FAST',
+  'signal-generator':   'DEEP',
+  'risk-manager':       'DEEP',
+  'trade-reviewer':     'FAST',
+  'master-agent':       'DEEP',
+  'orchestrator':       'DEEP',
 }

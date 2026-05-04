@@ -74,7 +74,7 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-_(none)_
+LOCK: agents/war-room.ts + agents/agent-prompts.ts + lib/anthropic.ts — Computer A (day) — started 2026-05-04 08:10 Dubai — implementing Phase A+B+C of WAR_ROOM_UPGRADE_PROPOSAL.md
 
 ---
 

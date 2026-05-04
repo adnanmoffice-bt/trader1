@@ -84,7 +84,7 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-_(none — cleared 2026-05-04 ~12:30 Dubai after regime-ranging gate removal patch landed safely on `main`)_
+LOCK: lib/safety.ts — Computer A — started 2026-05-04 09:55 Dubai (XAU/USD → LIVE_INSTRUMENT_BLACKLIST after PAXGUSDT venue analysis)
 
 ---
 

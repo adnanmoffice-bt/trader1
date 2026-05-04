@@ -234,3 +234,126 @@ Phase A as one PR. Then C1. Then B1+B2 as a single LOCKed multi-commit PR. Etc.
 - Liu X. et al. (2025). *From Belief Entrenchment to Robust Reasoning in LLM Agents (DReaMAD)*. arXiv:2503.16814.
 - *Single-Agent LLMs Outperform Multi-Agent Systems on Multi-Hop Reasoning Under Equal Thinking Token Budgets*. arXiv:2604.02460.
 - *When collaboration fails: persuasion driven adversarial influence in multi-agent LLM debate*. Nature Scientific Reports 2026, s41598-026-42705-7.
+
+---
+
+## 8. Phase D — Empirical Microstructure Research (added 2026-05-04)
+
+### 8.1 Implementation
+- `lib/microstructure.ts` (new) — pure deterministic primitives:
+  - `detectFairValueGaps()` — 3-candle imbalance + tracks fill/age
+  - `findNearestUnfilledFVGs()` — N closest above/below current price
+  - `detectOrderBlocks()` — last opposite candle before 1.5+ ATR move that breaks 10-bar structure
+  - `computeVolumeProfile()` — bin-based POC + value area (VAH/VAL)
+  - `detectLiquiditySweep()` — false break of recent swing high/low + close back inside
+  - `detectStructure()` — BOS / CHOCH detection from swing points (k=3)
+  - `computeMicrostructureScore()` — composite 0-100 score for use as a soft trigger gate
+- `scripts/explore-microstructure.mjs` — runs each primitive forward over 90d and reports
+  per-family expectancy at fixed SL=2.0/TP=3.0 ATR exits, MAX_HOLD=48h.
+- `scripts/sweep-liquidity-sweep.mjs` — full param grid (3 lookbacks × 3 SLs × 4 TPs ×
+  confirm-on/off = 72 combos) over 180d.
+- `scripts/walkforward-liquidity-sweep.mjs` — 60/40 train/test out-of-sample validation
+  to detect curve-fitting.
+
+### 8.2 90-day single-trigger expectancy (90d, SL=2.0 TP=3.0 ATR, all 11 instruments)
+
+| Trigger family            | N    | WR    | Exp/R   |
+|---------------------------|------|-------|---------|
+| FVG-form                  | 2056 | 40.1% | -0.024  |
+| FVG-fill (canonical SMC)  | 1952 | 39.4% | -0.048  |
+| Order-Block-mitigation    | 1744 | 38.5% | -0.075  |
+| **Liquidity-Sweep**       | 1122 | 45.2% | **+0.101** |
+| Structure-Flip (CHOCH)    | 516  | 26.7% | -0.341  |
+
+Only Liquidity-Sweep is +EV. CHOCH at -0.341 is severe enough to be useful as an
+**inverted filter** (block longs that fire when CHOCH is bearish).
+
+### 8.3 Liquidity-Sweep — full 180d grid (sorted by Exp/R, ≥200 trades)
+
+Best in-sample combo: lookback=40, SL=2.5, TP=2.0, confirm=YES → +0.154 R/trade,
+62.8% WR, n=659. Per-instrument the edge is concentrated:
+
+| Instrument | N   | WR    | Exp/R   |
+|------------|-----|-------|---------|
+| AVAX/USD   | 47  | 78.7% | +0.423  |
+| MATIC/USD  | 59  | 76.3% | +0.372  |
+| NEAR/USD   | 85  | 69.4% | +0.301  |
+| BTC/USD    | 57  | 68.4% | +0.255  |
+| DOGE/USD   | 46  | 65.2% | +0.221  |
+| LINK/USD   | 57  | 61.4% | +0.150  |
+| ETH/USD    | 48  | 60.4% | +0.126  |
+| APT/USD    | 70  | 57.1% | +0.034  |
+| ADA/USD    | 68  | 55.9% | +0.009  |
+| DOT/USD    | 67  | 52.2% | -0.062  |
+| XAU/USD    | 55  | 49.1% | -0.079  |
+
+LONG (sweep-of-low) and SHORT (sweep-of-high) are roughly symmetric (62.9% / 62.7% WR).
+**This is the first signal in the system's history that suggests shorts may not be
+inherently broken** — the historical 0/37 short losing record came from indicator
+triggers, not sweeps. **Do NOT re-enable shorts based on this alone**, but the data
+warrants a future paper-only test of long+short on AVAX/MATIC/NEAR specifically.
+
+### 8.4 Out-of-sample (60/40 train/test) — the cold shower
+
+The greedy-best train params (lookback=40, SL=1.5, TP=4.0, confirm=YES, +0.249 R) drop
+to **-0.007 R on OOS** — a 103% degradation. Curve-fit. **Do not deploy.**
+
+But more conservative train params hold up:
+
+| Param (lookback / SL / TP / confirm) | Train Exp/R | OOS Exp/R | Δ        |
+|--------------------------------------|-------------|-----------|----------|
+| 40 / 1.5 / 4.0 / YES (greedy best)   | +0.249      | -0.007    | -103%    |
+| 40 / 1.5 / 4.0 / no                  | +0.235      | -0.017    | -107%    |
+| 40 / 2.0 / 4.0 / YES                 | +0.224      | +0.030    | -87%     |
+| 40 / 2.0 / 4.0 / no                  | +0.217      | +0.012    | -94%     |
+| **40 / 2.5 / 4.0 / YES**             | **+0.202**  | **+0.131**| **-35%** |
+
+The lookback=40, SL=2.5, TP=4.0, confirm=YES set is the **most robust** — only 35%
+in-sample-to-out-of-sample degradation, retains +0.131 R/trade OOS at 47.3% WR.
+
+### 8.5 Why this is fragile, not a free lunch
+
+1. **Single 60/40 split. Not enough.** Walk-forward should be repeated across at
+   least 5 rolling folds; the apparent +0.131 OOS edge could be one good market-state
+   period, not an enduring property. Only `price_history` >180d would unlock this.
+2. **Non-stationary market regime.** Liquidity sweeps work because retail stops are
+   clustered above/below recent swings. If exchange dynamics or stop-placement
+   behaviour shift, the edge can vanish quickly.
+3. **Cost not modelled.** Slippage on a sweep candle is worse than on a normal close
+   — entries fill at the close which already reflects the sweep, but the SL might
+   slip on the next adverse move. The +0.131 OOS Exp/R could lose ~0.05 R/trade
+   to realistic execution friction.
+4. **Hard-correlated fills.** Sweeps tend to fire across crypto in the same hour
+   (Dubai 22:00–02:00 funding window). Position-correlation cap in
+   `lib/correlation-dedup.ts` would block all but one — reducing the realised
+   trade count and concentrating outcomes in single-instrument variance.
+
+### 8.6 Recommended next steps (in priority order)
+
+1. **Out-of-sample on a longer dataset.** Backfill `price_history` to 12 months and
+   re-run `walkforward-liquidity-sweep.mjs` with 5 rolling folds. Pass criterion:
+   median OOS Exp/R ≥ +0.05 across folds.
+2. **Add liquidity-sweep as DEMO-ONLY trigger first.** Wire the detector into
+   `agents/war-room.ts` as an additional `rawTrigger` candidate, but gate live
+   execution to `false` for ≥30 days. Compare the demo win rate of sweep-triggered
+   meetings vs indicator-triggered meetings.
+3. **Combine with CHOCH as inverted filter.** When the trigger is sweep-of-low (long
+   setup) AND `detectStructure()` reports `choch === 'down'` → veto. Likewise sweep-of-
+   high + `choch === 'up'` → veto. This pairs the only +EV primitive with the only
+   strongly -EV primitive.
+4. **Filter by instrument.** Only enable on AVAX/MATIC/NEAR/BTC/DOGE initially — the
+   five instruments with >+0.20 R/trade in-sample. This concentrates the bet on the
+   strongest evidence.
+5. **Defer wiring shorts.** The liquidity-sweep symmetry is intriguing, but the
+   workspace rule prohibits short-trade re-enablement. That decision belongs to the
+   operator after a 30-day demo-only test.
+
+### 8.7 References (Phase D additions)
+- Inner Circle Trader (ICT) — original publisher of order block / FVG concepts in
+  retail-trading material (no peer-reviewed source; concepts validated empirically
+  here against 11 instruments × 180d).
+- Bookmap & TPO — origin of value-area / point-of-control terminology used in
+  `computeVolumeProfile()`.
+- Cont R. (2001). *Empirical properties of asset returns: stylized facts and
+  statistical issues*. Quantitative Finance 1(2). Documents the "long memory in
+  volatility" property that makes liquidity-sweep mean-reversion work.

@@ -42,12 +42,16 @@ Same git identity on both → commits look identical; differentiate via the
 Items still to finish. Tick `[x]` when done; delete after a week.
 
 - [x] ~~URGENT — Anthropic credit balance is exhausted.~~ Operator topped up $50 on 04/05 ~07:55 Dubai. Meta-agent and news-veto resume on next runs (no code change needed; the failures were 400 invalid_request_error from billing).
-- [ ] **War-room close-reason logging gap** (= Phase A1 in `WAR_ROOM_UPGRADE_PROPOSAL.md`). `scripts/audit-gate-reasons.mjs` shows 3829 / 3880 (98.7%) of `war_room_messages` close events have NO `data.reason`. Add `data.reason` to every `speak({ role: 'close', ... })` in `agents/war-room.ts`. High-risk file — LOCK + careful pass. Cheapest fix in the upgrade proposal.
-- [ ] **War-room upgrade — Phase A2** (structured stance JSON for all 10 debate agents) — kills the regex vote tally. See proposal §4.A2.
-- [ ] **War-room upgrade — Phase A3** (persist meeting decisions to `agent_knowledge`) — table exists, never written to. See proposal §4.A3.
-- [ ] **War-room upgrade — Phase B1** (judge-based selection over Master+Orchestrator synthesis) — addresses the literature's strongest finding (synthesis loses 0/42 in Maryanskyy 2026). See proposal §4.B1.
-- [ ] **War-room upgrade — Phase B2** (heterogeneous trading beliefs per meeting) — breaks the static-prompt belief-entrenchment failure mode. See proposal §4.B2.
-- [ ] **War-room upgrade — Phase C1** (mixed model tiers — Haiku for retrieval-style agents, sonnet-4 only for deep-reasoning). Saves 30-50% per meeting. See proposal §4.C1.
+- [x] ~~**War-room close-reason logging gap (Phase A1)**~~ — done 04/05. Every `speak({role:'close'})` and `say({role:'alert'})` path in `agents/war-room.ts` now sets `data.reason` (kebab-case). ~25 sites, no behaviour change. Audit script will start showing 0% logging gap on the next 24h of runs.
+- [x] ~~**War-room upgrade — Phase A2**~~ (structured stance JSON for all 10 debate agents) — done 04/05. `STRUCTURED_OUTPUT_FOOTER` is appended to each debate-agent prompt; `tallyVotes()` reads `m.data.stance` first, falls back to regex on parse failure. Vote count is now structured.
+- [x] ~~**War-room upgrade — Phase A3**~~ (persist meeting decisions to `agent_knowledge`) — done 04/05. `recordMeetingDecision()` is invoked from both EXECUTE and REJECT paths.
+- [x] ~~**War-room upgrade — Phase B1**~~ (judge-based selection over synthesis) — done 04/05. Master Agent prompt rewritten to JUDGE role: ranks 10 agents 1-10, picks top-3, returns JSON with consensus + groupthink_warning. Orchestrator now receives only the top-3 rich arguments, not all 11.
+- [x] ~~**War-room upgrade — Phase B2**~~ (heterogeneous trading beliefs per meeting) — done 04/05. `BELIEF_VARIANTS` map + `pickBelief()` deterministic from meetingId. Macro/Bull/Bear/Trend agents now rotate priors per meeting to break entrenchment.
+- [x] ~~**War-room upgrade — Phase C1**~~ (mixed model tiers) — done 04/05. `AGENT_TIER` map: correlation/scalper/trend/market-analyst/trade-reviewer → Haiku; rest → Sonnet. Expected ~30-40% input-token cost reduction.
+- [x] ~~**War-room upgrade — Phase C3**~~ (single-agent fallback) — done 04/05. When budget remaining < 30% OR 3+ losses in last 6h, runMeeting skips the 10-agent debate + master judge. Hard cap raised to <15% remaining; voteMargin gate bypassed in minimal mode (compensated by stricter conviction floor of 80).
+- [ ] **Watch checkpoint: 06/05 (48h after Phase A-C ship)**. Run `node scripts/audit-gate-reasons.mjs` and confirm `data.reason` appears on ≥95% of close events (was 1.3%). Run `node scripts/audit-10d.mjs 48` and confirm AI spend per meeting dropped via Phase C1 model tiers. If anything regressed materially, the previous tip is `7b56b1e` and Phase A-C can be reverted as a single squash without losing Phase D research.
+- [ ] **Phase D — operator decision needed.** `scripts/explore-microstructure.mjs` + `scripts/sweep-liquidity-sweep.mjs` + `scripts/walkforward-liquidity-sweep.mjs` show LIQUIDITY-SWEEP is the only +EV primitive (+0.131 R/trade out-of-sample on 60/40 split, lookback=40 SL=2.5 TP=4.0 confirm=YES). NOT yet wired into `war-room.ts`. Recommended next: backfill `price_history` to 12mo, run 5-fold walk-forward; if median OOS > +0.05 R/trade, wire as DEMO-ONLY trigger for 30d before considering live. See `WAR_ROOM_UPGRADE_PROPOSAL.md` §8.
+- [ ] **Phase D — combine sweep with CHOCH inversion**. CHOCH-flip is -0.341 R/trade (severe trap) — useful as inverted filter on sweep entries. Implement in `lib/microstructure.ts → computeMicrostructureScore()` already; needs a wiring decision.
 - [ ] **Telegram still imported in `app/api/cron/positions/route.ts` (lines 4, 256).** `TELEGRAM_BOT_TOKEN` not on Vercel prod → silent failures every position close. Operator decision pending: add the token, or remove the import.
 
 - [x] ~~Disable Binance Auto-Subscribe to Simple Earn~~ — confirmed (01/05 09:26 Dubai sweep test: Spot USDT = $500.0164 unchanged from 30/04 12:14 → toggle held overnight).
@@ -74,11 +78,67 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-LOCK: agents/war-room.ts + agents/agent-prompts.ts + lib/anthropic.ts — Computer A (day) — started 2026-05-04 08:10 Dubai — implementing Phase A+B+C of WAR_ROOM_UPGRADE_PROPOSAL.md
+_(none — cleared 2026-05-04 ~09:30 Dubai after Phase A+B+C ship + Phase D research)_
 
 ---
 
 ## SESSION LOG (newest on top)
+
+### 2026-05-04 · 09:30 Dubai · Computer A (day) — Phase A+B+C shipped, Phase D research depth pass
+**Commits:** `bf8bfff` (LOCK) → `7b56b1e` (Phase A1-A3 + B1-B2 + C1) → `bdf367f` (Phase C3) → _(this push)_ (Phase D research scaffold + docs)
+
+Operator request: "do everything, and then go further with research, dig deeper."
+
+Done in this session (single multi-commit push, all on `main`):
+
+**Implementation — Phase A (close-reason logging + structured stances + decision memory):**
+- A1: every `speak({role:'close'})` and `say({role:'alert'})` site in `agents/war-room.ts` now sets `data.reason` (~25 sites, kebab-case). Closes the 98.7% logging gap.
+- A2: `STRUCTURED_OUTPUT_FOOTER` is appended to each of the 10 debate-agent prompts (BULL/BEAR/NEUTRAL + conviction + key_arg + full_analysis). `tallyVotes()` reads structured stances first, regex fallback on parse failure. `agentSpeak()` parses JSON tolerantly.
+- A3: `recordMeetingDecision()` called from EXECUTE and REJECT paths. Writes to `agent_knowledge` with type=`observation`. Incidental fix: `getActivePrompt()` was ordering by `.version` (col never existed in the migration); switched to `.created_at`.
+
+**Implementation — Phase B (judge selection + heterogeneous beliefs):**
+- B1: Master Agent prompt rewritten — no longer synthesises, ranks 10 prior agents 1-10 on argument quality, picks top-3, returns JSON with `consensus_stance` + `groupthink_warning`. Orchestrator now receives only those top-3 `full_analysis` blocks instead of the full 11-voice digest. Graceful failure: judge JSON parse error → judge=null, orchestrator falls back to no top3 block.
+- B2: `BELIEF_VARIANTS` map + `pickBelief(meetingId, agentId)` injects per-meeting per-agent prior nudges (deterministic hash from meetingId, reproducible). Macro/Bull/Bear/Trend rotate. Counters DReaMAD belief-entrenchment.
+
+**Implementation — Phase C (cost / fallback):**
+- C1: `AGENT_TIER` map. correlation/scalper/trend/market-analyst/trade-reviewer → MODEL_FAST (Haiku 0.8/4.0 per Mtok). Rest → MODEL_SONNET (3.0/15.0). Per-call cost drops ~70% on the 5 affected agents; per-meeting input-token bill ~30-40% lower.
+- C3: `runMeeting(..., minimalMode)`. When `budgetLow OR lossStreakTrips`, skip the 10-agent debate AND the master judge. Keep signal-generator + risk-manager (load-bearing pair). Conviction floor raised to 80 (vs 70). voteMargin bypassed (we never collected 10 votes). Hard cap on tight budget bumped from <30% remaining to <15% remaining — between those, minimal mode runs instead of aborting.
+
+**Validation:**
+- `tsc --noEmit` clean across all phases.
+- `eslint agents/war-room.ts agents/agent-prompts.ts lib/microstructure.ts` clean.
+- `scripts/backtest-gate-stack.mjs` re-run: still **FAIL** (expected — backtest tests deterministic gates, not the agent layer). Best mode NEW (TP=3.0) at -0.096 R/trade. Edge gate correctly keeps live exec blocked.
+
+**Phase D — empirical microstructure research (the actual problem):**
+- New file `lib/microstructure.ts` — pure deterministic primitives: `detectFairValueGaps`, `findNearestUnfilledFVGs`, `detectOrderBlocks`, `computeVolumeProfile` (POC/VAH/VAL), `detectLiquiditySweep`, `detectStructure` (BOS/CHOCH), `computeMicrostructureScore` (composite). NOT wired into `war-room.ts`.
+- New `scripts/explore-microstructure.mjs` — single-trigger expectancy on 90d. Output: `scripts/backtest-runs/microstructure-90d.txt`.
+- New `scripts/sweep-liquidity-sweep.mjs` — full 72-combo grid on 180d. Output: `scripts/backtest-runs/liquidity-sweep-sweep-180d.txt`.
+- New `scripts/walkforward-liquidity-sweep.mjs` — 60/40 train/test out-of-sample validation. Output: `scripts/backtest-runs/liquidity-sweep-walkforward.txt`.
+
+**Phase D findings (verbatim from runs, not curve-fit hopes):**
+- Liquidity-Sweep is the **only +EV primitive**. 1122 trades / 90d / +0.101 R/trade.
+- Best in-sample params (180d): lookback=40, SL=2.5 ATR, TP=2.0 ATR, confirm=YES → +0.154 R/trade, 62.8% WR, n=659. AVAX/MATIC/NEAR all >+0.30, BTC/DOGE >+0.22.
+- Out-of-sample (60/40 split): the greedy-best train params overfit hard (+0.249 → -0.007 OOS). The robust set is lookback=40, SL=2.5, TP=4.0, confirm=YES → train +0.202, OOS +0.131 (35% degradation, retains edge).
+- CHOCH (Change of Character / structure flip) is -0.341 R/trade — actively a TRAP. Use as **inverted filter** to veto longs when CHOCH fires bearish.
+- FVG / Order Blocks both slightly -EV alone. Likely useful as filters, not as primary triggers.
+- Documented in full in `WAR_ROOM_UPGRADE_PROPOSAL.md` §8 (added this session).
+
+**What was NOT done (deliberately):**
+- Did not wire liquidity-sweep into `war-room.ts`. Single 60/40 split is not enough validation; need 12mo of `price_history` and ≥5 rolling walk-forward folds first. See OPEN WORK Phase D items.
+- Did not re-enable shorts despite the symmetric long/short edge on sweeps. Workspace rule prohibits short-trade re-enablement; that's an operator decision after a 30d demo-only test.
+- Did not apply Phase B3 (iterative debate) or C2 (per-agent performance scoring) — both higher-risk, both deserve their own LOCKed session.
+
+Headline OPEN WORK after this session:
+- 48h watch checkpoint on 06/05: confirm `data.reason` ≥95% coverage and AI cost drop.
+- Phase D operator decision: backfill price_history → 12mo → 5-fold walk-forward → if OOS median ≥+0.05 R/trade, wire as DEMO-ONLY trigger.
+
+LOCK cleared.
+
+Safety notes:
+- Did NOT touch `lib/safety.ts`, `lib/risk-controls.ts`, or `lib/exchanges/*` — all five blacklists (shorts, SOL/USD, BNB/USD, BB_SQUEEZE, ADA/DOT/APT live) intact.
+- Edge gate (`checkLiveTradingAllowed`) untouched — still blocking real execution as it should.
+
+---
 
 ### 2026-05-04 · 08:00 Dubai · Computer A (day) — research pass + nav simplification
 **Commits:** _(this push)_ — `feat(ui): simplify nav to 3 primary tabs + categorised MORE dropdown; docs: WAR_ROOM_UPGRADE_PROPOSAL`

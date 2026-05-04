@@ -1,0 +1,46 @@
+﻿=== GATE-REJECTION BREAKDOWN (96h) ===
+
+--- by role ---
+  close        3874
+  decision     6
+
+--- by reason (top 30) ---
+  (none)                        3829 (98.7%)
+  atr-extreme                     28 (0.7%)
+  mtf-veto                        23 (0.6%)
+
+--- top 20 (reason, instrument) pairs ---
+  (none) :: APT/USD                                  355
+  (none) :: BTC/USD                                  353
+  (none) :: LINK/USD                                 353
+  (none) :: AVAX/USD                                 353
+  (none) :: ETH/USD                                  352
+  (none) :: DOT/USD                                  351
+  (none) :: MATIC/USD                                349
+  (none) :: XAU/USD                                  349
+  (none) :: ADA/USD                                  344
+  (none) :: DOGE/USD                                 339
+  (none) :: NEAR/USD                                 331
+  mtf-veto :: NEAR/USD                               21
+  atr-extreme :: DOGE/USD                            13
+  atr-extreme :: ADA/USD                             8
+  atr-extreme :: MATIC/USD                           3
+  atr-extreme :: XAU/USD                             3
+  mtf-veto :: DOT/USD                                1
+  atr-extreme :: BTC/USD                             1
+  mtf-veto :: APT/USD                                1
+
+--- over-tightening watch (any single gate > 80% on one instrument) ---
+  FLAG: ETH/USD (none) 352/352 (100%)
+  FLAG: ADA/USD (none) 344/352 (98%)
+  FLAG: BTC/USD (none) 353/354 (100%)
+  FLAG: DOGE/USD (none) 339/352 (96%)
+  FLAG: MATIC/USD (none) 349/352 (99%)
+  FLAG: DOT/USD (none) 351/352 (100%)
+  FLAG: XAU/USD (none) 349/352 (99%)
+  FLAG: LINK/USD (none) 353/353 (100%)
+  FLAG: APT/USD (none) 355/356 (100%)
+  FLAG: AVAX/USD (none) 353/353 (100%)
+  FLAG: NEAR/USD (none) 331/352 (94%)
+
+=== DONE ===

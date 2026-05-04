@@ -41,6 +41,10 @@ Same git identity on both → commits look identical; differentiate via the
 
 Items still to finish. Tick `[x]` when done; delete after a week.
 
+- [ ] **URGENT — Anthropic credit balance is exhausted.** Meta-agent daily review has been failing 03/05 and 04/05 with `"Your credit balance is too low to access the Anthropic API"` (see `agent_logs.agent='meta-agent-cron' level='error'`). News-veto gate and war-room debate would also fail when invoked. Operator action: top up at https://console.anthropic.com/ → Plans & Billing.
+- [ ] **War-room close-reason logging gap.** `scripts/audit-gate-reasons.mjs` shows 3829 / 3880 (98.7%) of `war_room_messages` close events have NO `data.reason`. Only `atr-extreme` (28) and `mtf-veto` (23) fire explicit reasons. Pre-debate short-circuits (data quality, cooldown, balance gate, no triggers) write `role='close'` with empty data. Until reasons are persisted on every close path, the gate-stack 48h watch checkpoint cannot detect over-tightening. **Fix**: add `data.reason` (e.g. `'cooldown'`, `'no-triggers'`, `'balance'`, `'data-quality'`) to every `speak({ role: 'close', ... })` call in `agents/war-room.ts`. High-risk file — needs LOCK + careful pass.
+- [ ] **Telegram still imported in `app/api/cron/positions/route.ts` (lines 4, 256).** `TELEGRAM_BOT_TOKEN` not on Vercel prod → silent failures every position close. Operator decision pending: add the token, or remove the import.
+
 - [x] ~~Disable Binance Auto-Subscribe to Simple Earn~~ — confirmed (01/05 09:26 Dubai sweep test: Spot USDT = $500.0164 unchanged from 30/04 12:14 → toggle held overnight).
 - [x] ~~Move 1,100 USDT Funding → Spot~~ — operator chose 500 USDT manually via Binance UI. Funding USDT remaining: $600.
 - [x] ~~Decide whether to move the remaining $600 to Spot~~ — operator decision (01/05 09:42 Dubai): **HOLD as buffer**. No more capital deployed until edge gate (`checkLiveTradingAllowed`) auto-unblocks live exec.
@@ -70,6 +74,39 @@ _(none)_
 ---
 
 ## SESSION LOG (newest on top)
+
+### 2026-05-04 · 07:50 Dubai · Computer A (day) — system audit + cleanup pass
+**Commits:** _(this push)_ — `chore: freeze polymarket cron, schedule perf+analytics crons, ESLint v9 flat config, audit-10d checkpoint`
+
+Context:
+- Operator asked for full system analysis ("analixiraj sve, javi mi gdje su problemi").
+- Then: freeze Polymarket but keep code aside, leave Telegram aside (waiting for bot), do everything else.
+
+Done in this session:
+1. **Froze Polymarket cron** — removed `/api/cron/polymarket` from `vercel.json`. Code intact (`app/api/cron/polymarket/route.ts`, `agents/index.ts → runPolymarketScanner`, `lib/polymarket-trader.ts`, `app/api/polymarket/bets/route.ts`) so nothing is lost when/if revived. Stops daily 06:00 UTC dead-cron run + token burn.
+2. **Scheduled `/api/cron/performance` (18:30 UTC) and `/api/cron/analytics` (18:45 UTC)** in `vercel.json`. Tables they need (`performance_snapshots`, `trade_analytics`) were created by the 01/05 migration. Both crons are read-trades / write-snapshots only — no live exec, no exchange interaction. Equity-curve dashboard + Performance Coach Sunday hook now have real data.
+3. **Deleted `app/api/cron/run-all/route.ts`** — redundant orphan (just re-fetched market data already covered every 2min by `market-data-cron`).
+4. **ESLint v9 is now functional.** Added `eslint.config.mjs` (FlatCompat → `next/core-web-vitals`). `next lint` was dropped in Next 16, so `package.json` script changed to `eslint .`. Fixed 3 real errors surfaced (`<a href="/">` → `<Link>` in `investor/page.tsx` and `settings/page.tsx`). 6 warnings remain (hooks-deps, custom-font) — pre-existing, not blocking. Build clean (`tsc --noEmit` exit 0). Lint exit 0.
+5. **`user_settings.currency` default `'AED'` → `'USD'`** in `app/api/settings/route.ts`. New users only — existing user row in DB still has `'AED'` (cosmetic; all code paths treat as USD anyway).
+6. **Ran past-due gate-stack 48h watch checkpoint.**
+   - `node scripts/audit-10d.mjs 96` → saved to `scripts/backtest-runs/audit-10d-2026-05-04.txt`.
+   - **Encouraging finding**: 96h demo expectancy is POSITIVE — 5 trades, 3W/2L = 60% WR, +$321.03 P&L. 2 of 3 wins on BTC/ETH LONGs at TP, 2 SL losses on XAU. Counter to the 180d backtest baseline. Need 20+ trades for the edge gate to consider lifting.
+   - **Concerning findings**:
+     - `meta-agent-cron` failing 2/3 runs in window — Anthropic credit exhausted (see OPEN WORK URGENT).
+     - `signals-cron` 2 timeouts (war-room 280s) — likely the slow Claude path tied to credit/billing slowdown.
+     - 0 live trades (edge gate doing its job; positive 96h demo doesn't yet meet 20-trade minimum).
+   - New companion script: `scripts/audit-gate-reasons.mjs` — counts `war_room_messages.data.reason`. Revealed the close-reason logging gap (now in OPEN WORK).
+7. **Two new read-only audit scripts committed**: `scripts/audit-gate-reasons.mjs` (rejection breakdown), `scripts/peek-cron-errors.mjs` (per-agent error tail).
+
+Operator clarifications:
+- Polymarket "frozen, set aside" interpreted as: stop scheduling, keep code. If the operator wants to delete it later, the change is one cron-line and ~6 file deletes.
+- Telegram left untouched per operator. The two `lib/telegram.ts` calls in `positions/route.ts` continue to throw silently — accepted until token decision.
+
+Safety notes:
+- No edits to `agents/war-room.ts`, `lib/safety.ts`, `lib/risk-controls.ts`, `lib/exchanges/*`, `supabase/schema.sql`. All cron-config and dashboard cosmetics only.
+- No SHORT/SOL/BNB/BB_SQUEEZE re-enabled.
+- Edge gate (Hard Truth #39) still active — 0 live trades correctly continues.
+- Build (`tsc --noEmit`) clean. Lint (`eslint .`) 0 errors / 6 pre-existing warnings.
 
 ### 2026-05-01 · 09:55 Dubai · Computer A (day) — operator-driven cleanup pass
 **Commits:** _(this push)_ — `chore: schema migration + cron heartbeats + 2026-05-01 backtest baseline + on-chain decision`

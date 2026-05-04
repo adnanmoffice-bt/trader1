@@ -1,6 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { useTheme } from '@/lib/theme'
 
 function cn(...c: (string | false | undefined | null)[]) { return c.filter(Boolean).join(' ') }
@@ -75,8 +76,8 @@ export default function InvestorPage() {
         <div className="flex items-center gap-4">
           <span className="text-lg font-black text-[var(--text-primary)]">APEX</span>
           <span className="flex items-center gap-1.5 text-[9px] font-bold text-[var(--green)] tracking-[0.15em] px-2 py-1 rounded border" style={{ borderColor: 'var(--green)', background: 'var(--green)', color: 'white' }}>LIVE</span>
-          <a href="/" className="text-[10px] text-[var(--text-muted)] hover:text-[var(--blue)]">Terminal</a>
-          <a href="/settings" className="text-[10px] text-[var(--text-muted)] hover:text-[var(--blue)]">Settings</a>
+          <Link href="/" className="text-[10px] text-[var(--text-muted)] hover:text-[var(--blue)]">Terminal</Link>
+          <Link href="/settings" className="text-[10px] text-[var(--text-muted)] hover:text-[var(--blue)]">Settings</Link>
         </div>
         <div className="flex items-center gap-5 text-[11px]">
           <span className="mono font-bold text-[var(--blue)]">{clock}</span>

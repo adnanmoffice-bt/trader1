@@ -34,7 +34,7 @@ export async function GET() {
         min_risk_reward: 1.5,
         max_sl_pct: 6,
         initial_capital: 5000,
-        currency: 'AED',
+        currency: 'USD',
         notifications_enabled: true,
         auto_trade_enabled: false,
       },

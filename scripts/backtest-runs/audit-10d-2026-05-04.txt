@@ -1,0 +1,57 @@
+﻿=== APEX 10-DAY AUDIT (96h, since 30/04/2026, 07:49:41 Dubai) ===
+
+ΓöüΓöüΓöü COUNTS ΓöüΓöüΓöü
+  signals                window=     0   total=337
+  trades                 window=     0   total=0
+  demo_trades            window=     5   total=136
+  positions              window=     0   total=0
+  agent_logs             window=  8624   total=25294
+  war_room_messages      window=  4003   total=26270
+  price_history          window=  3461   total=22314
+
+ΓöüΓöüΓöü DEMO TRADES (window) ΓöüΓöüΓöü
+  total opened: 5  closed: 5  open: 0
+  PnL: $321.03   W=3  L=2  WR=60.0%
+  exit reasons: {"take_profit":3,"stop_loss":2}
+  by instrument: {"BTC/USD":2,"ETH/USD":1,"XAU/USD":2}
+
+  --- all trades ---
+    01/05/2026, 20:45:34  BTC/USD long  entry=78255  exit=80315.19  pnl=$152.69  reason=take_profit  conf=79
+    01/05/2026, 20:15:35  ETH/USD long  entry=2305.08  exit=2369.16  pnl=$152.69  reason=take_profit  conf=79
+    01/05/2026, 18:15:35  XAU/USD long  entry=4647.13  exit=4613.49  pnl=$-68.90  reason=stop_loss  conf=75
+    30/04/2026, 20:00:18  BTC/USD long  entry=76462.19  exit=78286.625  pnl=$152.17  reason=take_profit  conf=75
+    30/04/2026, 12:15:11  XAU/USD long  entry=4611.41  exit=4573.97  pnl=$-67.63  reason=stop_loss  conf=75
+
+ΓöüΓöüΓöü LIVE TRADES (window) ΓöüΓöüΓöü
+  count: 0
+
+ΓöüΓöüΓöü WAR-ROOM FUNNEL ΓöüΓöüΓöü
+  meetings: 3926  reachedSpeak: 5  reachedDecision: 6  reachedOpen: 6
+  conversion: speak 0.1%  decision 0.2%  open 0.2%
+
+ΓöüΓöüΓöü CRON HEARTBEATS ΓöüΓöüΓöü
+  market-data-cron             n= 5762  last=1min ago  levels={"ok":2881,"info":2881}
+  positions-cron               n= 2094  last=1min ago  levels={"ok":2094}
+  signals-cron                 n=  279  last=3min ago  levels={"ok":277,"error":2}
+  demo-cron                    n=  279  last=4min ago  levels={"ok":279}
+  status-report-cron           n=   90  last=109min ago  levels={"ok":45,"info":45}
+  budget-tracker               n=   62  last=2146min ago  levels={"info":62}
+  polymarket-scanner           n=   41  last=1309min ago  levels={"ok":18,"error":4,"info":19}
+  orchestrator                 n=    6  last=1773min ago  levels={"info":6}
+  morning-briefing-cron        n=    3  last=104min ago  levels={"ok":3}
+  meta-agent-cron              n=    3  last=109min ago  levels={"error":2,"ok":1}
+  daily-report-cron            n=    3  last=589min ago  levels={"ok":3}
+  weekly-report-cron           n=    1  last=579min ago  levels={"ok":1}
+  master-agent                 n=    1  last=4834min ago  levels={"warn":1}
+
+ΓöüΓöüΓöü AI SPEND PER DAY ΓöüΓöüΓöü
+  2026-04-30  $1.2995
+  2026-05-01  $0.7251
+  2026-05-02  $1.1557
+  TOTAL: $3.1803
+
+ΓöüΓöüΓöü STATE ΓöüΓöüΓöü
+  user_settings: mode=live auto=true dailyLoss=5% maxDD=15% risk=2% maxPos=3 curr=AED initCap=5000
+  portfolio: capital=4829.67 avail=4829.67 realPnL=-170.33 W/L=10/24 peak=5000 demo=false updated=04/05/2026, 07:45:36
+
+=== AUDIT COMPLETE ===

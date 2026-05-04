@@ -2,6 +2,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useTheme } from '@/lib/theme'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 
 function cn(...c: (string | false | undefined | null)[]) { return c.filter(Boolean).join(' ') }
 
@@ -375,7 +376,7 @@ export default function SettingsPage() {
     <div className="min-h-screen" style={{ background: 'var(--bg-primary)' }}>
       <header className="flex items-center justify-between px-6 h-12 border-b border-[var(--border)]" style={{ background: 'var(--bg-panel)' }}>
         <div className="flex items-center gap-4">
-          <a href="/" className="text-lg font-black" style={{ color: 'var(--amber)' }}>APEX</a>
+          <Link href="/" className="text-lg font-black" style={{ color: 'var(--amber)' }}>APEX</Link>
           <span className="text-[11px] font-bold text-[var(--text-muted)] tracking-wider">SETTINGS</span>
         </div>
         <div className="flex items-center gap-3">
@@ -384,7 +385,7 @@ export default function SettingsPage() {
               saveMsg === 'Saved!' ? 'text-[var(--green)] bg-[rgba(0,255,163,0.1)]' : 'text-[var(--red)] bg-[rgba(255,51,102,0.1)]'
             )}>{saveMsg}</span>
           )}
-          <a href="/" className="text-[11px] font-bold px-3 py-1 rounded" style={{ color: 'var(--cyan)', border: '1px solid var(--cyan)' }}>TERMINAL</a>
+          <Link href="/" className="text-[11px] font-bold px-3 py-1 rounded" style={{ color: 'var(--cyan)', border: '1px solid var(--cyan)' }}>TERMINAL</Link>
         </div>
       </header>
 

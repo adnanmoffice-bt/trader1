@@ -208,6 +208,51 @@ export async function deactivateKillSwitch(): Promise<void> {
 const EDGE_THRESHOLD_R = -0.05         // 30-day rolling R-expectancy floor
 const MIN_TRADES_FOR_GATE = 20         // need at least 20 closed trades to evaluate
 
+// ─────────────────────────────────────────────────────────────────────────────
+// REDUCED-RISK OVERRIDE — Option 2a, added 2026-05-06
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Operator decision: under investor pressure to show real fills, we accept
+// trading without a proven edge SO LONG AS per-trade risk stays tiny. The
+// reasoning: even at 50% win rate worst case, $1.50 per loss on a $500
+// account = ~$45/month max bleed. This is materially different from the
+// 6mo backtest which used 1.5% risk → up to $7.50/loss.
+//
+// When user_settings.risk_per_trade_pct ≤ REDUCED_RISK_CEILING_PCT (0.5%):
+//   - LIVE_INSTRUMENT_BLACKLIST still applies (ADA/DOT/APT/XAG stay blocked)
+//   - 30d rolling expectancy gate is BYPASSED
+//   - Sample-size requirement is BYPASSED (no min trade count)
+// At any risk_per_trade_pct > REDUCED_RISK_CEILING_PCT the normal edge gate
+// re-engages — you cannot accidentally go live at full size on an unproven
+// system by tweaking one DB field.
+//
+// IMPORTANT — units: user_settings.risk_per_trade_pct is stored as PERCENT
+// (e.g. 2 means 2%, 0.30 means 0.3%) per supabase/schema.sql. The default
+// row from app/api/settings/route.ts is 2. We compare directly in percent
+// space to keep the schema honest.
+//
+// To revert this override entirely: set REDUCED_RISK_CEILING_PCT = 0 here.
+// Operator can also kill it from the database side by raising
+// risk_per_trade_pct above 0.5.
+const REDUCED_RISK_CEILING_PCT = 0.5   // 0.5% — strict per-trade ceiling for bypass
+
+async function getConfiguredRiskPct(): Promise<number | null> {
+  try {
+    const db = createServiceSupabase()
+    const { data } = await db
+      .from('user_settings')
+      .select('risk_per_trade_pct')
+      .limit(1)
+      .single()
+    const v = data?.risk_per_trade_pct
+    if (v === undefined || v === null) return null
+    const n = Number(v)
+    return Number.isFinite(n) ? n : null
+  } catch {
+    return null
+  }
+}
+
 /**
  * Per-instrument LIVE-only blacklist. Keep these instruments in the war-room
  * meeting loop (demo continues) but never let them risk real money.
@@ -222,6 +267,12 @@ const MIN_TRADES_FOR_GATE = 20         // need at least 20 closed trades to eval
  */
 export const LIVE_INSTRUMENT_BLACKLIST = new Set<string>([
   'ADA/USD', 'DOT/USD', 'APT/USD',
+  // 2026-05-06 — XAG/USD demo-only.
+  // IG epic CS.D.CFDSILVER.BMU.IP returns mid 7727 vs Yahoo SI=F real ~$30.
+  // The scale factor is unverified, so a live order risks 250× sizing error.
+  // Demo trades populate price_history; lift this entry only after confirming
+  // IG fill price aligns with Yahoo on at least 5 demo round-trips.
+  'XAG/USD',
   // 2026-05-06 — XAU/USD REMOVED from blacklist.
   //
   // Original 2026-05-04 entry blocked XAU because the PAXGUSDT venue ate
@@ -273,11 +324,26 @@ export interface LiveTradingGate {
  *   3. Mean R-expectancy >= EDGE_THRESHOLD_R
  */
 export async function checkLiveTradingAllowed(instrument?: string): Promise<LiveTradingGate> {
-  // Layer 1: per-instrument blacklist
+  // Layer 1: per-instrument blacklist (always enforced — pre-empts every override)
   if (instrument && LIVE_INSTRUMENT_BLACKLIST.has(instrument)) {
     return {
       allowed: false,
-      reason: `${instrument} is on LIVE_INSTRUMENT_BLACKLIST (negative 6mo expectancy). Demo allowed; live blocked.`,
+      reason: `${instrument} is on LIVE_INSTRUMENT_BLACKLIST (negative 6mo expectancy or unverified pricing). Demo allowed; live blocked.`,
+      expectancyR: null,
+      tradeCount: 0,
+      instrument: instrument ?? null,
+    }
+  }
+
+  // Layer 1.5: reduced-risk override (Option 2a, 2026-05-06)
+  // If operator has dialled risk_per_trade_pct down to ≤0.5%, allow live
+  // exec without the rolling-expectancy proof. See REDUCED_RISK_CEILING_PCT
+  // comment block above for rationale. Units are percent (DB schema).
+  const riskPct = await getConfiguredRiskPct()
+  if (riskPct !== null && riskPct > 0 && riskPct <= REDUCED_RISK_CEILING_PCT) {
+    return {
+      allowed: true,
+      reason: `reduced-risk override active (risk_per_trade_pct=${riskPct.toFixed(3)}% ≤ ${REDUCED_RISK_CEILING_PCT}% ceiling) — edge gate bypassed${instrument ? ` for ${instrument}` : ''}`,
       expectancyR: null,
       tradeCount: 0,
       instrument: instrument ?? null,

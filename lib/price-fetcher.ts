@@ -313,6 +313,25 @@ export async function fetchPolymarketPrice(tokenId: string): Promise<number> {
 
 // ─── Commodity Prices (via Yahoo Finance proxy) ─────────────────────────────
 
+export async function fetchYahooTicker(symbol: string): Promise<MarketData | null> {
+  const yahooSym = YAHOO_SYMBOLS[symbol]
+  if (!yahooSym) return null
+  return fetchYahooPrice(symbol, yahooSym)
+}
+
+/**
+ * Universal ticker fetcher: Binance first, Yahoo fallback for
+ * commodities/forex/indices that aren't on Binance.
+ *
+ * Used by demo-cron + war-room when opening positions on non-crypto
+ * instruments (XAU, WTI, BRENT, EUR/USD, GBP/USD, USD/JPY, SPY, QQQ, XAG).
+ */
+export async function fetchTicker(symbol: string): Promise<MarketData | null> {
+  const b = await fetchBinanceTicker(symbol)
+  if (b) return b
+  return fetchYahooTicker(symbol)
+}
+
 async function fetchYahooPrice(symbol: string, yahooSym: string): Promise<MarketData | null> {
   try {
     const res = await fetch(

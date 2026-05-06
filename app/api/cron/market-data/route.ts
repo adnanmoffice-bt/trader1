@@ -68,7 +68,8 @@ export async function GET(req: NextRequest) {
     'ADA/USD', 'DOT/USD', 'MATIC/USD', 'NEAR/USD', 'APT/USD',
     'XAU/USD',
     'BRENT', 'WTI', 'SPY', 'QQQ',
-    'EUR/USD', 'USD/JPY',
+    'EUR/USD', 'GBP/USD', 'USD/JPY',
+    'XAG/USD',
   ] as const
   try {
     await Promise.allSettled(

@@ -57,11 +57,22 @@ import { EXCHANGE_CONFIGS } from './types'
 // Note: symbol keys match `Instrument` type in `types/index.ts`. Crypto is
 // FOO/USD style; oil is bare 'BRENT'/'WTI' (no /USD suffix) because the
 // Yahoo Finance fallback path uses those keys throughout the codebase.
+//
+// Forex / indices / silver added 2026-05-06 (Option 2a — reduced-risk
+// live trading). Epics discovered via scripts/ig-discover-epics.mjs against
+// account APSTU. XAG/USD is gated by LIVE_INSTRUMENT_BLACKLIST (lib/safety.ts)
+// because IG's "Spot Silver ($1)" returned 7727 vs Yahoo SI=F real ~$30 —
+// scaling mismatch must be verified on demo before live exec is allowed.
 const SYMBOL_MAP: Record<string, string> = {
-  'XAU/USD': 'CS.D.CFDGOLD.BMU.IP', // Spot Gold ($1 contract) — verified $4719
-  'XAG/USD': 'CS.D.CFDSILVER.BMU.IP', // Spot Silver (untested but follows BMU pattern)
-  'WTI':     'CC.D.CL.BMU.IP', // US Crude Oil — verified $88.42
-  'BRENT':   'CC.D.LCO.BMU.IP', // Brent Crude — verified $97.26
+  'XAU/USD': 'CS.D.CFDGOLD.BMU.IP',    // Spot Gold ($1 contract) — verified
+  'XAG/USD': 'CS.D.CFDSILVER.BMU.IP',  // Spot Silver ($1) — scaling unverified, demo-only
+  'WTI':     'CC.D.CL.BMU.IP',         // US Crude Oil — verified
+  'BRENT':   'CC.D.LCO.BMU.IP',        // Brent Crude — verified
+  'EUR/USD': 'CS.D.EURUSD.MINI.IP',    // EUR/USD Mini — verified 1.1774
+  'GBP/USD': 'CS.D.GBPUSD.MINI.IP',    // GBP/USD Mini — verified 1.3626
+  'USD/JPY': 'CS.D.USDJPY.MINI.IP',    // USD/JPY Mini — verified 156.09
+  'SPY':     'IX.D.SPTRD.FBMU1.IP',    // US 500 futures ($1, JUN-26) — verified 7350
+  'QQQ':     'IX.D.NASDAQ.FBMU1.IP',   // US Tech 100 futures ($1, JUN-26) — verified 28552
 }
 
 // IG kline resolutions — only a fixed set is supported.

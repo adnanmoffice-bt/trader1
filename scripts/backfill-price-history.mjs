@@ -63,9 +63,17 @@ const SYMBOLS = {
 // 2026-05-06: oil candles via Yahoo Finance (Binance has no oil pair).
 // Used when war-room rotation includes 'WTI'/'BRENT'. Yahoo gives free 1H
 // candles back ~2 years per request. Same upsert path as Binance candles.
+// Forex / indices / silver added 2026-05-06 (Option 2a — IG live rotation
+// via lib/exchanges/ig.ts SYMBOL_MAP). XAG/USD demo-only via blacklist.
 const YAHOO_SYMBOLS = {
-  'WTI':   'CL=F', // NYMEX WTI Crude Oil front month
-  'BRENT': 'BZ=F', // ICE Brent Crude front month
+  'WTI':     'CL=F',     // NYMEX WTI Crude Oil front month
+  'BRENT':   'BZ=F',     // ICE Brent Crude front month
+  'XAG/USD': 'SI=F',     // COMEX Silver
+  'EUR/USD': 'EURUSD=X', // EURUSD spot
+  'GBP/USD': 'GBPUSD=X', // GBPUSD spot
+  'USD/JPY': 'JPY=X',    // USDJPY spot
+  'SPY':     'SPY',      // SPDR S&P 500 ETF
+  'QQQ':     'QQQ',      // Invesco QQQ ETF
 }
 
 const DAYS = parseInt(process.argv[2] ?? '365', 10)

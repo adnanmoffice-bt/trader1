@@ -46,7 +46,11 @@ export function createExchange(id: ExchangeId, creds?: ExchangeCredentials): IEx
  * and the caller's `isConfigured()` check + war-room logExec will surface the
  * misconfiguration cleanly.
  */
-const IG_INSTRUMENTS = new Set(['XAU/USD', 'XAG/USD', 'WTI', 'BRENT'])
+const IG_INSTRUMENTS = new Set([
+  'XAU/USD', 'XAG/USD', 'WTI', 'BRENT',
+  'EUR/USD', 'GBP/USD', 'USD/JPY',
+  'SPY', 'QQQ',
+])
 
 export function getExchangeForInstrument(instrument: string): IExchange {
   if (IG_INSTRUMENTS.has(instrument)) {

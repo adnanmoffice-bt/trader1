@@ -39,6 +39,17 @@ const ALL_INSTRUMENTS: Instrument[] = [
   // immediately; live exec stays gated by 30d edge gate (lib/safety.ts) until
   // ≥20 demo trades with mean R/trade ≥ -0.05.
   'WTI', 'BRENT',
+  // 2026-05-06: forex + indices + silver added (Option 2a — reduced-risk live).
+  // Execution venue: IG via getExchangeForInstrument(). Candle source: Yahoo
+  // (EURUSD=X, GBPUSD=X, JPY=X, SPY, QQQ, SI=F) via lib/price-fetcher.ts.
+  // Live exec is gated by:
+  //   - LIVE_INSTRUMENT_BLACKLIST (XAG stays demo-only — IG silver scaling
+  //     unverified)
+  //   - REDUCED_RISK_CEILING in lib/safety.ts (live allowed at ≤0.5% risk
+  //     without the 30d expectancy gate; otherwise the gate engages)
+  'EUR/USD', 'GBP/USD', 'USD/JPY',
+  'SPY', 'QQQ',
+  'XAG/USD',
   // BLACKLISTED: 'SOL/USD' (0W/16L = -$1,344), 'BNB/USD' (0W/12L = -$1,284)
 ]
 
@@ -990,6 +1001,34 @@ async function runMeeting(
         sizing.notionalUsd = sizing.units * entry
         sizing.riskPct = recovery.maxRiskPct
       }
+    }
+
+    // Reduced-risk override (Option 2a, 2026-05-06): if operator dropped
+    // user_settings.risk_per_trade_pct ≤ 0.5%, the lib/safety.ts edge-gate
+    // bypass kicks in. To keep that bypass HONEST we must also clamp actual
+    // sizing to the same ceiling — otherwise riskBasedPositionSize() can
+    // still issue 1.5–2% trades and the "tiny per-trade risk" rationale
+    // collapses. Read the configured pct (stored as percent in DB; convert
+    // to fraction here) and squeeze sizing if it's lower than what the
+    // dynamic sizer produced.
+    try {
+      const { data: us } = await db.from('user_settings').select('risk_per_trade_pct').limit(1).single()
+      const cfgPct = us?.risk_per_trade_pct == null ? null : Number(us.risk_per_trade_pct)
+      if (cfgPct !== null && Number.isFinite(cfgPct) && cfgPct > 0) {
+        const cfgFraction = cfgPct / 100  // DB stores percent, code uses fraction
+        if (sizing.riskPct > cfgFraction) {
+          const cappedRisk = capitalUsd * cfgFraction
+          const riskPerUnit = Math.abs(entry - sl)
+          if (riskPerUnit > 0) {
+            sizing.units = Math.min(sizing.units, cappedRisk / riskPerUnit)
+            sizing.notionalUsd = sizing.units * entry
+            sizing.riskPct = cfgFraction
+          }
+        }
+      }
+    } catch {
+      // fail-open on settings lookup (existing recovery-cap above is the
+      // last line of defence)
     }
 
     const reasoning = `War Room 12-agent consensus (${voteFor}/${voteAgainst}) ${trigger} | BT:${bt.wins}W/${bt.losses}L Kelly:${(stats.kellyFraction * 100).toFixed(1)}% | FC:${forecast.combinedLabel}(${forecast.combinedSignal}) MC:${(forecast.upProbability4h * 100).toFixed(0)}%up`

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceSupabase } from '@/lib/supabase'
-import { fetchBinanceTicker } from '@/lib/price-fetcher'
+import { fetchTicker } from '@/lib/price-fetcher'
 import { computeIndicators, technicalScore, detectEMACross } from '@/lib/indicators'
 import type { OHLCV } from '@/types'
 
@@ -23,7 +23,16 @@ export const maxDuration = 60
 // the per-instrument 30d edge gate sample on the new venue; live exec
 // remains blocked on each one independently until that instrument's
 // 30d sample reaches ≥20 trades with mean R/trade ≥ -0.05.
-const DEMO_INSTRUMENTS = ['BTC/USD', 'ETH/USD', 'XAU/USD', 'WTI', 'BRENT'] as const
+// 2026-05-06: forex (EUR/USD, GBP/USD, USD/JPY), indices (SPY, QQQ), and
+// silver (XAG/USD) added (Option 2a). XAG stays demo-only via blacklist
+// in lib/safety.ts until IG silver scaling is verified against Yahoo SI=F.
+const DEMO_INSTRUMENTS = [
+  'BTC/USD', 'ETH/USD',
+  'XAU/USD', 'WTI', 'BRENT',
+  'EUR/USD', 'GBP/USD', 'USD/JPY',
+  'SPY', 'QQQ',
+  'XAG/USD',
+] as const
 // All values in USD — no currency conversion needed
 const RISK_PER_TRADE = 0.015  // 1.5% (was 3% — too aggressive)
 const MIN_SCORE = 78           // raised from 70 after audit 2026-04-21 — 3/3 losses were at score=83
@@ -97,8 +106,9 @@ export async function GET(req: NextRequest) {
     const sym = trade.instrument as string
     let price: number | null = null
 
-    // Try Binance ticker first
-    const ticker = await fetchBinanceTicker(sym)
+    // Universal ticker: Binance for crypto, Yahoo fallback for forex / indices
+    // / commodities (XAU, WTI, BRENT, EUR/USD, GBP/USD, USD/JPY, SPY, QQQ, XAG).
+    const ticker = await fetchTicker(sym)
     if (ticker) {
       price = ticker.price
     } else {
@@ -210,7 +220,8 @@ export async function GET(req: NextRequest) {
       continue
     }
 
-    const ticker = await fetchBinanceTicker(sym)
+    // Same universal fetcher as the exit loop: Binance → Yahoo fallback.
+    const ticker = await fetchTicker(sym)
     if (!ticker) continue
     const price = ticker.price
 

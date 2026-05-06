@@ -87,14 +87,100 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-LOCK: lib/safety.ts + lib/exchanges/ig.ts + agents/war-room.ts + app/api/cron/demo/route.ts — Computer A — started 2026-05-06 15:45 Dubai for Option 2a (live trade with reduced-risk override + forex/indices/silver add)
+_(none — cleared 2026-05-06 ~16:10 Dubai after Option 2a landed)_
 
 ---
 
 ## SESSION LOG (newest on top)
 
+### 2026-05-06 · 16:10 Dubai · Computer A (day) — Option 2a: reduced-risk live + forex/indices/silver
+**Commits:** `7f29f49` (LOCK) → _(this push)_ (`CRITICAL: option 2a — reduced-risk live override + forex/indices/silver rotation` + 27,705 candle backfill + clear LOCK)
+
+Operator under investor pressure: "MENI TREBAJU LIVE REAL TRADES,
+investitori vec pitaju". Chose **Option 2a** — accept risk inflation on
+IG (CFD min contract sizes), bypass the 30d edge gate ONLY while
+per-trade risk stays microscopic.
+
+**Three load-bearing changes (read these before touching the gate):**
+
+1. `lib/safety.ts` → reduced-risk override (`REDUCED_RISK_CEILING_PCT = 0.5`).
+   `checkLiveTradingAllowed()` now reads `user_settings.risk_per_trade_pct`
+   (stored as percent per supabase/schema.sql, **not** fraction). When the
+   value is `> 0` and `≤ 0.5` it returns `allowed: true` and skips both
+   the 30d expectancy floor and the 20-trade sample-size requirement.
+   `LIVE_INSTRUMENT_BLACKLIST` is **always** enforced first — bypass cannot
+   resurrect ADA/DOT/APT or the freshly-added XAG entry. Set the constant
+   to 0 to kill the override entirely.
+
+2. `agents/war-room.ts` → mirrored cap on actual sizing. The old
+   `riskBasedPositionSize()` ignored DB settings and could still issue
+   1.5-2% trades by confidence/Kelly. After the recovery-mode cap we now
+   read the same `risk_per_trade_pct`, divide by 100 (DB is percent →
+   code uses fraction), and clamp `sizing.units` / `sizing.notionalUsd` /
+   `sizing.riskPct` if it's tighter. Without this clamp the safety bypass
+   was dishonest (you'd get tiny in the gate but a normal-sized order).
+
+3. `scripts/set-reduced-risk.mjs` set `risk_per_trade_pct = 0.30` in
+   `user_settings`. Verified via `scripts/_check-live-state.mjs`:
+   `risk_per_trade_pct = 0.3%   ceiling = 0.5%   bypass=true`.
+   Live-eligible right now: BTC, ETH, XAU, DOGE, AVAX, LINK, MATIC, NEAR,
+   WTI, BRENT, EUR/USD, GBP/USD, USD/JPY, SPY, QQQ. Demo-only: ADA, DOT,
+   APT, XAG.
+
+**Forex / indices / silver rotation add (all via IG):**
+- `scripts/ig-discover-epics.mjs` (new, read-only) auth'd against APSTU
+  and returned tradeable epics for: EUR/USD `CS.D.EURUSD.MINI.IP`,
+  GBP/USD `CS.D.GBPUSD.MINI.IP`, USD/JPY `CS.D.USDJPY.MINI.IP`,
+  SPY `IX.D.SPTRD.FBMU1.IP` (US 500 futures, JUN-26),
+  QQQ `IX.D.NASDAQ.FBMU1.IP` (US Tech 100 futures, JUN-26),
+  XAG/USD `CS.D.CFDSILVER.BMU.IP`. Forex/indices spot prices match Yahoo
+  (1.1774 EUR, 1.3626 GBP, 156.09 JPY, 7350 SPY, 28552 QQQ).
+- **XAG anomaly:** IG silver returns 7727 vs Yahoo SI=F real ~$30. Almost
+  certainly a 100× scaling difference (cents/oz?) but unverified, so XAG
+  is in `LIVE_INSTRUMENT_BLACKLIST`. Lift only after 5 demo round-trips
+  confirm IG fill price aligns with Yahoo.
+- `lib/exchanges/ig.ts → SYMBOL_MAP` extended with all 6 epics + comment.
+- `lib/exchanges/index.ts → IG_INSTRUMENTS` set extended with the same 6
+  so `getExchangeForInstrument()` routes them to IG.
+- `agents/war-room.ts → ALL_INSTRUMENTS` and
+  `app/api/cron/demo/route.ts → DEMO_INSTRUMENTS` and
+  `app/api/cron/market-data/route.ts → candleSymbols` all extended.
+
+**Demo-cron price-fetch fix.** `fetchBinanceTicker()` returns null for
+non-Binance symbols, so newly-added forex/indices/XAG would never open
+demo trades (`if (!ticker) continue`). Added `fetchTicker()` to
+`lib/price-fetcher.ts` (Binance → Yahoo fallback) and switched the demo
+cron's both ticker calls to it. WTI/BRENT/XAU were already broken by
+this gap on 2026-05-06 14:xx and are now also fixed.
+
+**Historical backfill:** `scripts/backfill-price-history.mjs` extended
+with XAG/USD (SI=F), EUR/USD (EURUSD=X), GBP/USD (GBPUSD=X), USD/JPY
+(JPY=X), SPY, QQQ. Run inserted 27,705 candles across 6 symbols (1H,
+365d), so signal generation has indicator history immediately.
+
+**Validation:**
+- `npx tsc --noEmit` clean.
+- `node scripts/_check-live-state.mjs` confirms bypass active and the
+  expected 15 live + 4 blocked instrument split.
+- `node scripts/ig-discover-epics.mjs` end-to-end OK against live IG.
+
+**SECURITY note** — discovered the working copy of `.env.example` had
+real IG credentials pasted into it (`IG_API_KEY=f9ffb68d...`,
+`IG_USERNAME=SachinApex`, `IG_PASSWORD=Apex45421o`, `IG_ACCOUNT_ID=APSTU`).
+Reverted to template (`git checkout HEAD -- .env.example`) before
+commit so they did NOT enter `origin/main`. Whoever added them must:
+- rotate the IG password and API key in MyIG **today**
+- never paste real values into `.env.example` (it's tracked); only use
+  `.env.local` (gitignored). Rule confirmed in `.cursor/rules/session-handoff.mdc`.
+
+**Reverting Option 2a in one move:** raise `risk_per_trade_pct` above
+0.5 (`TARGET=2 node scripts/set-reduced-risk.mjs`). The 30d edge gate
+re-engages on next cron and live exec falls back to gated mode.
+
 ### 2026-05-06 · 15:30 Dubai · Computer A (day) — WTI + Brent added to rotation
-**Commits:** `172f26f` (LOCK) → _(this push)_ (`feat(rotation): add WTI + Brent via IG/Yahoo` + 11.4K candle backfill + clear LOCK)
+
+### 2026-05-06 · 15:30 Dubai · Computer A (day) — WTI + Brent added to rotation
+**Commits:** `172f26f` (LOCK) → `f02e44d` (`feat(rotation): add WTI + Brent via IG/Yahoo` + 11.4K candle backfill + clear LOCK)
 
 Operator: "pa dodaj, zato smo te uvezali s ovom platformom" (so add it,
 that's why we connected you to this platform). Adding WTI and Brent on

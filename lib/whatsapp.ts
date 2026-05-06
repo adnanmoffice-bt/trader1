@@ -1,11 +1,15 @@
 import { createServiceSupabase } from '@/lib/supabase'
 import type { Signal, DemoSession } from '@/types'
 
-// All values in USD
-const TEAM = ['Sachin', 'Adnan', 'Mohammad']
-// Random greeting was previously used in event-driven alerts; removed 2026-04-30
-// to keep operational messages dense. TEAM is still used by daily/weekly/morning
-// reports where a friendlier tone is appropriate.
+// All values in USD.
+//
+// 2026-05-06 — message style simplified for investor readability. Drop:
+//   • decorative "━━━━━━━" dividers
+//   • emoji clusters (one functional icon per headline at most)
+//   • TEAM greetings ("gentlemen", "let's go", "we adapt")
+//   • motivational tail lines ("rough day, trust the process", etc.)
+// Keep: facts. Instrument, direction, prices, P&L, time. Same data,
+// shorter messages.
 
 interface WhatsAppConfig {
   apiUrl: string
@@ -226,7 +230,6 @@ function dubaiTime(): string {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export async function notifySignal(signal: Signal, userId?: string) {
-  const icon = signal.direction === 'long' ? '🟢' : signal.direction === 'short' ? '🔴' : '🟡'
   const dir = signal.direction.toUpperCase()
   const rr = signal.risk_reward ? `R:R ${Number(signal.risk_reward).toFixed(2)}x` : ''
   const slDist = signal.entry_price && signal.stop_loss
@@ -237,18 +240,14 @@ export async function notifySignal(signal: Signal, userId?: string) {
     : null
 
   const lines = [
-    `${icon} *SIGNAL — ${dir} ${signal.instrument}*`,
-    '━━━━━━━━━━━━━━━━━━',
-    `📍 Entry:  $${f(signal.entry_price ?? 0)}`,
-    `🛑 SL:     $${f(signal.stop_loss ?? 0)}${slDist != null ? `  (-${slDist.toFixed(2)}%)` : ''}`,
-    `🎯 TP1:    $${f(signal.take_profit_1 ?? 0)}${tpDist != null ? `  (+${tpDist.toFixed(2)}%)` : ''}`,
-    `🎯 TP2:    $${f(signal.take_profit_2 ?? 0)}`,
-    `📊 Conf:   ${signal.confidence}%   ${rr}`,
-    '',
-    `🧠 ${(signal.reasoning ?? '').slice(0, 200)}`,
+    `*Signal — ${dir} ${signal.instrument}*`,
+    `Entry $${f(signal.entry_price ?? 0)}`,
+    `SL    $${f(signal.stop_loss ?? 0)}${slDist != null ? ` (-${slDist.toFixed(2)}%)` : ''}`,
+    `TP    $${f(signal.take_profit_1 ?? 0)}${tpDist != null ? ` (+${tpDist.toFixed(2)}%)` : ''}`,
+    `Conf ${signal.confidence}%   ${rr}`.trim(),
   ]
-  if (signal.ai_analysis) lines.push(`🤖 ${String(signal.ai_analysis).slice(0, 160)}`)
-  lines.push(`⏰ ${dubaiTime()} GST`)
+  if (signal.reasoning) lines.push(`Why: ${signal.reasoning.slice(0, 180)}`)
+  lines.push(`${dubaiTime()} GST`)
 
   return sendGroupMessage(lines.join('\n'), userId)
 }
@@ -273,28 +272,23 @@ export async function notifyWarRoomDecision(data: {
   backtestLosses?: number
   kelly?: number
 }, userId?: string) {
-  const icon = data.execute ? '⚔️' : '🚫'
-  const verdict = data.execute ? 'EXECUTE' : 'REJECTED'
+  const verdict = data.execute ? 'Execute' : 'Rejected'
 
   const lines = [
-    `${icon} *WAR ROOM ${verdict} — ${data.instrument}*`,
-    '━━━━━━━━━━━━━━━━━━',
-    `🗳️ Vote: ${data.votesFor} FOR / ${data.votesAgainst} AGAINST`,
+    `*War room ${verdict} — ${data.instrument}*`,
+    `Vote ${data.votesFor} for / ${data.votesAgainst} against`,
   ]
 
-  if (data.trigger)            lines.push(`🔔 Trigger: ${data.trigger}`)
-  if (data.backtestWins !== undefined) lines.push(`🧪 Backtest: ${data.backtestWins}W / ${data.backtestLosses}L`)
-  if (data.kelly)              lines.push(`📐 Kelly: ${(data.kelly * 100).toFixed(1)}%`)
+  if (data.trigger)            lines.push(`Trigger ${data.trigger}`)
+  if (data.backtestWins !== undefined) lines.push(`Backtest ${data.backtestWins}W / ${data.backtestLosses}L`)
+  if (data.kelly)              lines.push(`Kelly ${(data.kelly * 100).toFixed(1)}%`)
 
   if (data.execute && data.entry) {
-    lines.push('')
-    lines.push(`📍 ${data.direction?.toUpperCase()} @ $${f(data.entry)}`)
-    lines.push(`🛑 SL: $${f(data.sl ?? 0)}   🎯 TP: $${f(data.tp ?? 0)}   R:R ${data.rr?.toFixed(2) ?? '?'}x`)
+    lines.push(`${data.direction?.toUpperCase()} @ $${f(data.entry)}   SL $${f(data.sl ?? 0)}   TP $${f(data.tp ?? 0)}   R:R ${data.rr?.toFixed(2) ?? '?'}x`)
   }
 
-  lines.push('')
-  lines.push(`💬 ${(data.decision ?? '').slice(0, 220)}`)
-  lines.push(`⏰ ${dubaiTime()} GST`)
+  if (data.decision) lines.push(`Note: ${data.decision.slice(0, 200)}`)
+  lines.push(`${dubaiTime()} GST`)
 
   return sendGroupMessage(lines.join('\n'), userId)
 }
@@ -307,17 +301,13 @@ export async function notifyWarRoomOpen(data: {
   instrument: string; price: number; trigger: string; direction: string;
   rsi: number; atr: number; volumeRatio: number; triggerCount: number;
 }, userId?: string) {
-  const icon = data.direction === 'long' ? '🟢' : '🔴'
-
   const lines = [
-    `🏛️ *MEETING — ${data.instrument}*`,
-    '━━━━━━━━━━━━━━━━━━',
-    `${icon} ${data.direction.toUpperCase()} @ $${f(data.price)}`,
-    `🔔 Trigger: ${data.trigger}${data.triggerCount > 1 ? `  (×${data.triggerCount} confluence)` : ''}`,
-    `📊 RSI ${data.rsi.toFixed(0)}  ATR ${data.atr.toFixed(2)}  Vol ${data.volumeRatio.toFixed(1)}x`,
-    '',
-    `🎙️ 12 agents debating · verdict soon`,
-    `⏰ ${dubaiTime()} GST`,
+    `*Meeting — ${data.instrument}*`,
+    `${data.direction.toUpperCase()} @ $${f(data.price)}`,
+    `Trigger ${data.trigger}${data.triggerCount > 1 ? ` (×${data.triggerCount})` : ''}`,
+    `RSI ${data.rsi.toFixed(0)}   ATR ${data.atr.toFixed(2)}   Vol ${data.volumeRatio.toFixed(1)}x`,
+    `12 agents debating, verdict soon`,
+    `${dubaiTime()} GST`,
   ]
   return sendGroupMessage(lines.join('\n'), userId)
 }
@@ -330,25 +320,20 @@ export async function notifyWarRoomDebate(data: {
   instrument: string;
   agents: { name: string; stance: 'bullish' | 'bearish' | 'neutral'; summary: string }[];
 }, userId?: string) {
-  const stanceIcon = (s: string) => s === 'bullish' ? '🟢' : s === 'bearish' ? '🔴' : '🟡'
-
   const bullish = data.agents.filter(a => a.stance === 'bullish').length
   const bearish = data.agents.filter(a => a.stance === 'bearish').length
   const neutral = data.agents.filter(a => a.stance === 'neutral').length
 
-  // Compact: only show non-neutral agents to save space
   const lines = [
-    `🎙️ *DEBATE — ${data.instrument}*`,
-    '━━━━━━━━━━━━━━━━━━',
-    `Tally: ${bullish}🟢 / ${bearish}🔴 / ${neutral}🟡`,
-    '',
+    `*Debate — ${data.instrument}*`,
+    `Tally ${bullish} bullish / ${bearish} bearish / ${neutral} neutral`,
   ]
   for (const a of data.agents) {
     if (a.stance === 'neutral') continue
-    lines.push(`${stanceIcon(a.stance)} *${a.name}*: ${a.summary.slice(0, 110)}`)
+    const tag = a.stance === 'bullish' ? 'BULL' : 'BEAR'
+    lines.push(`[${tag}] ${a.name}: ${a.summary.slice(0, 110)}`)
   }
-  lines.push('')
-  lines.push(`⏳ Orchestrator deciding · ${dubaiTime()} GST`)
+  lines.push(`Orchestrator deciding · ${dubaiTime()} GST`)
   return sendGroupMessage(lines.join('\n'), userId)
 }
 
@@ -360,11 +345,10 @@ export async function notifyWarRoomBlocked(data: {
   instrument: string; reason: string; blocker: string;
 }, userId?: string) {
   const lines = [
-    `🛡️ *BLOCKED — ${data.instrument}*`,
-    '━━━━━━━━━━━━━━━━━━',
-    `⛔ Blocker: *${data.blocker}*`,
-    `📋 Reason: ${data.reason.slice(0, 220)}`,
-    `⏰ ${dubaiTime()} GST`,
+    `*Blocked — ${data.instrument}*`,
+    `Blocker: ${data.blocker}`,
+    `Reason: ${data.reason.slice(0, 220)}`,
+    `${dubaiTime()} GST`,
   ]
   return sendGroupMessage(lines.join('\n'), userId)
 }
@@ -395,7 +379,6 @@ export async function notifyTradeOpened(trade: {
   quantity: number; stop_loss?: number; take_profit?: number;
   isReal?: boolean; orderId?: string;
 }, userId?: string) {
-  const icon = trade.direction === 'long' ? '🟢' : '🔴'
   const notional = trade.quantity * trade.entry_price
   const tag = trade.isReal === false ? 'PAPER' : 'REAL'
   const slDist = trade.stop_loss
@@ -406,15 +389,14 @@ export async function notifyTradeOpened(trade: {
     : null
 
   const lines = [
-    `${icon} *TRADE OPENED [${tag}]* — ${trade.instrument}`,
-    '━━━━━━━━━━━━━━━━━━',
-    `📍 ${trade.direction.toUpperCase()} @ $${f(trade.entry_price)}`,
-    `📦 Size: ${trade.quantity.toFixed(6)} (~$${notional.toFixed(0)})`,
-    `🛑 SL: $${f(trade.stop_loss ?? 0)}${slDist != null ? `  (-${slDist.toFixed(2)}%)` : ''}`,
-    `🎯 TP: $${f(trade.take_profit ?? 0)}${tpDist != null ? `  (+${tpDist.toFixed(2)}%)` : ''}`,
+    `*Trade opened [${tag}] — ${trade.instrument}*`,
+    `${trade.direction.toUpperCase()} @ $${f(trade.entry_price)}`,
+    `Size ${trade.quantity.toFixed(6)} (~$${notional.toFixed(0)})`,
+    `SL $${f(trade.stop_loss ?? 0)}${slDist != null ? ` (-${slDist.toFixed(2)}%)` : ''}`,
+    `TP $${f(trade.take_profit ?? 0)}${tpDist != null ? ` (+${tpDist.toFixed(2)}%)` : ''}`,
   ]
-  if (trade.orderId) lines.push(`🔗 Binance order: ${trade.orderId}`)
-  lines.push(`⏰ ${dubaiTime()} GST`)
+  if (trade.orderId) lines.push(`Order ${trade.orderId}`)
+  lines.push(`${dubaiTime()} GST`)
 
   return sendGroupMessage(lines.join('\n'), userId)
 }
@@ -429,23 +411,22 @@ export async function notifyTradeClosed(trade: {
   reason: string;
   isReal?: boolean; durationMs?: number;
 }, userId?: string) {
-  const won = trade.pnl >= 0
-  const icon = won ? '✅' : '❌'
-  const label = trade.reason === 'take_profit' ? 'TAKE PROFIT' : trade.reason === 'stop_loss' ? 'STOP LOSS' : 'CLOSED'
+  const label = trade.reason === 'take_profit' ? 'Take profit'
+              : trade.reason === 'stop_loss'   ? 'Stop loss'
+              :                                  'Closed'
   const tag = trade.isReal === false ? 'PAPER' : 'REAL'
 
   const lines = [
-    `${icon} *${label} [${tag}]* — ${trade.instrument}`,
-    '━━━━━━━━━━━━━━━━━━',
+    `*${label} [${tag}] — ${trade.instrument}*`,
     `${trade.direction.toUpperCase()}  $${f(trade.entry_price)} → $${f(trade.exit_price)}`,
-    `P&L: ${fSigned(trade.pnl)} (${fPct(trade.pnl_pct, 2)})`,
+    `P&L ${fSigned(trade.pnl)} (${fPct(trade.pnl_pct, 2)})`,
   ]
   if (trade.durationMs && trade.durationMs > 0) {
     const mins = Math.round(trade.durationMs / 60000)
     const dur = mins < 60 ? `${mins}m` : `${(mins / 60).toFixed(1)}h`
-    lines.push(`⏱ Held: ${dur}`)
+    lines.push(`Held ${dur}`)
   }
-  lines.push(`⏰ ${dubaiTime()} GST`)
+  lines.push(`${dubaiTime()} GST`)
   return sendGroupMessage(lines.join('\n'), userId)
 }
 
@@ -460,15 +441,14 @@ export async function notifyPositionAlert(
   pnlPct: number,
   userId?: string,
 ) {
-  const isProfit = event === 'take_profit'
-  const icon = isProfit ? '✅' : event === 'stop_loss' ? '🛑' : 'ℹ️'
-  const label = isProfit ? 'TAKE PROFIT' : event === 'stop_loss' ? 'STOP LOSS' : 'POSITION CLOSED'
+  const label = event === 'take_profit' ? 'Take profit'
+              : event === 'stop_loss'   ? 'Stop loss'
+              :                           'Position closed'
 
   const lines = [
-    `${icon} *${label} — ${instrument}*`,
-    '━━━━━━━━━━━━━━━━━━',
-    `P&L: ${fSigned(pnl)} (${fPct(pnlPct, 2)})`,
-    `⏰ ${dubaiTime()} GST`,
+    `*${label} — ${instrument}*`,
+    `P&L ${fSigned(pnl)} (${fPct(pnlPct, 2)})`,
+    `${dubaiTime()} GST`,
   ]
   return sendGroupMessage(lines.join('\n'), userId)
 }
@@ -480,28 +460,18 @@ export async function notifyPositionAlert(
 export async function notifyMorningBriefing(portfolio: {
   capital: number; totalPnl: number; openPositions: number;
 }, topSignals: Signal[], userId?: string) {
-  const date = new Date().toLocaleDateString('en', {
-    timeZone: 'Asia/Dubai', weekday: 'long', day: 'numeric', month: 'long',
+  const date = new Date().toLocaleDateString('en-GB', {
+    timeZone: 'Asia/Dubai', weekday: 'short', day: '2-digit', month: 'short',
   })
 
-  const sigLines = topSignals.slice(0, 3).map(s => {
-    const icon = s.direction === 'long' ? '🟢' : s.direction === 'short' ? '🔴' : '🟡'
-    return `${icon} ${s.instrument} ${s.direction.toUpperCase()} — Conf ${s.confidence}%`
-  }).join('\n')
+  const sigLines = topSignals.slice(0, 3).map(s =>
+    `  ${s.instrument} ${s.direction.toUpperCase()} (conf ${s.confidence}%)`
+  ).join('\n')
 
-  const msg = `☀️ *APEX Morning Briefing — ${date}*
-━━━━━━━━━━━━━━━━━━
-Good morning ${TEAM.join(', ')}! ☕
-Your AI has been scanning markets all night. Here's what I found:
-
-Portfolio: $${portfolio.capital.toLocaleString()}
-Total P&L: ${portfolio.totalPnl >= 0 ? '+' : ''}$${portfolio.totalPnl.toLocaleString()}
-🔓 Open positions: ${portfolio.openPositions}
-
-🎯 *Top Signals:*
-${sigLines || 'Markets are quiet — staying patient for you.'}
-
-Let's make money today! 💰🚀`
+  const msg = `*Morning briefing — ${date}*
+Capital $${portfolio.capital.toLocaleString()}   P&L ${fSigned(portfolio.totalPnl)}   Open ${portfolio.openPositions}
+Top signals:
+${sigLines || '  None — markets quiet'}`
 
   return sendGroupMessage(msg, userId)
 }
@@ -514,26 +484,14 @@ export async function notifyDailySummary(summary: {
   total_trades: number; wins: number; losses: number;
   daily_pnl: number; capital: number; win_rate: number;
 }, userId?: string) {
-  const icon = summary.daily_pnl >= 0 ? '📈' : '📉'
-  const date = new Date().toLocaleDateString('en', {
-    timeZone: 'Asia/Dubai', weekday: 'long', day: 'numeric', month: 'long',
+  const date = new Date().toLocaleDateString('en-GB', {
+    timeZone: 'Asia/Dubai', weekday: 'short', day: '2-digit', month: 'short',
   })
 
-  const endOfDay = summary.daily_pnl >= 0
-    ? `✅ Profitable day! Well done ${TEAM.join(', ')} — your investment is paying off. 🤝`
-    : `📉 Tough day. But ${TEAM.join(', ')}, I'm learning and adapting. We come back stronger. 💪`
-
-  const msg = `${icon} *APEX Daily Report — ${date}*
-━━━━━━━━━━━━━━━━━━
-${TEAM.join(', ')} — here's your end-of-day update:
-
-🔄 Trades: ${summary.total_trades} (${summary.wins}W / ${summary.losses}L)
-📊 Win Rate: ${summary.win_rate.toFixed(1)}%
-Daily P&L: ${summary.daily_pnl >= 0 ? '+' : ''}$${summary.daily_pnl.toFixed(0)}
-Capital: $${summary.capital.toLocaleString()}
-
-${endOfDay}
-— APEX AI 🤖`
+  const msg = `*Daily report — ${date}*
+Trades ${summary.total_trades} (${summary.wins}W / ${summary.losses}L)   Win rate ${summary.win_rate.toFixed(1)}%
+Daily P&L ${fSigned(summary.daily_pnl)}
+Capital $${summary.capital.toLocaleString()}`
 
   return sendGroupMessage(msg, userId)
 }
@@ -543,21 +501,16 @@ ${endOfDay}
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export async function notifyKillSwitch(activated: boolean, reason?: string, userId?: string) {
-  const msg = activated
-    ? `🚨🚨🚨 *KILL SWITCH ACTIVATED*
-━━━━━━━━━━━━━━━━━━
-${TEAM.join(', ')} — I've stopped ALL trading to protect your capital!
-
-⛔ ALL trading HALTED for 24 hours
-${reason ? `📋 Reason: ${reason}` : ''}
-🔧 Deactivate manually in Settings when you're ready.
-— APEX AI 🛡️`
-    : `✅ *KILL SWITCH DEACTIVATED*
-━━━━━━━━━━━━━━━━━━
-${TEAM.join(', ')} — back in action! Trading is live again. Let's go! 🚀
-— APEX AI 🤖`
-
-  return sendGroupMessage(msg, userId)
+  if (activated) {
+    const lines = [
+      `*Kill switch ACTIVATED*`,
+      `All trading halted for 24h.`,
+    ]
+    if (reason) lines.push(`Reason: ${reason}`)
+    lines.push(`Deactivate manually in Settings.`)
+    return sendGroupMessage(lines.join('\n'), userId)
+  }
+  return sendGroupMessage(`*Kill switch deactivated* — trading resumed.`, userId)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -567,23 +520,17 @@ ${TEAM.join(', ')} — back in action! Trading is live again. Let's go! 🚀
 export async function notifyDemoReport(session: DemoSession, userId?: string) {
   const pnl = session.total_pnl ?? 0
   const pct = session.total_pnl_pct ?? 0
-  const icon = pnl >= 0 ? '📈' : '📉'
+  const final = session.final_capital ?? session.initial_capital
 
-  let msg = `${icon} *APEX Demo Results*
-━━━━━━━━━━━━━━━━━━
-${TEAM.join(', ')} — simulation complete! Here's how I performed with your strategy:
+  const lines = [
+    `*Demo results*   ${session.start_date} → ${session.end_date}`,
+    `Capital $${session.initial_capital.toLocaleString()} → $${final.toLocaleString()}   P&L ${fSigned(pnl)} (${fPct(pct, 2)})`,
+    `Trades ${session.total_trades} (${session.win_count}W / ${session.loss_count}L)`,
+  ]
+  if (session.sharpe_ratio) lines.push(`Sharpe ${session.sharpe_ratio.toFixed(2)}`)
+  if (session.max_drawdown) lines.push(`Max DD ${(session.max_drawdown * 100).toFixed(1)}%`)
 
-📅 ${session.start_date} → ${session.end_date}
-Capital: $${session.initial_capital.toLocaleString()}
-Final: $${(session.final_capital ?? session.initial_capital).toLocaleString()}
-P&L: ${pnl >= 0 ? '+' : ''}$${Math.abs(pnl).toLocaleString()} (${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%)
-
-🔄 Trades: ${session.total_trades} (${session.win_count}W / ${session.loss_count}L)`
-
-  if (session.sharpe_ratio) msg += `\n📐 Sharpe: ${session.sharpe_ratio.toFixed(2)}`
-  if (session.max_drawdown) msg += `\n📉 Max Drawdown: ${(session.max_drawdown * 100).toFixed(1)}%`
-
-  return sendGroupMessage(msg, userId)
+  return sendGroupMessage(lines.join('\n'), userId)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -595,24 +542,16 @@ export async function notifyProfitAllocation(alloc: {
   reinvestAmt: number; payoutAmt: number; reserveAmt: number;
   payoutReady: boolean; reason: string;
 }, userId?: string) {
-  const icon = alloc.payoutReady ? '💸' : '📊'
-
-  const msg = `${icon} *PROFIT ALLOCATION*
-━━━━━━━━━━━━━━━━━━
-${TEAM.join(', ')} — here's how I'm splitting the profits:
-
-Total Profit: $${alloc.totalProfit.toFixed(0)}
-
-Split:
-  Reinvest: ${alloc.reinvestPct}% ($${alloc.reinvestAmt.toFixed(0)})
-  Payout: ${alloc.payoutPct}% ($${alloc.payoutAmt.toFixed(0)})
-  Reserve: ${alloc.reservePct}% ($${alloc.reserveAmt.toFixed(0)})
-
-${alloc.payoutReady ? `✅ Payout ready! ${TEAM.join(', ')} — time to enjoy the fruits! 🍾` : '⏳ Building capital — patience pays off, gentlemen. 💎'}
-📋 ${alloc.reason.slice(0, 200)}
-— APEX AI 🤖`
-
-  return sendGroupMessage(msg, userId)
+  const lines = [
+    `*Profit allocation*`,
+    `Total profit $${alloc.totalProfit.toFixed(0)}`,
+    `Reinvest ${alloc.reinvestPct}% ($${alloc.reinvestAmt.toFixed(0)})`,
+    `Payout   ${alloc.payoutPct}% ($${alloc.payoutAmt.toFixed(0)})`,
+    `Reserve  ${alloc.reservePct}% ($${alloc.reserveAmt.toFixed(0)})`,
+    alloc.payoutReady ? `Payout ready.` : `Building capital.`,
+    `Note: ${alloc.reason.slice(0, 200)}`,
+  ]
+  return sendGroupMessage(lines.join('\n'), userId)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -623,19 +562,18 @@ export async function notifyRiskAlert(data: {
   type: 'drawdown' | 'daily_loss' | 'max_positions';
   current: number; limit: number; detail: string;
 }, userId?: string) {
-  const icons = { drawdown: '📉', daily_loss: '🔻', max_positions: '🚧' }
-  const labels = { drawdown: 'DRAWDOWN WARNING', daily_loss: 'DAILY LOSS WARNING', max_positions: 'MAX POSITIONS REACHED' }
+  const labels = {
+    drawdown:      'Drawdown warning',
+    daily_loss:    'Daily loss warning',
+    max_positions: 'Max positions reached',
+  }
 
-  const msg = `${icons[data.type]} *${labels[data.type]}*
-━━━━━━━━━━━━━━━━━━
-Heads up ${TEAM.join(', ')}! I'm watching the risk for you.
-
-⚠️ Current: ${data.current.toFixed(1)}% | Limit: ${data.limit.toFixed(1)}%
-📋 ${data.detail}
-🔧 Adjust limits in Settings if needed.
-— APEX AI 🛡️`
-
-  return sendGroupMessage(msg, userId)
+  const lines = [
+    `*${labels[data.type]}*`,
+    `Current ${data.current.toFixed(1)}%   Limit ${data.limit.toFixed(1)}%`,
+    `${data.detail}`,
+  ]
+  return sendGroupMessage(lines.join('\n'), userId)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -709,96 +647,85 @@ export interface PeriodicReport {
 
 export async function notifyPeriodicReport(data: PeriodicReport, userId?: string): Promise<boolean> {
   const lines: string[] = []
-  lines.push(`📊 *APEX STATUS — ${dubaiNow()} GST*`)
-  lines.push('━━━━━━━━━━━━━━━━━━')
+  lines.push(`*Status — ${dubaiNow()} GST*`)
 
-  // Portfolio
+  // Portfolio (paper)
   if (data.portfolio) {
     const wl = `${data.portfolio.winCount}W / ${data.portfolio.lossCount}L`
-    const wr = data.portfolio.winCount + data.portfolio.lossCount > 0
-      ? ((data.portfolio.winCount / (data.portfolio.winCount + data.portfolio.lossCount)) * 100).toFixed(0) + '%'
-      : '—'
-    lines.push('💼 *Portfolio* (paper)')
-    lines.push(`  Capital: $${fInt(data.portfolio.capital)}   ${wl} (${wr})`)
+    const total = data.portfolio.winCount + data.portfolio.lossCount
+    const wr = total > 0 ? ((data.portfolio.winCount / total) * 100).toFixed(0) + '%' : '—'
+    lines.push(`Portfolio (paper) $${fInt(data.portfolio.capital)}   ${wl} (${wr})`)
     if (data.portfolio.dailyPnl != null) {
-      lines.push(`  Daily P&L: ${fSigned(data.portfolio.dailyPnl)}`)
+      lines.push(`  Daily P&L ${fSigned(data.portfolio.dailyPnl)}`)
     }
   }
 
   // Real money
   const rm = data.realMoney
-  lines.push('')
-  lines.push('💰 *Real money* (Binance)')
-  lines.push(`  Spot USDT: ${rm.spotUsdt == null ? '—' : '$' + fInt(rm.spotUsdt)}`)
-  if (rm.fundingUsdt != null) lines.push(`  Funding USDT: $${fInt(rm.fundingUsdt)}`)
-  if (rm.earnUsdt != null)    lines.push(`  Earn USDT: $${fInt(rm.earnUsdt)}`)
+  lines.push(`Real money (Binance)`)
+  lines.push(`  Spot ${rm.spotUsdt == null ? '—' : '$' + fInt(rm.spotUsdt)}` +
+    (rm.fundingUsdt != null ? `   Funding $${fInt(rm.fundingUsdt)}` : '') +
+    (rm.earnUsdt != null    ? `   Earn $${fInt(rm.earnUsdt)}` : ''))
   const total = (rm.spotUsdt ?? 0) + (rm.fundingUsdt ?? 0) + (rm.earnUsdt ?? 0)
-  if (total > 0) lines.push(`  Total bankroll: $${fInt(total)}`)
-  lines.push(`  Mode: *${rm.tradingMode}* · auto-trade ${rm.autoTradeEnabled ? 'ON' : 'OFF'}`)
+  if (total > 0) lines.push(`  Total $${fInt(total)}`)
+  lines.push(`  Mode ${rm.tradingMode}, auto-trade ${rm.autoTradeEnabled ? 'on' : 'off'}`)
 
   // Activity (last 2h)
   const a = data.activity
-  lines.push('')
-  lines.push('⚡ *Last 2h*')
-  lines.push(`  Meetings: ${a.meetingsHeld}  ·  Triggers: ${a.triggersFound}`)
-  lines.push(`  Decisions: ${a.decisionsExecuted} executed / ${a.decisionsRejected} rejected`)
-  if (a.blockedByRisk > 0) lines.push(`  Blocked by risk: ${a.blockedByRisk}`)
-  if (a.macroPauses > 0)   lines.push(`  Macro pauses: ${a.macroPauses}`)
+  lines.push(`Last 2h`)
+  lines.push(`  Meetings ${a.meetingsHeld}, triggers ${a.triggersFound}, decisions ${a.decisionsExecuted} exec / ${a.decisionsRejected} rej`)
+  if (a.blockedByRisk > 0 || a.macroPauses > 0) {
+    const parts: string[] = []
+    if (a.blockedByRisk > 0) parts.push(`risk-blocked ${a.blockedByRisk}`)
+    if (a.macroPauses > 0)   parts.push(`macro-paused ${a.macroPauses}`)
+    lines.push(`  ${parts.join(', ')}`)
+  }
   if (a.realTradesOpened + a.realTradesClosed > 0) {
-    lines.push(`  Real trades: ${a.realTradesOpened} opened / ${a.realTradesClosed} closed  P&L: ${fSigned(a.realPnl2h)}`)
+    lines.push(`  Real trades ${a.realTradesOpened} opened / ${a.realTradesClosed} closed, P&L ${fSigned(a.realPnl2h)}`)
   }
 
   // Open positions
   if (data.openPositions.length > 0) {
-    lines.push('')
-    lines.push('📍 *Open positions* (real)')
+    lines.push(`Open positions (real)`)
     for (const p of data.openPositions) {
-      const dir = p.direction === 'long' ? '🟢' : '🔴'
-      const sign = p.unrealizedPnl >= 0 ? '✅' : '🔻'
-      lines.push(`  ${dir} ${p.instrument}  entry $${f(p.entryPrice)} → $${f(p.currentPrice)}  ${sign} ${fSigned(p.unrealizedPnl)} (${fPct(p.unrealizedPnlPct, 2)})`)
+      lines.push(`  ${p.instrument} ${p.direction.toUpperCase()}  $${f(p.entryPrice)} → $${f(p.currentPrice)}   P&L ${fSigned(p.unrealizedPnl)} (${fPct(p.unrealizedPnlPct, 2)})`)
     }
   }
 
-  // Markets snapshot
+  // Markets
   if (data.markets.length > 0) {
-    lines.push('')
-    lines.push('📈 *Markets*')
+    lines.push(`Markets`)
     for (const m of data.markets) {
-      const chg = m.change24h != null ? fPct(m.change24h, 1).padStart(7) : '   —   '
-      const reg = m.regime ? `${m.regime}${m.rangeStrength != null ? `:${m.rangeStrength.toFixed(1)}` : ''}` : ''
+      const chg = m.change24h != null ? fPct(m.change24h, 1) : '—'
       const rsi = m.rsi != null ? `RSI ${m.rsi.toFixed(0)}` : ''
-      lines.push(`  ${m.instrument.padEnd(9)} $${f(m.price).padEnd(9)} ${chg}  ${rsi}  ${reg}`)
+      const reg = m.regime ? `${m.regime}${m.rangeStrength != null ? `:${m.rangeStrength.toFixed(1)}` : ''}` : ''
+      lines.push(`  ${m.instrument.padEnd(9)} $${f(m.price).padEnd(9)} ${chg.padStart(7)}  ${rsi}  ${reg}`.trimEnd())
     }
   }
 
   // Notable triggers
   if (data.notableTriggers.length > 0) {
-    lines.push('')
-    lines.push('🎯 *Notable triggers*')
+    lines.push(`Notable triggers`)
     for (const t of data.notableTriggers.slice(0, 6)) {
-      lines.push(`  • ${t.instrument} — ${t.status}`)
+      lines.push(`  ${t.instrument} — ${t.status}`)
     }
   }
 
   // Macro pause
   if (data.macro.paused && data.macro.nextEvent) {
-    lines.push('')
-    lines.push(`⚠ Macro pause: *${data.macro.nextEvent}* in ${data.macro.minutesUntil ?? '?'}min`)
+    lines.push(`Macro pause: ${data.macro.nextEvent} in ${data.macro.minutesUntil ?? '?'}min`)
   }
 
   // Daily-loss budget
   if (data.dailyLossBudget) {
     const b = data.dailyLossBudget
-    lines.push(`⛔ Daily loss budget: ${fSigned(b.consumed)} / ${fSigned(b.limit)}  (${b.pctUsed.toFixed(0)}% used)`)
+    lines.push(`Daily loss budget ${fSigned(b.consumed)} / ${fSigned(b.limit)} (${b.pctUsed.toFixed(0)}% used)`)
   }
 
   // API spend
   if (data.budget) {
-    lines.push(`🪙 AI spend today: $${data.budget.spent.toFixed(2)} spent / $${data.budget.remaining.toFixed(2)} left`)
+    lines.push(`AI spend today $${data.budget.spent.toFixed(2)} of $${(data.budget.spent + data.budget.remaining).toFixed(2)}`)
   }
-
-  lines.push('')
-  lines.push('— APEX 🤖')
 
   return sendGroupMessage(lines.join('\n'), userId)
 }
@@ -813,23 +740,14 @@ export async function notifyWeeklyReport(data: {
   bestTrade: string; worstTrade: string;
   sharpe?: number;
 }, userId?: string) {
-  const icon = data.weeklyPnl >= 0 ? '📈' : '📉'
+  const lines = [
+    `*Weekly report*`,
+    `Trades ${data.totalTrades} (${data.wins}W / ${data.losses}L)   Win rate ${data.winRate.toFixed(1)}%`,
+    `Weekly P&L ${fSigned(data.weeklyPnl)}   Capital $${data.capital.toLocaleString()}`,
+  ]
+  if (data.sharpe) lines.push(`Sharpe ${data.sharpe.toFixed(2)}`)
+  lines.push(`Best:  ${data.bestTrade}`)
+  lines.push(`Worst: ${data.worstTrade}`)
 
-  const msg = `${icon} *APEX Weekly Report*
-━━━━━━━━━━━━━━━━━━
-${TEAM.join(', ')} — your weekly performance review:
-
-🔄 Trades: ${data.totalTrades} (${data.wins}W / ${data.losses}L)
-📊 Win Rate: ${data.winRate.toFixed(1)}%
-Weekly P&L: ${data.weeklyPnl >= 0 ? '+' : ''}$${data.weeklyPnl.toFixed(0)}
-Capital: $${data.capital.toLocaleString()}
-${data.sharpe ? `📐 Sharpe: ${data.sharpe.toFixed(2)}` : ''}
-
-🏆 Best: ${data.bestTrade}
-💀 Worst: ${data.worstTrade}
-
-${data.weeklyPnl >= 0 ? `🎉 Great week gentlemen! Your AI is earning its keep. 🤖💰` : `💪 Tough week, but I'm adapting. ${TEAM.join(', ')} — next week we come back stronger. 🔥`}
-— APEX AI`
-
-  return sendGroupMessage(msg, userId)
+  return sendGroupMessage(lines.join('\n'), userId)
 }

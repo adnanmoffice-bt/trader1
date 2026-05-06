@@ -87,7 +87,7 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-_(none — cleared 2026-05-06 ~15:30 Dubai after WTI/Brent rotation add landed)_
+LOCK: lib/safety.ts + lib/exchanges/ig.ts + agents/war-room.ts + app/api/cron/demo/route.ts — Computer A — started 2026-05-06 15:45 Dubai for Option 2a (live trade with reduced-risk override + forex/indices/silver add)
 
 ---
 

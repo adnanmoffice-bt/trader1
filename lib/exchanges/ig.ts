@@ -48,15 +48,17 @@ import type {
 import { EXCHANGE_CONFIGS } from './types'
 
 // ── Symbol → IG epic mapping ───────────────────────────────────────────────
-// Defaults are the most common epic codes for IG UK/MEA accounts. If your
-// account region uses different epics, the testConnection() call will log
-// the correct epics it found via /markets?searchTerm=GOLD etc., and we
-// update this map.
+// Verified on 2026-05-06 against operator account APSTU (USD CFD, MEA region).
+// `.BMU.IP` variants return live spot prices; the older `.UNC.IP` and
+// `.CFDGC.IP` epics on this account either don't exist or return stale
+// historical prices (e.g. CS.D.CFDGOLD.CFDGC.IP shows $1404 vs real spot $4719).
+// Re-run scripts/test-ig-connection.mjs after any account migration to
+// re-verify the correct epic for this region.
 const SYMBOL_MAP: Record<string, string> = {
-  'XAU/USD': 'CS.D.CFDGOLD.CFDGC.IP', // Spot Gold ($1 contract)
-  'XAG/USD': 'CS.D.CFDSILVER.CFDSI.IP', // Spot Silver
-  'WTI/USD': 'CC.D.CL.UNC.IP', // US Crude Oil (front month, undated)
-  'BRENT/USD': 'CC.D.LCO.UNC.IP', // Brent Crude (front month, undated)
+  'XAU/USD': 'CS.D.CFDGOLD.BMU.IP', // Spot Gold ($1 contract) — verified $4719
+  'XAG/USD': 'CS.D.CFDSILVER.BMU.IP', // Spot Silver (untested but follows BMU pattern)
+  'WTI/USD': 'CC.D.CL.BMU.IP', // US Crude Oil — verified $88.42
+  'BRENT/USD': 'CC.D.LCO.BMU.IP', // Brent Crude — verified $97.26
 }
 
 // IG kline resolutions — only a fixed set is supported.

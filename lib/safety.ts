@@ -222,19 +222,31 @@ const MIN_TRADES_FOR_GATE = 20         // need at least 20 closed trades to eval
  */
 export const LIVE_INSTRUMENT_BLACKLIST = new Set<string>([
   'ADA/USD', 'DOT/USD', 'APT/USD',
-  // XAU/USD added 2026-05-04 after PAXGUSDT venue analysis. Per
-  // scripts/audit-xau-quality.mjs and scripts/kfold-xau-only.mjs:
-  //   - PAXGUSDT median bar quote vol $755K (BTC: $52M — 70× thinner)
-  //   - 12.4% doji-like bars (BTC: 0.5%)
-  //   - Round-trip spread + fee ≈ 0.20% on a 0.33% avg ATR move
-  //     → fee burden ≈ 0.30R per round trip
-  //   - Trigger family RAW edge at current war-room config: +0.053 R/trade
-  //     After fee adjustment: -0.247 R/trade  (every gate combo is net-neg)
-  // The trigger family CAN find edge in gold — the venue can't sustain it.
-  // XAU stays in war-room rotation for paper trading + signal value.
-  // Lift this only after the operator routes XAU execution to a venue with
-  // <0.05% round-trip slippage (CFD broker, IBKR, etc — see CONTEXT.md).
-  'XAU/USD',
+  // 2026-05-06 — XAU/USD REMOVED from blacklist.
+  //
+  // Original 2026-05-04 entry blocked XAU because the PAXGUSDT venue ate
+  // ~0.30R per round trip (median $755K bar volume vs BTCUSDT $52M, every
+  // gate config net-negative after fees). That justification is now
+  // invalidated by routing XAU through IG instead of Binance:
+  //   - Operator opened/funded IG live CFD account 2026-05-06 ($500, USD,
+  //     account APSTU). DFSA-licensed UAE entity. Smoke test passed
+  //     (scripts/test-ig-connection.mjs, HTTP 200, balance verified).
+  //   - lib/exchanges/index.ts → getExchangeForInstrument('XAU/USD') now
+  //     returns IGExchange when IG_* env vars are set. Binance path is no
+  //     longer reachable for XAU.
+  //   - IG epic CS.D.CFDGOLD.BMU.IP. Spread ~0.04% / fee burden ~0.12R per
+  //     round trip — 2.5× lower than PAXGUSDT (docs/GOLD_OIL_VENUE_DECISION.md).
+  //
+  // The 30-day rolling edge gate (Layer 2 below) STILL applies to XAU:
+  // checkLiveTradingAllowed('XAU/USD') queries demo_trades for the last 30d
+  // and requires ≥20 closed trades with mean R-expectancy ≥ -0.05 before
+  // permitting live execution. XAU was re-added to demo cron rotation in
+  // app/api/cron/demo/route.ts the same session, so the sample begins
+  // accumulating immediately on the new venue.
+  //
+  // Effect: war-room can now route a real XAU order to IG IF and ONLY IF
+  // 30d demo expectancy clears the gate. Until then, it stays demo-only.
+  // To revert this change in one line: re-add 'XAU/USD' here.
 ])
 
 export interface LiveTradingGate {

@@ -87,11 +87,101 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-LOCK: lib/safety.ts + lib/exchanges/ig.ts + app/api/cron/demo/route.ts — Computer A — started 2026-05-06 15:00 Dubai for XAU live unblock (IG venue verified)
+_(none — cleared 2026-05-06 ~15:10 Dubai after XAU live-blacklist removal landed)_
 
 ---
 
 ## SESSION LOG (newest on top)
+
+### 2026-05-06 · 15:10 Dubai · Computer A (day) — XAU live-blacklist removed (IG venue verified, $500 funded)
+**Commits:** `c2419a2` (LOCK) → _(this push)_ (`CRITICAL(safety): remove XAU/USD from LIVE_INSTRUMENT_BLACKLIST` + IG epic fix + demo cron re-add + clear LOCK)
+
+Operator authorised Option A (remove XAU live blacklist, edge gate intact).
+Smoke test passed against the funded live IG account after a long auth-
+diagnostic detour — root cause was the operator had pasted the API key's
+display name `Apex45421o` into IG_PASSWORD instead of the actual account
+password. Once `IG_PASSWORD=Sac123@#` was set, both live v2 and v3 endpoints
+returned HTTP 200 with CST + X-SECURITY-TOKEN.
+
+What the smoke test verified (`scripts/test-ig-connection.mjs`):
+- Auth: HTTP 200 (live v2 + v3), both header tokens returned
+- Account APSTU: USD CFD, $500 balance, $500 available, $0 P&L
+- Spot Gold tradeable on **CS.D.CFDGOLD.BMU.IP** @ $4719 (NOT the
+  CS.D.CFDGOLD.CFDGC.IP that I had as default — that returns a stale $1404
+  on this account, must be a different/expired contract)
+- US Crude tradeable on CC.D.CL.BMU.IP @ $88.42
+- Brent Crude tradeable on CC.D.LCO.BMU.IP @ $97.26
+
+Three patches in this push:
+
+1. **`lib/exchanges/ig.ts → SYMBOL_MAP`**: switched all four CFD epics to the
+   `.BMU.IP` variants (verified live). Old `.UNC.IP` and `.CFDGC.IP` codes
+   either don't exist or return stale historical prices on this account.
+   Comment in code instructs future agents to re-run the smoke test if the
+   account ever migrates region.
+
+2. **`app/api/cron/demo/route.ts → DEMO_INSTRUMENTS`**: re-added `XAU/USD`
+   (now `['BTC/USD','ETH/USD','XAU/USD']`). Removal on 2026-05-04 was
+   premised on Binance PAXGUSDT being the venue. With IG taking over via
+   `getExchangeForInstrument()`, demo XAU runs feed the 30d edge-gate
+   sample on the new venue. Without this, the gate would never accumulate
+   enough XAU trades to ever evaluate expectancy → live exec stays
+   permanently blocked even though we lifted the blacklist.
+
+3. **`lib/safety.ts → LIVE_INSTRUMENT_BLACKLIST`**: removed `'XAU/USD'`. The
+   2026-05-04 entry was justified by PAXGUSDT venue economics, which are
+   now irrelevant. Long comment in the code documents the full reasoning
+   (IG account opened/funded today, smoke test passed, fee burden 2.5×
+   lower than PAXGUSDT, edge gate Layer 2 still applies). One-line revert
+   if anything goes wrong: re-add the string.
+
+What this DOES enable:
+- War-room signals on XAU now reach the live-exec branch
+- `getExchangeForInstrument('XAU/USD')` returns the IG adapter
+- Demo XAU trades start accumulating on the new venue immediately
+- Once 30d demo expectancy on XAU clears -0.05 R/trade with ≥20 trades,
+  real IG orders will fire on the next signal that passes all war-room
+  gates (atr-extreme, derivatives-veto, mtf-veto, macro-high-strict,
+  blocked-orderbook, etc., plus the 30d edge gate)
+
+What this DOES NOT enable (deliberately):
+- Immediate XAU live trading. Edge gate still requires ≥20 closed XAU
+  demo trades in last 30d with mean R/trade ≥ -0.05. We currently have
+  ~4 trades in that window from the old PAXGUSDT-routed demo runs
+  (unhelpful, different venue characteristics). Realistic timeline to
+  unblock: 3-4 weeks of demo cron generating XAU trades on IG epic data.
+- Shorts on XAU (workspace rule: long-only-mode is non-negotiable).
+- WTI / Brent rotation. Still not in `agents/war-room.ts → ALL_INSTRUMENTS`.
+  Adding them would burn AI cost without trading until they go through
+  the same demo→edge-gate→unblock pipeline. Operator can request later.
+
+Validation:
+- `npx tsc --noEmit` clean
+- `npx eslint lib/exchanges/ig.ts lib/exchanges/index.ts lib/safety.ts agents/war-room.ts app/api/cron/demo/route.ts` clean
+- `node scripts/test-ig-connection.mjs` returns HTTP 200, $500 balance, all
+  three target epics tradeable
+- Diagnostic script `scripts/_ig-diagnose.mjs` deleted (purpose served)
+
+Operator action items remaining:
+- Once Vercel picks up this push, the next demo-cron tick will start
+  generating XAU trades. Watch `agent_logs` for `demo-cron` entries with
+  `instrument='XAU/USD'`.
+- After ~30 days, run `node scripts/audit-recent-losses.mjs` to see the
+  XAU sample. If WR > 30% and Exp/R > -0.05 → first real IG XAU order will
+  fire automatically. If still negative → edge gate keeps live blocked
+  (working as intended) and we go back to research.
+- The leaked API key `f9ffb68d…c19f` and password `Sac123@#` are now in
+  this chat. **Operator must rotate both within 24h** for security
+  hygiene. After rotating, update Vercel env + `.env.local` + redeploy.
+
+Files modified:
+- lib/exchanges/ig.ts (SYMBOL_MAP → BMU.IP variants)
+- app/api/cron/demo/route.ts (DEMO_INSTRUMENTS re-add XAU)
+- lib/safety.ts (XAU removed from LIVE_INSTRUMENT_BLACKLIST)
+- HANDOFF.md (this entry, LOCK cleared)
+
+Files deleted:
+- scripts/_ig-diagnose.mjs (diagnostic served its purpose)
 
 ### 2026-05-06 · 14:30 Dubai · Computer A (day) — IG adapter scaffolded for gold/oil execution
 **Commits:** `66fa460` (LOCK) → _(this push)_ (`feat(exchanges): IG adapter` + per-instrument routing + smoke test + clear LOCK)

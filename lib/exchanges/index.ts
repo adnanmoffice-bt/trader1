@@ -12,6 +12,7 @@ import { KuCoinExchange } from './kucoin'
 import { BitgetExchange } from './bitget'
 import { GateIOExchange } from './gateio'
 import { MEXCExchange } from './mexc'
+import { IGExchange } from './ig'
 
 export { EXCHANGE_CONFIGS } from './types'
 export type { IExchange, ExchangeId, ExchangeCredentials, ExchangeTicker, ExchangeOHLCV, KlineInterval } from './types'
@@ -30,8 +31,29 @@ export function createExchange(id: ExchangeId, creds?: ExchangeCredentials): IEx
     case 'bitget':  return new BitgetExchange(creds)
     case 'gateio':  return new GateIOExchange(creds)
     case 'mexc':    return new MEXCExchange(creds)
+    case 'ig':      return new IGExchange(creds)
     default: throw new Error(`Unknown exchange: ${id}`)
   }
+}
+
+/**
+ * Per-instrument execution-venue router.
+ *
+ * Crypto pairs (BTC, ETH, SOL, etc.) → Binance (or whichever crypto venue is
+ * configured first). Non-crypto pairs (XAU, XAG, WTI, BRENT) → IG.
+ *
+ * If the requested venue isn't configured, falls back to getPrimaryExchange()
+ * and the caller's `isConfigured()` check + war-room logExec will surface the
+ * misconfiguration cleanly.
+ */
+const IG_INSTRUMENTS = new Set(['XAU/USD', 'XAG/USD', 'WTI/USD', 'BRENT/USD'])
+
+export function getExchangeForInstrument(instrument: string): IExchange {
+  if (IG_INSTRUMENTS.has(instrument)) {
+    const ig = new IGExchange()
+    if (ig.isConfigured()) return ig
+  }
+  return getPrimaryExchange()
 }
 
 /**
@@ -47,6 +69,7 @@ export function getConfiguredExchanges(): IExchange[] {
     new BitgetExchange(),
     new GateIOExchange(),
     new MEXCExchange(),
+    new IGExchange(),
   ]
   return all.filter(ex => ex.isConfigured())
 }

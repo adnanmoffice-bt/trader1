@@ -87,11 +87,107 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-LOCK: lib/exchanges/* + agents/war-room.ts (real-exec branch only) — Computer A — started 2026-05-06 14:25 Dubai for IG adapter scaffolding (gold/oil execution venue)
+_(none — cleared 2026-05-06 ~14:30 Dubai after IG adapter scaffolding landed)_
 
 ---
 
 ## SESSION LOG (newest on top)
+
+### 2026-05-06 · 14:30 Dubai · Computer A (day) — IG adapter scaffolded for gold/oil execution
+**Commits:** `66fa460` (LOCK) → _(this push)_ (`feat(exchanges): IG adapter` + per-instrument routing + smoke test + clear LOCK)
+
+Operator funded a live IG account this morning ("loadovali smo pare i sve je
+proslo dobro, ziuvo je") and pasted a freshly generated REST API key in chat.
+The key was rotated by the operator (acknowledged on their responsibility).
+This session opens the execution path so XAU/USD (and later WTI/Brent) can
+flow to IG instead of Binance's structurally broken PAXGUSDT venue.
+
+What was built:
+- `lib/exchanges/types.ts`: added `'ig'` to `ExchangeId` union, added IG entry
+  to `EXCHANGE_CONFIGS` (live + demo bases, USD quote, 1× minOrderSize, 0.04%
+  taker baseline). No changes to existing crypto venue configs.
+- `lib/exchanges/ig.ts` (NEW, ~330 LOC): full `IExchange` implementation
+  against the IG Labs REST API. Auth uses POST /session v2 with username +
+  password + X-IG-API-KEY → caches CST + X-SECURITY-TOKEN headers, re-auths
+  every 5h or on 401. Implements `getBalances`, `getQuoteBalance`, `getTicker`
+  (mid of bid/ask), `getKlines` (RESOLUTION_MAP: 1m..1d → MINUTE..DAY),
+  `marketBuy` (POST /positions/otc → GET /confirms/{ref}), `marketSell` (close
+  via dealId resolved from /positions), `setStopLoss` / `setTakeProfit` (PUT
+  /positions/otc/{dealId}), `cancelAllOrders` (filtered against /workingorders),
+  `testConnection`. Default SYMBOL_MAP: XAU/USD → CS.D.CFDGOLD.CFDGC.IP,
+  XAG/USD, WTI/USD → CC.D.CL.UNC.IP, BRENT/USD → CC.D.LCO.UNC.IP. Region-
+  specific epic discrepancies surface in the smoke-test script (below).
+- `lib/exchanges/index.ts`: `IGExchange` added to factory + `getConfiguredExchanges`.
+  New `getExchangeForInstrument(instrument)` router: XAU/XAG/WTI/BRENT → IG
+  if configured, otherwise falls back to `getPrimaryExchange()`. Crypto
+  unchanged.
+- `agents/war-room.ts`: real-exec branch (~line 1060) now calls
+  `getExchangeForInstrument(instrument)` instead of `getPrimaryExchange()`.
+  Error message updated to list which env vars each venue needs. NAKED-
+  position warning string genericised to use `${ex.config.name}` instead of
+  hardcoded "Binance UI".
+- `.env.example`: documented IG_API_KEY, IG_USERNAME, IG_PASSWORD,
+  IG_ACCOUNT_ID, IG_BASE_URL.
+- `scripts/test-ig-connection.mjs` (NEW, read-only): authenticates against
+  IG, lists accounts/balances, searches Spot Gold / US Crude / Brent epics
+  (logs them so we can update SYMBOL_MAP if region differs), pulls a XAU
+  snapshot. NEVER places orders. Run after putting credentials into
+  .env.local or Vercel env.
+
+What was deliberately NOT changed:
+- `lib/safety.ts`: XAU/USD stays on `LIVE_INSTRUMENT_BLACKLIST`. Even with
+  IG wired, the edge gate AND the per-instrument blacklist both still apply
+  to XAU. Lifting requires (a) `test-ig-connection.mjs` succeeds, (b) IG
+  adapter trades XAU on demo for ≥30d with positive expectancy, (c) explicit
+  operator sign-off in a CRITICAL commit.
+- WTI/Brent are NOT added to `agents/war-room.ts → ALL_INSTRUMENTS`. Same
+  gating staircase as XAU before any new instrument is rotated.
+- The 30d edge gate (`checkLiveTradingAllowed`) sits BEFORE
+  `getExchangeForInstrument`, so the IG path is only reachable after the gate
+  unblocks. Right now demo expectancy is negative → no IG order will fire.
+- IG creds NOT committed. Operator must paste them into Vercel env (Project
+  → Settings → Environment Variables) and locally into `.env.local` (which
+  is `.gitignored`).
+
+Validation:
+- `npx tsc --noEmit` clean.
+- `npx eslint lib/exchanges/ig.ts lib/exchanges/index.ts lib/exchanges/types.ts agents/war-room.ts` clean.
+- No live orders placed. No env vars committed.
+
+Operator next steps (paste into Vercel env, NOT into chat):
+1. Re-confirm the rotated IG_API_KEY (operator already revoked the leaked one).
+2. IG_USERNAME (login username, NOT email).
+3. IG_PASSWORD.
+4. IG_ACCOUNT_ID (from MyIG dashboard, e.g. `Z1ABCD`).
+5. IG_BASE_URL (optional; omit for live, or set to demo URL for paper).
+6. Locally: `node scripts/test-ig-connection.mjs` — confirms auth, balance,
+   and prints the correct epic codes for your IG region. If Spot Gold epic
+   is not `CS.D.CFDGOLD.CFDGC.IP`, update `SYMBOL_MAP` in `lib/exchanges/ig.ts`.
+
+What unblocks XAU live exec on IG (not done in this session):
+1. `test-ig-connection.mjs` returns success and matches the default epics.
+2. War-room demo runs route XAU through IG — verify in
+   `agents/war-room.ts → getExchangeForInstrument(instrument)` log line.
+3. 30 days of demo XAU trades on IG with mean R/trade ≥ +0.05 (or relax
+   gate threshold).
+4. Operator signs a CRITICAL commit removing 'XAU/USD' from
+   `LIVE_INSTRUMENT_BLACKLIST` in `lib/safety.ts`.
+
+Files added this session:
+- lib/exchanges/ig.ts
+- scripts/test-ig-connection.mjs
+
+Files modified:
+- lib/exchanges/types.ts (added 'ig' to ExchangeId + EXCHANGE_CONFIGS.ig)
+- lib/exchanges/index.ts (factory + getExchangeForInstrument router)
+- agents/war-room.ts (per-instrument router in real-exec branch + naked-position string)
+- .env.example (IG env vars documented)
+- HANDOFF.md (this entry, LOCK cleared)
+
+Next-session entry point unchanged plus:
+- After operator pastes IG creds into Vercel/local env, run
+  `node scripts/test-ig-connection.mjs` and act on its output (confirm
+  epics, then start 30d demo proof).
 
 ### 2026-05-04 · 15:35 Dubai · Computer A (day) — "opet gubis" triage of 138-trade -$6,421 paper loss
 

@@ -11,6 +11,7 @@ export type ExchangeId =
   | 'bitget'
   | 'gateio'
   | 'mexc'
+  | 'ig'
 
 export interface ExchangeCredentials {
   apiKey: string
@@ -204,5 +205,23 @@ export const EXCHANGE_CONFIGS: Record<ExchangeId, Omit<ExchangeConfig, 'symbolMa
     minOrderSize: 5,
     makerFee: 0,
     takerFee: 0.001,
+  },
+  // IG Group — UK/UAE-licensed CFD broker. Used ONLY for non-crypto venues
+  // (gold, oil, FX, indices) where Binance has no execution path. Crypto stays
+  // routed to Binance via getExchangeForInstrument() — see lib/exchanges/index.ts.
+  // Auth model is completely different from crypto exchanges (session-token
+  // pair CST + X-SECURITY-TOKEN, refreshed every ~6h). See lib/exchanges/ig.ts.
+  ig: {
+    id: 'ig',
+    name: 'IG',
+    logo: '🟠',
+    website: 'ig.com',
+    apiBase: 'https://api.ig.com/gateway/deal',
+    testnetBase: 'https://demo-api.ig.com/gateway/deal',
+    supportedFeatures: { spotTrading: true, futuresTrading: true, marginTrading: true, stopLoss: true, takeProfit: true, oco: false },
+    quoteAsset: 'USD',
+    minOrderSize: 1,
+    makerFee: 0,
+    takerFee: 0.0004, // ~0.04% spread baseline on Spot Gold liquid hours; instrument-dependent
   },
 }

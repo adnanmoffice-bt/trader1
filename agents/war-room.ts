@@ -11,7 +11,7 @@ import { runPostMeetingBrief } from '@/agents/meta-agent'
 import { buildMacroContext, formatMacroContext, type MacroSnapshot } from '@/lib/macro-context'
 import { generateForecast, formatForecast } from '@/lib/forecast'
 import { validateOHLCV } from '@/lib/data-quality'
-import { getPrimaryExchange } from '@/lib/exchanges'
+import { getExchangeForInstrument } from '@/lib/exchanges'
 import { checkSessionGate } from '@/lib/session-filter'
 import { checkCorrelationDedup } from '@/lib/correlation-dedup'
 import { getDerivativesSnapshot, evaluateDerivativesForLong, type DerivativesSnapshot } from '@/lib/derivatives'
@@ -1057,10 +1057,11 @@ async function runMeeting(
           // Fall through; demo trade has already been recorded above.
         } else try {
           await logExec('info', `${instrument}: edge gate OK — ${edgeGate.reason}`)
-          const ex = getPrimaryExchange()
+          const ex = getExchangeForInstrument(instrument)
           if (!ex.isConfigured()) {
             await logExec('error',
-              `${instrument}: BLOCKED — no exchange credentials on server (set BINANCE_API_KEY and BINANCE_SECRET_KEY in Vercel env vars)`)
+              `${instrument}: BLOCKED — exchange '${ex.config.id}' has no credentials on server (set required env vars in Vercel: ` +
+              `Binance needs BINANCE_API_KEY+BINANCE_SECRET_KEY, IG needs IG_API_KEY+IG_USERNAME+IG_PASSWORD+IG_ACCOUNT_ID)`)
           } else {
             const conn = await ex.testConnection()
             if (!conn.success) {
@@ -1124,7 +1125,7 @@ async function runMeeting(
                         `${instrument}: emergency close filled qty=${closeRes.executedQty.toFixed(6)} @ $${closeRes.avgPrice.toFixed(2)} — trade aborted; no open position`)
                     } else {
                       await logExec('error',
-                        `${instrument}: CRITICAL — SL placement failed AND emergency marketSell failed. Position is NAKED on ${ex.config.name}. Manual intervention required (Binance UI → Spot → sell ${instrument.split('/')[0]}).`)
+                        `${instrument}: CRITICAL — SL placement failed AND emergency marketSell failed. Position is NAKED on ${ex.config.name}. Manual intervention required (open the ${ex.config.name} UI, find ${instrument}, and close the position).`)
                     }
                   } else {
                     // SL in place → try TP (not critical; positions cron trails if this fails)

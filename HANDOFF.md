@@ -87,7 +87,7 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-_(none — cleared 2026-05-06 ~15:10 Dubai after XAU live-blacklist removal landed)_
+LOCK: agents/war-room.ts + app/api/cron/demo/route.ts + scripts/backfill-price-history.mjs + app/api/cron/market-data/route.ts — Computer A — started 2026-05-06 15:15 Dubai for WTI/Brent rotation add
 
 ---
 

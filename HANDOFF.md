@@ -87,7 +87,7 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-_(none — cleared 2026-05-04 ~13:00 Dubai after XAU blacklist patch landed)_
+LOCK: lib/exchanges/* + agents/war-room.ts (real-exec branch only) — Computer A — started 2026-05-06 14:25 Dubai for IG adapter scaffolding (gold/oil execution venue)
 
 ---
 

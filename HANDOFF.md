@@ -87,7 +87,7 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-_(none — cleared 2026-05-06 ~14:30 Dubai after IG adapter scaffolding landed)_
+LOCK: lib/safety.ts + lib/exchanges/ig.ts + app/api/cron/demo/route.ts — Computer A — started 2026-05-06 15:00 Dubai for XAU live unblock (IG venue verified)
 
 ---
 

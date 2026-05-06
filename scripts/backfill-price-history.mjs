@@ -60,6 +60,14 @@ const SYMBOLS = {
   'XAU/USD': 'PAXGUSDT',
 }
 
+// 2026-05-06: oil candles via Yahoo Finance (Binance has no oil pair).
+// Used when war-room rotation includes 'WTI'/'BRENT'. Yahoo gives free 1H
+// candles back ~2 years per request. Same upsert path as Binance candles.
+const YAHOO_SYMBOLS = {
+  'WTI':   'CL=F', // NYMEX WTI Crude Oil front month
+  'BRENT': 'BZ=F', // ICE Brent Crude front month
+}
+
 const DAYS = parseInt(process.argv[2] ?? '365', 10)
 // Filter list (e.g. "BTC/USD,ETH/USD") and interval can come in either order.
 // If the 3rd arg looks like an interval token ("1h"/"4h"/"1d"/"15m") we treat
@@ -76,6 +84,39 @@ const FILTER = a3.kind === 'filter' ? a3.value : a4.kind === 'filter' ? a4.value
 const INTERVAL = a3.kind === 'interval' ? a3.value : a4.kind === 'interval' ? a4.value : '1h'
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+
+// Yahoo Finance 1H candle fetcher. Used for WTI/BRENT (and any future
+// commodity/forex/index that lands in YAHOO_SYMBOLS). Yahoo's range param
+// is fuzzy: '2y' returns ~2 years of 1H data in one request. Beyond 2y
+// historic 1H is sparse, so we cap there.
+async function fetchYahooKlinesRange(yahooSym, startMs, endMs) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSym}?interval=${INTERVAL}&range=2y`
+  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } })
+  if (!res.ok) {
+    console.error(`  Yahoo ${res.status} on ${yahooSym}: ${(await res.text()).slice(0, 120)}`)
+    return []
+  }
+  const json = await res.json()
+  const r = json?.chart?.result?.[0]
+  if (!r) return []
+  const t = r.timestamp ?? []
+  const q = r.indicators?.quote?.[0] ?? {}
+  const out = []
+  for (let i = 0; i < t.length; i++) {
+    if (q.open?.[i] == null || q.close?.[i] == null) continue
+    const ts = t[i] * 1000
+    if (ts < startMs || ts > endMs) continue
+    out.push({
+      timestamp: new Date(ts).toISOString(),
+      open: q.open[i],
+      high: q.high?.[i] ?? q.open[i],
+      low:  q.low?.[i]  ?? q.open[i],
+      close: q.close[i],
+      volume: q.volume?.[i] ?? 0,
+    })
+  }
+  return out
+}
 
 async function fetchKlinesRange(binanceSym, startMs, endMs) {
   const out = []
@@ -127,11 +168,14 @@ async function main() {
   if (FILTER) console.log(`Filter: ${[...FILTER].join(', ')}`)
   console.log()
 
-  const targetSyms = Object.entries(SYMBOLS).filter(([k]) => !FILTER || FILTER.has(k))
+  const binanceTargets = Object.entries(SYMBOLS).filter(([k]) => !FILTER || FILTER.has(k))
+  const yahooTargets   = Object.entries(YAHOO_SYMBOLS).filter(([k]) => !FILTER || FILTER.has(k))
+  const totalSyms      = binanceTargets.length + yahooTargets.length
   let grandTotal = 0
-  for (const [sym, binSym] of targetSyms) {
+
+  for (const [sym, binSym] of binanceTargets) {
     const t0 = Date.now()
-    process.stdout.write(`${sym.padEnd(12)}-> ${binSym.padEnd(10)}  fetching... `)
+    process.stdout.write(`${sym.padEnd(12)}-> ${binSym.padEnd(10)}  binance  fetching... `)
     const klines = await fetchKlinesRange(binSym, startMs, endMs)
     process.stdout.write(`${klines.length} candles  upserting... `)
     const rows = klines.map(k => ({ symbol: sym, interval: INTERVAL, ...k }))
@@ -140,7 +184,20 @@ async function main() {
     console.log(`${inserted} ok  (${dt}s)`)
     grandTotal += inserted
   }
-  console.log(`\nDone. Total ${grandTotal} candles upserted across ${targetSyms.length} symbols.`)
+
+  for (const [sym, yahooSym] of yahooTargets) {
+    const t0 = Date.now()
+    process.stdout.write(`${sym.padEnd(12)}-> ${yahooSym.padEnd(10)}  yahoo    fetching... `)
+    const klines = await fetchYahooKlinesRange(yahooSym, startMs, endMs)
+    process.stdout.write(`${klines.length} candles  upserting... `)
+    const rows = klines.map(k => ({ symbol: sym, interval: INTERVAL, ...k }))
+    const inserted = await upsertBatch(rows)
+    const dt = ((Date.now() - t0) / 1000).toFixed(1)
+    console.log(`${inserted} ok  (${dt}s)`)
+    grandTotal += inserted
+  }
+
+  console.log(`\nDone. Total ${grandTotal} candles upserted across ${totalSyms} symbols.`)
 }
 
 main().catch(e => { console.error(e); process.exit(1) })

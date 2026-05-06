@@ -18,7 +18,12 @@ export const maxDuration = 60
 //   new venue and unblock real execution once the +0.05 R/trade floor is
 //   cleared. See docs/GOLD_OIL_VENUE_DECISION.md and HANDOFF SESSION LOG
 //   2026-05-06.
-const DEMO_INSTRUMENTS = ['BTC/USD', 'ETH/USD', 'XAU/USD'] as const
+// 2026-05-06: WTI + BRENT added alongside XAU after IG account funded.
+// All three route to IG via getExchangeForInstrument(). Demo trades feed
+// the per-instrument 30d edge gate sample on the new venue; live exec
+// remains blocked on each one independently until that instrument's
+// 30d sample reaches ≥20 trades with mean R/trade ≥ -0.05.
+const DEMO_INSTRUMENTS = ['BTC/USD', 'ETH/USD', 'XAU/USD', 'WTI', 'BRENT'] as const
 // All values in USD — no currency conversion needed
 const RISK_PER_TRADE = 0.015  // 1.5% (was 3% — too aggressive)
 const MIN_SCORE = 78           // raised from 70 after audit 2026-04-21 — 3/3 losses were at score=83

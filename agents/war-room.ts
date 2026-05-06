@@ -31,6 +31,14 @@ const ALL_INSTRUMENTS: Instrument[] = [
   'BTC/USD', 'ETH/USD', 'XAU/USD',
   'DOGE/USD', 'AVAX/USD', 'LINK/USD',
   'ADA/USD', 'DOT/USD', 'MATIC/USD', 'NEAR/USD', 'APT/USD',
+  // 2026-05-06: WTI + BRENT added after IG account funded ($500 USD CFD).
+  // Execution venue: IG via getExchangeForInstrument() (lib/exchanges/index.ts).
+  // Candle source: Yahoo Finance via lib/price-fetcher.ts fetchKlines fallback
+  // (CL=F for WTI, BZ=F for Brent). market-data-cron already pulls 5 fresh
+  // 1H candles every 2 min into price_history. Demo trades start accumulating
+  // immediately; live exec stays gated by 30d edge gate (lib/safety.ts) until
+  // ≥20 demo trades with mean R/trade ≥ -0.05.
+  'WTI', 'BRENT',
   // BLACKLISTED: 'SOL/USD' (0W/16L = -$1,344), 'BNB/USD' (0W/12L = -$1,284)
 ]
 

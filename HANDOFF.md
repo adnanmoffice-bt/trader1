@@ -87,11 +87,108 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-LOCK: agents/war-room.ts + app/api/cron/demo/route.ts + scripts/backfill-price-history.mjs + app/api/cron/market-data/route.ts — Computer A — started 2026-05-06 15:15 Dubai for WTI/Brent rotation add
+_(none — cleared 2026-05-06 ~15:30 Dubai after WTI/Brent rotation add landed)_
 
 ---
 
 ## SESSION LOG (newest on top)
+
+### 2026-05-06 · 15:30 Dubai · Computer A (day) — WTI + Brent added to rotation
+**Commits:** `172f26f` (LOCK) → _(this push)_ (`feat(rotation): add WTI + Brent via IG/Yahoo` + 11.4K candle backfill + clear LOCK)
+
+Operator: "pa dodaj, zato smo te uvezali s ovom platformom" (so add it,
+that's why we connected you to this platform). Adding WTI and Brent on
+the IG venue alongside the just-unblocked XAU.
+
+Symbol-naming alignment: `Instrument` type in `types/index.ts` already
+had `'BRENT'` and `'WTI'` (no /USD suffix) and `lib/price-fetcher.ts →
+fetchKlines` already falls back to Yahoo Finance for those keys (CL=F
+for WTI, BZ=F for Brent). market-data-cron has been writing 5 fresh
+candles per 2-min tick for both into `price_history` for weeks. The
+plumbing was already there — it just had no consumer.
+
+Five patches in this push:
+
+1. **`lib/exchanges/ig.ts → SYMBOL_MAP`**: changed `'WTI/USD'` → `'WTI'`
+   and `'BRENT/USD'` → `'BRENT'` to match the rest of the codebase.
+   Verified epics `CC.D.CL.BMU.IP` and `CC.D.LCO.BMU.IP` from this
+   morning's smoke test.
+
+2. **`lib/exchanges/index.ts → IG_INSTRUMENTS`**: same renames.
+   `getExchangeForInstrument('WTI')` and `('BRENT')` now route to IG
+   when configured, fall back to Binance otherwise (which produces a
+   helpful error since Binance has no oil pair).
+
+3. **`agents/war-room.ts → ALL_INSTRUMENTS`**: appended `'WTI', 'BRENT'`.
+   Rotation is now 13 instruments. Existing gates (session, correlation,
+   derivatives, MTF, news, CME, on-chain) either work for any instrument
+   with sufficient candles or fail-open for non-Binance symbols. CME-gap
+   nudge is BTC-only by code, no change needed.
+
+4. **`app/api/cron/demo/route.ts → DEMO_INSTRUMENTS`**: appended `'WTI',
+   'BRENT'`. Demo cron now generates simulated trades on 5 instruments
+   (BTC, ETH, XAU, WTI, Brent). Each instrument's 30d edge-gate sample
+   accumulates independently. Live exec stays gated per instrument until
+   that instrument's sample reaches ≥20 trades with mean R/trade ≥ -0.05.
+
+5. **`scripts/backfill-price-history.mjs`**: added `YAHOO_SYMBOLS` map
+   and `fetchYahooKlinesRange()` helper. Yahoo's chart API returns ~2y
+   of 1H candles per request via `range=2y`. Same upsert path as the
+   Binance branch, idempotent on (symbol, interval, timestamp).
+
+One-time backfill run this session:
+```
+WTI    -> CL=F  yahoo  5669 candles  (8.1s)
+BRENT  -> BZ=F  yahoo  5729 candles  (5.9s)
+```
+≈365 days of 1H per symbol. Enough for any indicator currently used
+(EMA50, RSI14, ATR14, MACD, BB, etc.) with months of warmup margin.
+
+Validation:
+- `npx tsc --noEmit` clean
+- `npx eslint agents/war-room.ts app/api/cron/demo/route.ts lib/exchanges/ig.ts lib/exchanges/index.ts` clean
+- `node scripts/backfill-price-history.mjs 365 WTI,BRENT` ran clean,
+  11.4K candles in DB
+
+What this enables:
+- War-room debates oil on the same 30-min schedule as crypto/gold
+- Each oil meeting takes its own AI cost (~$0.05-0.20)
+- demo_trades on WTI/BRENT start accumulating immediately
+- Live exec on oil unblocks per-instrument when its 30d sample passes the
+  edge-gate floor (same staircase as XAU)
+
+What was NOT done (deliberately):
+- No backtest of oil triggers on the 365d backfilled data. The 5 trigger
+  primitives (EMA cross, MACD crossover, EMA50 break, RSI extreme, vol
+  spike) were validated only on crypto. They MAY have negative expectancy
+  on oil — we will see in the demo phase. If after 30 days the oil
+  per-instrument expectancy is consistently below -0.05R, we either
+  blacklist them or research oil-specific triggers.
+- No change to risk controls. Position sizing on oil uses the same 1.5%
+  per-trade calc; for $500 IG account that's $7.50 risk per oil trade.
+  WTI ATR ~1.5%/day = SL distance ~$1.30 → contract size ~5.7. Tiny but
+  workable. We'll see real fill characteristics in the demo phase.
+- WTI and BRENT are NOT live-blacklisted. They go through the same
+  edge-gate machinery as XAU. First real oil order fires only when both
+  instrument-specific 30d sample passes the floor.
+
+Files modified:
+- agents/war-room.ts (ALL_INSTRUMENTS appended)
+- app/api/cron/demo/route.ts (DEMO_INSTRUMENTS appended)
+- lib/exchanges/ig.ts (SYMBOL_MAP key rename)
+- lib/exchanges/index.ts (IG_INSTRUMENTS key rename)
+- scripts/backfill-price-history.mjs (Yahoo branch added)
+- HANDOFF.md (this entry, LOCK cleared)
+
+Database changes:
+- +11,398 rows in price_history (5669 WTI + 5729 BRENT, all `interval='1h'`)
+
+Next-session entry point:
+- After ~24h of demo cron running, audit demo_trades for first WTI/Brent
+  trades. Gate behaviour, fill prices, and stop placement will tell us
+  if any oil-specific tuning is needed.
+- After 30d, run audit-recent-losses.mjs and check per-instrument WTI and
+  BRENT lines. Negative expectancy → consider blacklisting.
 
 ### 2026-05-06 · 15:10 Dubai · Computer A (day) — XAU live-blacklist removed (IG venue verified, $500 funded)
 **Commits:** `c2419a2` (LOCK) → _(this push)_ (`CRITICAL(safety): remove XAU/USD from LIVE_INSTRUMENT_BLACKLIST` + IG epic fix + demo cron re-add + clear LOCK)

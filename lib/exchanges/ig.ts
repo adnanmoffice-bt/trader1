@@ -54,11 +54,14 @@ import { EXCHANGE_CONFIGS } from './types'
 // historical prices (e.g. CS.D.CFDGOLD.CFDGC.IP shows $1404 vs real spot $4719).
 // Re-run scripts/test-ig-connection.mjs after any account migration to
 // re-verify the correct epic for this region.
+// Note: symbol keys match `Instrument` type in `types/index.ts`. Crypto is
+// FOO/USD style; oil is bare 'BRENT'/'WTI' (no /USD suffix) because the
+// Yahoo Finance fallback path uses those keys throughout the codebase.
 const SYMBOL_MAP: Record<string, string> = {
   'XAU/USD': 'CS.D.CFDGOLD.BMU.IP', // Spot Gold ($1 contract) — verified $4719
   'XAG/USD': 'CS.D.CFDSILVER.BMU.IP', // Spot Silver (untested but follows BMU pattern)
-  'WTI/USD': 'CC.D.CL.BMU.IP', // US Crude Oil — verified $88.42
-  'BRENT/USD': 'CC.D.LCO.BMU.IP', // Brent Crude — verified $97.26
+  'WTI':     'CC.D.CL.BMU.IP', // US Crude Oil — verified $88.42
+  'BRENT':   'CC.D.LCO.BMU.IP', // Brent Crude — verified $97.26
 }
 
 // IG kline resolutions — only a fixed set is supported.

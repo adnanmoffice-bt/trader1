@@ -87,7 +87,7 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-_(none — cleared 2026-05-06 ~16:10 Dubai after Option 2a landed)_
+LOCK: lib/data-quality.ts + lib/risk-controls.ts + agents/* + app/api/cron/demo/route.ts — Computer A — started 2026-05-07 09:35 Dubai for overnight-audit fixes (data-quality asset class, demo-loss cooldown, model 404, trigger sensitivity)
 
 ---
 

@@ -11,6 +11,7 @@
     { "path": "/api/cron/daily-report",      "schedule": "0 18 * * *" },
     { "path": "/api/cron/weekly-report",     "schedule": "10 18 * * 0" },
     { "path": "/api/cron/status-report",     "schedule": "0 */2 * * *" },
+    { "path": "/api/cron/self-audit",        "schedule": "0 */6 * * *" },
     { "path": "/api/cron/performance",       "schedule": "30 18 * * *" },
     { "path": "/api/cron/analytics",         "schedule": "45 18 * * *" }
   ]

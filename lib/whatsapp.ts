@@ -751,3 +751,101 @@ export async function notifyWeeklyReport(data: {
 
   return sendGroupMessage(lines.join('\n'), userId)
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 16. SELF-AUDIT REPORT — system health + activity since last audit
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export interface SelfAuditPayload {
+  windowHours: number
+  // Health checks (each should be 0 if everything's fine)
+  health: {
+    dataQualityFails: number
+    modelErrors: number
+    falseLossStreakPauses: number
+  }
+  // Rotation activity
+  activity: {
+    closes: number
+    meetingsOpened: number
+    decisionsExecuted: number
+    decisionsRejected: number
+    signalsGenerated: number
+    realTradesOpened: number
+    realTradesClosed: number
+    demoTradesOpened: number
+    demoTradesClosed: number
+    realPnl: number
+    demoPnl: number
+  }
+  closesByReason: Array<{ reason: string; count: number }>
+  // Per-instrument freshness — flag any instrument whose newest candle is older
+  // than its expected staleness budget (varies by asset class).
+  staleInstruments: Array<{ instrument: string; ageMin: number }>
+  verdict: 'healthy' | 'warning' | 'critical'
+  notes: string[]
+}
+
+export async function notifySelfAudit(data: SelfAuditPayload, userId?: string) {
+  const h = data.health
+  const a = data.activity
+  const totalHealthIssues = h.dataQualityFails + h.modelErrors + h.falseLossStreakPauses
+
+  const verdictTag = data.verdict === 'healthy' ? 'HEALTHY'
+                   : data.verdict === 'warning' ? 'WARNING'
+                   : 'CRITICAL'
+
+  const lines: string[] = [
+    `*APEX self-audit — last ${data.windowHours}h*`,
+    `Verdict: ${verdictTag}`,
+  ]
+
+  // Health block
+  lines.push(``)
+  lines.push(`Health checks:`)
+  lines.push(`  data-quality fails:      ${h.dataQualityFails}`)
+  lines.push(`  AI model errors (404):   ${h.modelErrors}`)
+  lines.push(`  false loss-streak pauses: ${h.falseLossStreakPauses}`)
+  if (totalHealthIssues === 0) lines.push(`  → all green`)
+
+  // Activity block
+  lines.push(``)
+  lines.push(`Activity:`)
+  lines.push(`  rotation closes:    ${a.closes}`)
+  lines.push(`  meetings opened:    ${a.meetingsOpened}`)
+  lines.push(`  signals generated:  ${a.signalsGenerated}`)
+  lines.push(`  live trades:        ${a.realTradesOpened} opened / ${a.realTradesClosed} closed   P&L ${fSigned(a.realPnl)}`)
+  lines.push(`  demo trades:        ${a.demoTradesOpened} opened / ${a.demoTradesClosed} closed   P&L ${fSigned(a.demoPnl)}`)
+  if (a.decisionsExecuted + a.decisionsRejected > 0) {
+    lines.push(`  decisions:          ${a.decisionsExecuted} executed / ${a.decisionsRejected} rejected`)
+  }
+
+  // Closes-by-reason block (top 5)
+  if (data.closesByReason.length > 0) {
+    lines.push(``)
+    lines.push(`Why most meetings closed:`)
+    for (const r of data.closesByReason.slice(0, 5)) {
+      lines.push(`  ${r.reason.padEnd(24)} ${r.count}`)
+    }
+  }
+
+  // Stale-data warnings
+  if (data.staleInstruments.length > 0) {
+    lines.push(``)
+    lines.push(`Stale candles:`)
+    for (const s of data.staleInstruments.slice(0, 6)) {
+      lines.push(`  ${s.instrument.padEnd(10)} ${Math.round(s.ageMin)}min old`)
+    }
+  }
+
+  // Notes
+  if (data.notes.length > 0) {
+    lines.push(``)
+    for (const n of data.notes) lines.push(n)
+  }
+
+  lines.push(``)
+  lines.push(`${dubaiTime()} GST`)
+
+  return sendGroupMessage(lines.join('\n'), userId)
+}

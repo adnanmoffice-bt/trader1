@@ -87,11 +87,73 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-_(none — cleared 2026-05-07 ~09:55 Dubai after overnight-audit fixes)_
+_(none — cleared 2026-05-07 ~14:05 Dubai after self-audit cron added)_
 
 ---
 
 ## SESSION LOG (newest on top)
+
+### 2026-05-07 · 14:05 Dubai · Computer A (day) — self-audit cron (WA group, every 6h)
+**Commits:** _(this push)_ (`feat(observability): self-audit cron posts 6h health + activity report to WA group`)
+
+Operator asked the system to audit itself and post results to the WA
+group in English. New `/api/cron/self-audit` route + `notifySelfAudit()`
+helper in `lib/whatsapp.ts`. Schedule `0 */6 * * *` (every 6h on the
+hour, GST = UTC+4).
+
+**What it reports (single WA message per run):**
+
+1. **Health checks** — three counters that should be 0 if the
+   2026-05-07 morning fixes are still holding:
+   - `data-quality fails` (was ~42% of all closes pre-fix; should be 0)
+   - `AI model errors (404)` (5 FAST-tier agents were silently failing
+     pre-Haiku-4.5 swap; should be 0)
+   - `false loss-streak pauses` (was tripping on demo SLs; should fire
+     only on real losses now)
+
+2. **Activity** — rotation closes, meetings opened (12-agent debate
+   reached), signals generated, live + demo trades opened/closed with
+   per-bucket P&L.
+
+3. **Closes by reason** — top 5 from {no-trigger, atr-extreme,
+   long-only-mode, meeting-cap, cooldown, mtf-veto, ...}. Tells the
+   operator at a glance whether the rotation is starved of triggers
+   (market quiet) vs being over-vetoed by gates.
+
+4. **Stale candles** — any instrument whose newest `price_history` row
+   exceeds its asset-class freshness budget (mirrors the thresholds in
+   `lib/data-quality.ts`). FX 90min, crypto 120min, oil 240min,
+   US equities 18h.
+
+5. **Verdict** — healthy / warning / critical, decided by:
+   - critical: model errors > 5, OR data-quality fails > 50, OR
+     >10 stale instruments
+   - warning: any health issue OR > 4 stale instruments
+   - healthy: everything 0 / clean
+
+6. **Notes** — adaptive sentences ("market quiet — rotation healthy",
+   "many MTF vetoes — trend-aligned setups needed", "live execution
+   active — 2 trades opened", etc.).
+
+**WA message style** — same plain-English convention as the rest of the
+notification refactor on 2026-05-06: no dividers, no emoji clusters,
+just facts and a verdict tag. Investor-readable.
+
+**Operational notes:**
+- Read-only: never opens trades or modifies user_settings.
+- First scheduled run lands at next 0/6/12/18 UTC tick = first message
+  arrives in WA within 6h of the deploy. Manual run is safe via:
+  `curl -H "Authorization: Bearer $CRON_SECRET" https://<host>/api/cron/self-audit`
+- Logs to `agent_logs` (agent='self-audit-cron') with full payload in
+  `metadata` for debugging if a message fails to send.
+
+**Validation:**
+- `npx tsc --noEmit` clean.
+- Routes registered in `vercel.json` immediately after `status-report`.
+- `notifySelfAudit()` typed via exported `SelfAuditPayload` interface
+  so the cron and the formatter cannot drift.
+
+**Disabling:** remove the line from `vercel.json` and redeploy.
 
 ### 2026-05-07 · 09:55 Dubai · Computer A (day) — fix overnight blockers (data quality, demo-loss cooldown, Haiku 404)
 **Commits:** `63b8efd` (LOCK) → _(this push)_ (`CRITICAL: unblock rotation — asset-class data quality + real-only loss cooldown + fix MODEL_FAST 404`)

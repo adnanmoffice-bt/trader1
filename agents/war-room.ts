@@ -138,22 +138,29 @@ export async function runWarRoom(): Promise<void> {
 
   // ── PHASE 6: MARKET REGIME FILTER ──
 
-  // Loss streak pause: if last 3 closed trades were all losses, wait 2 hours
-  const { data: recentClosedTrades } = await db.from('demo_trades')
-    .select('pnl, exit_time')
-    .not('exit_time', 'is', null)
-    .order('exit_time', { ascending: false })
+  // Loss streak pause: if last 3 closed REAL trades were all losses, wait 2h.
+  //
+  // 2026-05-07 — was reading from `demo_trades` which gates the war-room every
+  // time the auto-demo loop hits 3 SLs in a row. Overnight audit (16h window
+  // post Option 2a) showed this fired twice and ate ~5h of rotation, even
+  // though no real money had moved. Switched to `trades` (live) so the
+  // cooldown only triggers when actual capital was lost.
+  const { data: recentClosedTrades } = await db.from('trades')
+    .select('pnl, closed_at')
+    .in('status', ['closed', 'stopped'])
+    .not('closed_at', 'is', null)
+    .order('closed_at', { ascending: false })
     .limit(3)
   const lastThreeLosses = (recentClosedTrades ?? []).length >= 3
     && recentClosedTrades!.every(t => +(t.pnl ?? 0) <= 0)
   if (lastThreeLosses) {
-    const lastClose = recentClosedTrades![0].exit_time
+    const lastClose = recentClosedTrades![0].closed_at
     const hoursSinceLastLoss = lastClose ? (Date.now() - new Date(lastClose).getTime()) / 3600_000 : 999
     if (hoursSinceLastLoss < 2) {
       await say(db, crypto.randomUUID(), null, {
         agent: 'orchestrator', role: 'alert',
-        message: `WAR ROOM PAUSED: 3 consecutive losses. Mandatory 2h cooldown (${(2 - hoursSinceLastLoss).toFixed(1)}h remaining). Protecting capital.`,
-        data: { reason: 'loss-streak-cooldown', hoursSinceLastLoss, remainingHours: 2 - hoursSinceLastLoss },
+        message: `WAR ROOM PAUSED: 3 consecutive REAL losses. Mandatory 2h cooldown (${(2 - hoursSinceLastLoss).toFixed(1)}h remaining). Protecting capital.`,
+        data: { reason: 'loss-streak-cooldown', hoursSinceLastLoss, remainingHours: 2 - hoursSinceLastLoss, source: 'trades' },
       })
       return
     }
@@ -197,10 +204,13 @@ export async function runWarRoom(): Promise<void> {
   const rotateIdx = new Date().getUTCHours() % ALL_INSTRUMENTS.length
   const rotatedInstruments = [...ALL_INSTRUMENTS.slice(rotateIdx), ...ALL_INSTRUMENTS.slice(0, rotateIdx)]
 
-  // Phase C3 — detect bleeding tape (3+ losses in last 6h) once per cron tick.
+  // Phase C3 — detect bleeding tape (3+ REAL losses in last 6h) once per
+  // cron tick. Switched from demo_trades to trades on 2026-05-07 (same
+  // reason as the 3-consecutive cooldown above — minimal-mode shouldn't
+  // trip on demo SLs, only on real money).
   const recentLossWindow = new Date(Date.now() - 6 * 3600_000).toISOString()
-  const { data: recentLosses6h } = await db.from('demo_trades')
-    .select('pnl').not('exit_time', 'is', null).gte('exit_time', recentLossWindow)
+  const { data: recentLosses6h } = await db.from('trades')
+    .select('pnl').in('status', ['closed', 'stopped']).gte('closed_at', recentLossWindow)
   const lossStreakTrips = (recentLosses6h ?? []).filter(t => +(t.pnl ?? 0) < 0).length >= 3
 
   for (const instrument of rotatedInstruments) {

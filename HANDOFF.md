@@ -87,11 +87,93 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-LOCK: lib/data-quality.ts + lib/risk-controls.ts + agents/* + app/api/cron/demo/route.ts — Computer A — started 2026-05-07 09:35 Dubai for overnight-audit fixes (data-quality asset class, demo-loss cooldown, model 404, trigger sensitivity)
+_(none — cleared 2026-05-07 ~09:55 Dubai after overnight-audit fixes)_
 
 ---
 
 ## SESSION LOG (newest on top)
+
+### 2026-05-07 · 09:55 Dubai · Computer A (day) — fix overnight blockers (data quality, demo-loss cooldown, Haiku 404)
+**Commits:** `63b8efd` (LOCK) → _(this push)_ (`CRITICAL: unblock rotation — asset-class data quality + real-only loss cooldown + fix MODEL_FAST 404`)
+
+24h audit since Option 2a deploy showed **zero real trades** despite the
+gate being open. Three independent blockers explain it; all fixed in this
+push.
+
+**Blocker 1 — data-quality validator was crypto-only.** The 8 new non-crypto
+instruments (EUR/USD, GBP/USD, USD/JPY, SPY, QQQ, WTI, BRENT, XAG/USD)
+got DATA QUALITY FAIL on every cron tick (384 of 915 meeting closes =
+42%). Yahoo doesn't report volume for FX (OTC, no exchange volume) and
+SPY/QQQ are stale ~8h overnight (US market closed). Validator was
+defaulting all of those as "suspicious data" → war-room never even
+reached trigger logic.
+
+`lib/data-quality.ts` rewritten with an `AssetClass` system:
+  - **crypto**: stale > 120min, ≤5 missing, volume check ON, ≤5 outliers
+  - **fx / metal**: stale > 90min, ≤60 missing, volume check OFF
+  - **commodity_futures**: stale > 240min, ≤60 missing, volume check OFF
+  - **us_equity**: stale > 18h, ≤200 missing, volume check OFF (covers
+    weekday-overnight + long weekends for SPY/QQQ)
+
+Outlier and OHLC-integrity checks remain universal. The "1 issue allowed"
+leniency in the old final verdict was dropped — issues now actually
+matter, since each is asset-class-tuned.
+
+**Blocker 2 — 3-consecutive-loss cooldown was tracking demo trades.**
+War-room paused 18:00-20:30 GST and 01:15-03:15 GST overnight (~5h
+muted) because the auto-demo loop hit 3 SLs in a row on different
+instruments. Demo is by design how we *test* signals; demo SLs aren't
+risk events. `agents/war-room.ts` switched the loss-streak check (line
+~141) and the bleeding-tape Phase-C3 minimal-mode check (line ~200)
+from `demo_trades.exit_time` to `trades.closed_at` (real fills only).
+WhatsApp alert text updated to "3 consecutive REAL losses" so it's
+unambiguous in the group.
+
+**Blocker 3 — `MODEL_FAST` returns HTTP 404 not_found_error.** `lib/anthropic.ts`
+had `MODEL_FAST = 'claude-3-5-haiku-20241022'` which Anthropic deprecated.
+5 of 12 war-room agents (correlation, scalper, trend, market-analyst,
+trade-reviewer — exactly the FAST-tier agents per AGENT_TIER) were
+silently failing on every meeting that reached the 12-agent debate.
+Verified by probing `/v1/messages` directly:
+  - `claude-3-5-haiku-20241022` → 404
+  - `claude-haiku-4-5` (alias) → 200, resolves to `claude-haiku-4-5-20251001`
+  - Sonnet & Opus model ids unchanged, both still working.
+
+Updated `MODEL_FAST = 'claude-haiku-4-5-20251001'`. Cost map updated to
+$1/$5 per Mtok (Haiku 4.5 published rate; was $0.80/$4 for Haiku 3.5).
+Per-meeting input cost rises ~25% on FAST-tier agents only — overall
+12-agent meeting cost increases roughly 4-6%. Acceptable.
+
+**#4 trigger sensitivity DEFERRED.** Trigger thresholds (RSI 25/75,
+EMA cross, MACD cross, vol ratio 2.5×) are backtest-validated against
+180d real data. Relaxing them without re-running
+`scripts/backtest-gate-stack.mjs` could resurrect the documented
+negative-edge problem. Revisit in 24h after #1-3 prove themselves on
+real fresh data; only ship a relaxation if backtest still neutral or
+better.
+
+**Validation:**
+- `npx tsc --noEmit` clean.
+- `node scripts/_check-model-404.mjs` (deleted, was throwaway) confirmed
+  the model id swap.
+- 24h audit script run pre-fix, will re-run tomorrow same time.
+
+**Expected impact (next 24h):**
+- 8 forex/indices/commodity instruments stop hitting DATA QUALITY FAIL
+  → demo trades start opening on them → 30d edge sample begins.
+- War-room stops auto-pausing on demo SL streaks → rotation runs full
+  16h instead of ~11h.
+- Every 12-agent meeting actually has 12 working agents → master-agent
+  judge has real votes from all 5 FAST-tier agents instead of error
+  stubs. Decisions improve.
+
+**Reverting any single change:**
+- Data quality: `git revert` lib/data-quality.ts (returns to crypto-only
+  rules that block all non-crypto)
+- Loss cooldown: change `from('trades')` back to `from('demo_trades')`
+  in agents/war-room.ts (two occurrences, both commented with
+  2026-05-07).
+- MODEL_FAST: revert lib/anthropic.ts (will silently re-break 5 agents).
 
 ### 2026-05-06 · 16:10 Dubai · Computer A (day) — Option 2a: reduced-risk live + forex/indices/silver
 **Commits:** `7f29f49` (LOCK) → _(this push)_ (`CRITICAL: option 2a — reduced-risk live override + forex/indices/silver rotation` + 27,705 candle backfill + clear LOCK)

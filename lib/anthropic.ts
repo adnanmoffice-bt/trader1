@@ -4,13 +4,19 @@ const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
 
 export const MODEL = 'claude-opus-4-20250514'
 export const MODEL_SONNET = 'claude-sonnet-4-20250514'
-export const MODEL_FAST = 'claude-3-5-haiku-20241022'
+// 2026-05-07 — was 'claude-3-5-haiku-20241022'. Anthropic deprecated that
+// snapshot; live calls hit HTTP 404 not_found_error and silently degraded
+// 5 of the 12 war-room agents (correlation, scalper, trend, market-analyst,
+// trade-reviewer — all on FAST tier per agents/agent-prompts.ts AGENT_TIER).
+// Verified the new id by probing /v1/messages directly.
+export const MODEL_FAST = 'claude-haiku-4-5-20251001'
 
-// Cost per 1M tokens (USD) — used for budget tracking
+// Cost per 1M tokens (USD) — used for budget tracking.
+// Haiku 4.5 published pricing ~ $1 in / $5 out per M-tok.
 export const MODEL_COSTS = {
   [MODEL]:        { input: 15.00, output: 75.00 },
   [MODEL_SONNET]: { input: 3.00,  output: 15.00 },
-  [MODEL_FAST]:   { input: 0.80,  output: 4.00 },
+  [MODEL_FAST]:   { input: 1.00,  output: 5.00 },
 } as Record<string, { input: number; output: number }>
 
 interface CallAgentOptions {

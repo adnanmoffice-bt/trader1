@@ -233,8 +233,23 @@ const MIN_TRADES_FOR_GATE = 20         // need at least 20 closed trades to eval
 //
 // To revert this override entirely: set REDUCED_RISK_CEILING_PCT = 0 here.
 // Operator can also kill it from the database side by raising
-// risk_per_trade_pct above 0.5.
-const REDUCED_RISK_CEILING_PCT = 0.5   // 0.5% — strict per-trade ceiling for bypass
+// risk_per_trade_pct above the ceiling.
+//
+// 2026-05-08 — PROBE WEEK: ceiling raised 0.5% → 2.0% under operator
+// directive ("riskiraj 500 dolara ovu sedmicu da vidimo da li cemo
+// izvuci profit, u live ne demo"). Probe runs 2026-05-09 → 2026-05-15.
+// At 1.5% per trade on the $500 IG account that's $7.50 of risk per
+// trade. Worst-case math (~25-30 trades / week, 36.9% backtest WR)
+// caps weekly downside around $150-200; the PROBE_WEEK_KILL_USD guard
+// in lib/risk-controls.ts hard-stops at $200 cumulative real loss and
+// flips trading_mode back to demo. Probe ends naturally at PROBE_WEEK_END.
+//
+// Revert path (one of):
+//   1) wait for PROBE_WEEK_END — risk-controls auto-stops new live opens
+//   2) lower this constant back to 0.5
+//   3) raise user_settings.risk_per_trade_pct above 2.0 (re-engages
+//      30d edge gate, which currently FAILS so live exec stops)
+const REDUCED_RISK_CEILING_PCT = 2.0   // 2.0% — Probe Week ceiling (was 0.5)
 
 async function getConfiguredRiskPct(): Promise<number | null> {
   try {

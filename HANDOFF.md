@@ -87,11 +87,121 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-LOCK: lib/safety.ts + lib/risk-controls.ts + agents/war-room.ts — Computer A — started 2026-05-08 14:33 Dubai (PROBE WEEK: 1.5%/trade live + $200 weekly kill switch)
+_(none — cleared 2026-05-08 ~14:55 Dubai after PROBE WEEK shipped)_
 
 ---
 
 ## SESSION LOG (newest on top)
+
+### 2026-05-08 · 14:55 Dubai · Computer A (day) — PROBE WEEK: 1.5%/trade live exec + $200 weekly kill
+**Commits:** `00ebee8` (LOCK) → _(this push)_ (`CRITICAL: PROBE WEEK — raise reduced-risk ceiling 0.5→2.0%, add probe-week kill switch, set risk to 1.5%`)
+
+Operator under investor pressure: "riskiraj 500 dolara ovu sedmicu da
+vidimo da li cemo izvuci profit, u live ne demo, ali uradi njabolje sto
+znas". Authorised after I showed the math (recommended plan: 1.5%/trade
+on $500 IG account, $200 weekly kill, 7-day window).
+
+Today's weekly backtest (`scripts/backtest-runs/2026-05-08.txt`) showed
+NEW mode improved +0.048 R/trade week-over-week (-0.126 → -0.078) but
+is STILL negative-edge by the 30d rolling gate's -0.05 floor. Operator
+chose to override and run live anyway — accepting variance and ~60-70%
+probability of a losing week as the cost of seeing real fills.
+
+**Three load-bearing changes (read these before any safety edit):**
+
+1. `lib/safety.ts → REDUCED_RISK_CEILING_PCT` raised **0.5% → 2.0%**.
+   This is the maximum `user_settings.risk_per_trade_pct` value at
+   which the 30d edge gate is bypassed. `LIVE_INSTRUMENT_BLACKLIST`
+   (ADA/DOT/APT/XAG) is still enforced first — the bypass cannot
+   resurrect blacklisted instruments. Set `REDUCED_RISK_CEILING_PCT = 0`
+   to kill the override entirely.
+
+2. `lib/risk-controls.ts` — **new `checkProbeWeekKill()` function +
+   three new constants**:
+   - `PROBE_WEEK_START_ISO = '2026-05-08T10:30:00Z'` (= 14:30 Dubai
+     today, when the operator committed to the probe).
+   - `PROBE_WEEK_END_ISO   = '2026-05-15T20:00:00Z'` (= midnight
+     Dubai end of next Friday). After this, no new live opens fire;
+     existing live positions ride out to SL/TP normally.
+   - `PROBE_WEEK_KILL_USD  = 200`. When cumulative `trades.pnl` (real,
+     status in ['closed','stopped']) since start drops to ≤ -$200,
+     the function:
+     a) Inserts an `agent_logs` row (`agent='probe-week-kill',
+        level='error'`) so the kill is durable across restarts.
+     b) Sets `user_settings.trading_mode = 'demo'`. The very first
+        live-exec gate in `agents/war-room.ts` (line ~1102) closes
+        the path on the next tick.
+     c) Returns `allowed: false` so the in-flight tick also blocks.
+   - Demo trades and demo P&L are **NEVER** counted here — the kill
+     is purely about real-money fills.
+   - Reset path is intentionally inconvenient: requires
+     `DELETE FROM agent_logs WHERE agent='probe-week-kill'` AND
+     `UPDATE user_settings SET trading_mode='live'`. The operator
+     wanted this sticky.
+
+3. `agents/war-room.ts` — wired `checkProbeWeekKill()` into the
+   live-exec branch, **before** `checkLiveTradingAllowed()`. If the
+   probe-week kill fails, the war-room still records the demo trade
+   and only blocks the live order. Same fall-through pattern as the
+   edge gate.
+
+4. `user_settings.risk_per_trade_pct` set to **1.5** via
+   `TARGET=1.5 node scripts/set-reduced-risk.mjs`. DB row verified:
+   `risk_per_trade_pct=1.5`. With `REDUCED_RISK_CEILING_PCT=2.0`,
+   the bypass is active → live exec reachable on instruments not in
+   the blacklist.
+
+**Math the operator approved (2026-05-08 14:33 Dubai):**
+
+| Scenario | Probability | Account result |
+|---|---|---|
+| Worst case (~7 SLs back-to-back, neg variance) | ~10% | -$200 → kill, IG balance $300 |
+| Expected (matches -0.078 R backtest) | ~40% | -$25 to -$50 |
+| Breakeven | ~30% | -$10 to +$10 |
+| Good week | ~15% | +$30 to +$80 |
+| Best case (positive variance + DOGE/LINK win) | ~5% | +$100 to +$200 |
+
+Per-trade risk: $7.50 (1.5% of $500 IG). Daily loss limit unchanged
+at 5% = $25/day. Max realistic trades in 7 days: ~25-30.
+
+**What this DOES enable:**
+- Real IG orders fire on BTC, ETH, XAU, DOGE, AVAX, LINK, MATIC, NEAR,
+  WTI, BRENT, EUR/USD, GBP/USD, USD/JPY when war-room signals pass
+  all gates (atr-extreme, derivatives, MTF, macro, news, session,
+  correlation, orderbook).
+- Demo continues to populate the 30d edge-gate sample.
+
+**What this does NOT enable (deliberately):**
+- XAG/USD — still on `LIVE_INSTRUMENT_BLACKLIST` (100× scaling bug
+  on IG epic CS.D.CFDSILVER.BMU.IP, verified today: IG quote 8067.9
+  vs Yahoo 80.91). Probe-week change does NOT lift this.
+- SPY / QQQ — NOT blacklisted but they have similar unit-mismatch
+  issues (IG returns S&P 500 / NAS-100 index futures at ~10× / ~40×
+  the Yahoo SPY/QQQ ETF prices). Operator declined a defensive
+  blacklist on these for now; they can fire live, but war-room
+  signals use Yahoo ETF prices for indicators while the IG order
+  fills on the index — sizing math will be off. **Risk acknowledged.**
+- Shorts / SOL / BNB / BB_SQUEEZE — workspace rules still in force.
+
+**Reverting Probe Week (any one of these, in order of cleanliness):**
+1. Wait — auto-stops at 2026-05-15 20:00 UTC.
+2. `TARGET=2 node scripts/set-reduced-risk.mjs` (raises risk above
+   ceiling → 30d edge gate re-engages → currently fails → live blocked).
+3. `lib/safety.ts → REDUCED_RISK_CEILING_PCT = 0` (one-line revert).
+4. If kill already tripped: see "Reset path" in the code comment.
+
+**Validation:**
+- `npx tsc --noEmit` clean.
+- ReadLints clean on `lib/safety.ts`, `lib/risk-controls.ts`,
+  `agents/war-room.ts`.
+- DB read confirms `risk_per_trade_pct=1.5`.
+
+**Operational follow-up:**
+- WhatsApp group will receive an announcement post-deploy.
+- Status report cron (every 2h) will show probe-week headroom in the
+  P&L breakdown once the helper hooks into `notifyPeriodicReport`.
+- I will run `node scripts/audit-24h.mjs` end of each Dubai day this
+  week and post results.
 
 ### 2026-05-08 · 14:35 Dubai · Computer A (day) — archive legacy demo_trades (pre-2026-04-17 SOL/BNB/BB_SQUEEZE era)
 **Commits:** `80a0535` (LOCK) → _(this push)_ (`feat(analytics): archive legacy demo_trades from dashboard`)

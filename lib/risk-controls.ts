@@ -7,6 +7,41 @@ const MAX_POSITIONS = 3
 const MIN_RR = 1.5
 const MAX_SL_PCT = 6                // SL cannot exceed 6% from entry
 
+// ─────────────────────────────────────────────────────────────────────────────
+// PROBE WEEK — added 2026-05-08 under operator directive
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Operator: "riskiraj 500 dolara ovu sedmicu da vidimo da li cemo izvuci
+// profit, u live ne demo". One-week real-money trial at 1.5%/trade
+// (REDUCED_RISK_CEILING_PCT lifted 0.5 → 2.0 in lib/safety.ts to allow
+// the bypass to reach 1.5%). Hard kill at $200 cumulative real loss.
+//
+// PROBE_WEEK_START_ISO: 2026-05-08 14:30 Dubai = 2026-05-08 10:30 UTC.
+// Real trades opened before this timestamp are excluded from the kill
+// math (there shouldn't be any — last 30 days had 0 real fills — but
+// defensive).
+//
+// PROBE_WEEK_END_ISO: 2026-05-16 00:00 Dubai = 2026-05-15 20:00 UTC.
+// After this, checkProbeWeekKill returns blocked regardless of P&L —
+// new live opens stop, existing live positions ride out to SL/TP.
+//
+// PROBE_WEEK_KILL_USD: cumulative real-money realized P&L. When the sum
+// of `trades.pnl` (status in ['closed','stopped']) since
+// PROBE_WEEK_START_ISO drops to -$200 or worse, the function:
+//   1. Inserts an `agent_logs` row (agent='probe-week-kill', level='error')
+//      so the kill state is durable across cron restarts.
+//   2. Sets `user_settings.trading_mode = 'demo'` so the war-room's first
+//      live-exec gate (line 1102 of agents/war-room.ts) closes the path.
+//   3. Returns `allowed: false` so the in-flight tick also blocks.
+//
+// Reverting the kill once tripped: requires a developer to either delete
+// the agent_logs row (`DELETE FROM agent_logs WHERE agent='probe-week-kill'`)
+// AND re-set trading_mode='live' in user_settings, OR ship a code commit.
+// Intentionally inconvenient — the operator wanted this to be sticky.
+const PROBE_WEEK_START_ISO = '2026-05-08T10:30:00Z'
+const PROBE_WEEK_END_ISO   = '2026-05-15T20:00:00Z'
+const PROBE_WEEK_KILL_USD  = 200
+
 export interface RiskCheck {
   allowed: boolean
   reason: string
@@ -125,6 +160,93 @@ export async function checkDailyLossLimit(capitalUsd: number): Promise<RiskCheck
   return { allowed: true, reason: `Daily P&L: $${dailyPnl.toFixed(0)} (limit: -$${limit.toFixed(0)})` }
 }
 
+/**
+ * PROBE WEEK kill switch — added 2026-05-08.
+ *
+ * Returns `allowed: false` when:
+ *   - now < PROBE_WEEK_START_ISO → not started yet (cautious, wait for activation)
+ *   - now > PROBE_WEEK_END_ISO   → probe ended naturally
+ *   - probe-week-kill log row exists in last 30d → kill already tripped
+ *   - cumulative real `trades.pnl` since start ≤ -PROBE_WEEK_KILL_USD → trip kill now
+ *
+ * On a fresh trip, persists state by:
+ *   1. Inserting an `agent_logs` kill marker
+ *   2. Setting `user_settings.trading_mode = 'demo'`
+ *
+ * Read-only on every other path. Pure function of two SQL reads + (rarely) two writes.
+ *
+ * Demo trades and demo P&L are NEVER counted here — the kill is purely about
+ * real-money fills (trades table, status='closed' or 'stopped').
+ */
+export async function checkProbeWeekKill(): Promise<RiskCheck> {
+  const db = createServiceSupabase()
+  const now = new Date()
+  const start = new Date(PROBE_WEEK_START_ISO)
+  const end = new Date(PROBE_WEEK_END_ISO)
+
+  if (now < start) {
+    return { allowed: false, reason: `probe-week not started yet (starts ${PROBE_WEEK_START_ISO})` }
+  }
+  if (now > end) {
+    return { allowed: false, reason: `probe-week ended ${PROBE_WEEK_END_ISO} — live opens halted (existing positions ride out)` }
+  }
+
+  // Existing kill marker?
+  const since30d = new Date(now.getTime() - 30 * 86400_000).toISOString()
+  const { data: existing } = await db
+    .from('agent_logs')
+    .select('id')
+    .eq('agent', 'probe-week-kill')
+    .eq('level', 'error')
+    .gte('created_at', since30d)
+    .limit(1)
+    .maybeSingle()
+
+  if (existing) {
+    return { allowed: false, reason: `probe-week kill switch already active — manual reset required (delete agent_logs row + set trading_mode='live')` }
+  }
+
+  // Real-money realized P&L since probe start.
+  const { data: realTrades } = await db
+    .from('trades')
+    .select('pnl')
+    .gte('closed_at', PROBE_WEEK_START_ISO)
+    .in('status', ['closed', 'stopped'])
+
+  const realizedUsd = (realTrades ?? []).reduce((s, t) => s + Number(t.pnl ?? 0), 0)
+
+  if (realizedUsd <= -PROBE_WEEK_KILL_USD) {
+    // TRIP. Persist + demote mode. Best-effort writes — even if they fail
+    // the in-flight tick still blocks because we return allowed=false below.
+    try {
+      await db.from('agent_logs').insert({
+        agent: 'probe-week-kill',
+        level: 'error',
+        message: `PROBE WEEK KILL — cumulative real loss $${realizedUsd.toFixed(2)} reached -$${PROBE_WEEK_KILL_USD} threshold. Live execution halted.`,
+        metadata: {
+          realized_usd: realizedUsd,
+          threshold_usd: -PROBE_WEEK_KILL_USD,
+          trade_count: (realTrades ?? []).length,
+          start_iso: PROBE_WEEK_START_ISO,
+        },
+      })
+    } catch { /* best-effort */ }
+    try {
+      await db.from('user_settings').update({ trading_mode: 'demo' }).neq('id', 0)
+    } catch { /* best-effort */ }
+    return {
+      allowed: false,
+      reason: `probe-week KILL TRIPPED — realized $${realizedUsd.toFixed(2)} ≤ -$${PROBE_WEEK_KILL_USD}. trading_mode flipped to demo.`,
+    }
+  }
+
+  const remaining = PROBE_WEEK_KILL_USD + realizedUsd  // realizedUsd is negative on a loss
+  return {
+    allowed: true,
+    reason: `probe-week active: realized $${realizedUsd.toFixed(2)} / -$${PROBE_WEEK_KILL_USD} kill threshold ($${remaining.toFixed(2)} headroom)`,
+  }
+}
+
 export async function checkPositionLimit(): Promise<RiskCheck> {
   const db = createServiceSupabase()
   const { count } = await db
@@ -211,4 +333,4 @@ export function estimateSlippageAndFees(
   }
 }
 
-export { DAILY_LOSS_LIMIT_PCT, MAX_SINGLE_TRADE_PCT, MAX_POSITIONS, MIN_RR, MAX_SL_PCT }
+export { DAILY_LOSS_LIMIT_PCT, MAX_SINGLE_TRADE_PCT, MAX_POSITIONS, MIN_RR, MAX_SL_PCT, PROBE_WEEK_START_ISO, PROBE_WEEK_END_ISO, PROBE_WEEK_KILL_USD }

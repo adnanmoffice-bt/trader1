@@ -87,7 +87,7 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-_(none — cleared 2026-05-07 ~14:05 Dubai after self-audit cron added)_
+LOCK: supabase/schema.sql + app/api/demo/route.ts — Computer A — started 2026-05-08 14:20 Dubai (archive legacy demo_trades)
 
 ---
 

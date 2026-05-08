@@ -211,8 +211,13 @@ CREATE TABLE IF NOT EXISTS demo_trades (
   exit_reason   VARCHAR(20) CHECK (exit_reason IN ('take_profit','stop_loss','manual','open')),
   pnl           DECIMAL(18,8),
   pnl_pct       DECIMAL(10,4),
-  pnl_aed       DECIMAL(18,2)
+  pnl_aed       DECIMAL(18,2),
+  archived_at   TIMESTAMPTZ
 );
+
+CREATE INDEX IF NOT EXISTS idx_demo_trades_archived_at
+  ON demo_trades (archived_at)
+  WHERE archived_at IS NULL;
 
 -- ─── Row Level Security ───────────────────────────────────────────────────────
 

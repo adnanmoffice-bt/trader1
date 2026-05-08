@@ -32,13 +32,13 @@ function classifyLoss(t: any): string {
 }
 
 export default function SimulationPage() {
-  const [demo, setDemo] = useState<{ session: any; trades: any[]; sessions: any[] }>({ session: null, trades: [], sessions: [] })
+  const [demo, setDemo] = useState<{ session: any; trades: any[]; sessions: any[]; archived_count: number }>({ session: null, trades: [], sessions: [], archived_count: 0 })
   const [filter, setFilter] = useState<TradeFilter>({ instrument: 'all', direction: 'all', result: 'all', strategy: 'all', viewMode: 'all' })
   const [expandedTrade, setExpandedTrade] = useState<string | null>(null)
   const [tab, setTab] = useState<ViewTab>('overview')
 
   useEffect(() => {
-    const load = () => fetch(`/api/demo?all=${filter.viewMode === 'all'}`).then(r => r.json()).then(d => { if (d.success) setDemo({ session: d.data, trades: d.trades ?? [], sessions: d.sessions ?? [] }) }).catch(() => {})
+    const load = () => fetch(`/api/demo?all=${filter.viewMode === 'all'}`).then(r => r.json()).then(d => { if (d.success) setDemo({ session: d.data, trades: d.trades ?? [], sessions: d.sessions ?? [], archived_count: d.archived_count ?? 0 }) }).catch(() => {})
     load()
     const t = setInterval(load, 20000)
     return () => clearInterval(t)
@@ -183,7 +183,12 @@ export default function SimulationPage() {
         <div>
           <h1 className="text-xl font-black text-[var(--text-primary)]">Trade Analytics</h1>
           <p className="text-[10px] text-[var(--text-muted)] mt-0.5">
-            {filter.viewMode === 'all' ? 'All historical trades' : 'Current session'} — {closedT.length} closed, {openT.length} open
+            {filter.viewMode === 'all' ? 'Current rule set (post 2026-04-17)' : 'Current session'} — {closedT.length} closed, {openT.length} open
+            {demo.archived_count > 0 && (
+              <span className="ml-2 text-[var(--text-muted)] opacity-70">
+                · {demo.archived_count} legacy trade{demo.archived_count === 1 ? '' : 's'} archived (SOL/BNB/BB_SQUEEZE era)
+              </span>
+            )}
           </p>
         </div>
         <div className="flex items-center gap-2">

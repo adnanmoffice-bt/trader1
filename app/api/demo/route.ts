@@ -4,6 +4,10 @@ import { createServiceSupabase } from '@/lib/supabase'
 export async function GET(req: NextRequest) {
   const db = createServiceSupabase()
   const all = req.nextUrl.searchParams.get('all') === 'true'
+  // Research escape hatch: ?include_archived=true returns rows from before
+  // the 2026-04-17 SOL/BNB/BB_SQUEEZE cutoff. Default = hide them so the
+  // dashboard reflects only the current rule set.
+  const includeArchived = req.nextUrl.searchParams.get('include_archived') === 'true'
 
   const { data: session } = await db
     .from('demo_sessions')
@@ -16,6 +20,9 @@ export async function GET(req: NextRequest) {
   let tradesQuery = db.from('demo_trades').select('*').order('entry_time', { ascending: false })
   if (!all && session) {
     tradesQuery = tradesQuery.eq('session_id', session.id)
+  }
+  if (!includeArchived) {
+    tradesQuery = tradesQuery.is('archived_at', null)
   }
 
   const { data: trades } = await tradesQuery
@@ -49,10 +56,17 @@ export async function GET(req: NextRequest) {
     .select('*')
     .order('created_at', { ascending: false })
 
+  // Diagnostic counter so the UI can show "X archived from legacy config"
+  const { count: archivedCount } = await db
+    .from('demo_trades')
+    .select('*', { count: 'exact', head: true })
+    .not('archived_at', 'is', null)
+
   return NextResponse.json({
     data: session,
     trades: enrichedTrades,
     sessions: allSessions ?? [],
+    archived_count: archivedCount ?? 0,
     success: true,
   })
 }

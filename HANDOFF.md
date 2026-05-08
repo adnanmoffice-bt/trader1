@@ -87,11 +87,87 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-LOCK: supabase/schema.sql + app/api/demo/route.ts — Computer A — started 2026-05-08 14:20 Dubai (archive legacy demo_trades)
+_(none — cleared 2026-05-08 ~14:35 Dubai after archive-legacy-demo-trades migration shipped)_
 
 ---
 
 ## SESSION LOG (newest on top)
+
+### 2026-05-08 · 14:35 Dubai · Computer A (day) — archive legacy demo_trades (pre-2026-04-17 SOL/BNB/BB_SQUEEZE era)
+**Commits:** `80a0535` (LOCK) → _(this push)_ (`feat(analytics): archive legacy demo_trades from dashboard`)
+
+Operator looked at Trade Analytics screen and saw "ALL TIME -$6,441 USD"
+across 151 trades — read it as "we're only losing". The number is
+technically correct but operationally misleading: 102 of those 151
+trades (~$6,106 of the loss) come from before 2026-04-17, when SOL/USD
++ BNB/USD + BB_SQUEEZE trigger were all still in rotation. All three
+have been disabled for three weeks (workspace rules + LIVE blacklist).
+
+The post-cutoff sample tells the actual story: 49 trades, 28.6% WR,
+-$335 total = -$6.85 per trade. Last 14d -$5.72/trade. May MTD +$3.97/trade.
+Roughly breakeven, not catastrophic. The dashboard buried that under the
+legacy noise.
+
+Ship list (operator chose ARCHIVE option from a 4-way prompt):
+
+1. **`supabase/migrations/2026-05-08-archive-legacy-demo-trades.sql`** —
+   adds `archived_at TIMESTAMPTZ` to `demo_trades`, partial index on
+   `archived_at IS NULL`, then `UPDATE … SET archived_at = NOW() WHERE
+   exit_time < '2026-04-17T00:00:00Z'`. Reversible (`SET archived_at = NULL`).
+   Idempotent (`ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`,
+   `WHERE archived_at IS NULL` guard on the UPDATE). NO row deleted.
+
+2. **`supabase/schema.sql`** — `demo_trades` table definition and partial
+   index updated to match the migration so fresh installs land on the
+   same shape.
+
+3. **`app/api/demo/route.ts`** — default response now filters
+   `archived_at IS NULL`. New `?include_archived=true` query param for
+   research scripts that still want the full history. Response now
+   includes `archived_count` so the UI can show "X legacy trades archived".
+
+4. **`app/(dashboard)/simulation/page.tsx`** — header copy changed from
+   "All historical trades" to "Current rule set (post 2026-04-17)" and
+   appends `· N legacy trades archived (SOL/BNB/BB_SQUEEZE era)` so it's
+   honest about the filter.
+
+5. **`scripts/verify-archive-migration.mjs`** — read-only sanity check.
+   Reports active vs archived counts and aggregate P&L per bucket. Run
+   after pasting the SQL.
+
+**Operator action required (one-time, ~30 seconds):**
+
+1. Open Supabase → SQL Editor.
+2. Paste the contents of
+   `supabase/migrations/2026-05-08-archive-legacy-demo-trades.sql`.
+3. Click Run. Expected: `ALTER TABLE` ok, `CREATE INDEX` ok, `UPDATE 102`.
+4. Locally verify: `node scripts/verify-archive-migration.mjs`.
+   Expected: `ACTIVE ~49, ARCHIVED ~102`.
+
+**What this does NOT change:**
+
+- `lib/risk-controls.ts` daily-loss limit and 30d edge gate query
+  `demo_trades` with `since` filters (last N days), so they never
+  touched legacy rows anyway. Behaviour identical.
+- War-room loss-streak check switched to real `trades` on 2026-05-07.
+  Unaffected.
+- All audit scripts (`audit-recent-losses.mjs`, `audit-24h.mjs`,
+  `audit-10d.mjs`) use date windows. Pre-Apr-17 numbers are still
+  recoverable via direct DB or `?include_archived=true`.
+- Live trading state. Real money still $0 traded, edge gate + IG
+  reduced-risk override behaviour identical.
+
+**Reverting:** in Supabase SQL Editor:
+```sql
+UPDATE demo_trades SET archived_at = NULL WHERE archived_at IS NOT NULL;
+```
+Dashboard will show 151 trades again on next refresh.
+
+**Validation:**
+- `npx tsc --noEmit` clean.
+- ReadLints clean on `app/api/demo/route.ts`,
+  `app/(dashboard)/simulation/page.tsx`, `supabase/schema.sql`.
+- LOCK on `supabase/schema.sql + app/api/demo/route.ts` cleared.
 
 ### 2026-05-07 · 14:05 Dubai · Computer A (day) — self-audit cron (WA group, every 6h)
 **Commits:** _(this push)_ (`feat(observability): self-audit cron posts 6h health + activity report to WA group`)

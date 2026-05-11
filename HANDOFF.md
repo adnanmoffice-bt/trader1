@@ -87,7 +87,7 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-_(none — cleared 2026-05-08 ~14:55 Dubai after PROBE WEEK shipped)_
+LOCK: agents/war-room.ts + lib/data-quality.ts — Computer A — started 2026-05-11 10:20 Dubai (session-aware skip for US equities, ~30min job)
 
 ---
 

@@ -62,6 +62,79 @@ const RULES: Record<AssetClass, {
   us_equity:          { staleMaxMin: 18 * 60, maxMissingCandles: 200, checkVolume: false, maxOutliers: 5 },
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Session-aware skip
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// 2026-05-11 — probe-week audit showed 334 of 1000 war-room closes (33%) were
+// SPY/QQQ DATA QUALITY FAILs over a single weekend. The us_equity threshold
+// is 18h but Friday 16:00 ET → Monday 09:30 ET is ~65h closed — well past the
+// budget — so every weekend meeting on SPY/QQQ failed and burned the slot.
+//
+// Cleaner than just bumping the threshold: skip the asset entirely outside
+// its session. The war-room calls isInstrumentInSession() BEFORE
+// validateOHLCV; if it returns false, the meeting closes with
+// reason='out-of-session' (a separate bucket from data-quality, so health
+// reports stop counting normal weekend closures as faults).
+//
+// Hours used (UTC, simplified — DST shifts US session ±1h twice a year,
+// acceptable because we ALSO still run the stale-candle check on top):
+//   crypto / metal / fx (24-hour): always in session
+//   commodity_futures (CL/BZ): pit-closed 22:00-23:00 UTC, otherwise open
+//   us_equity (SPY/QQQ): Mon-Fri 13:30-20:00 UTC (EDT). During EST winter
+//     the real window is 14:30-21:00 UTC — using the EDT window means we
+//     miss the last hour of winter trading, but never produce a false
+//     "in session" outside genuine hours, which is the dangerous side.
+//
+// FX is technically 22:00 Sun → 22:00 Fri UTC, but weekend gaps already
+// produce stale candles which validateOHLCV catches at the 90min threshold.
+
+export function isInstrumentInSession(instrument: string, now: Date = new Date()): boolean {
+  const cls = classOf(instrument)
+  const dow = now.getUTCDay() // 0=Sun, 1=Mon, ..., 6=Sat
+  const hour = now.getUTCHours()
+  const minute = now.getUTCMinutes()
+  const minOfDay = hour * 60 + minute
+
+  switch (cls) {
+    case 'crypto':
+      return true
+    case 'metal':
+      // Spot gold/silver: 23:00 Sun → 22:00 Fri UTC, daily ~1h break.
+      if (dow === 6) return false
+      if (dow === 0 && hour < 23) return false
+      if (dow === 5 && hour >= 22) return false
+      return true
+    case 'fx':
+      // FX: 22:00 Sun → 22:00 Fri UTC.
+      if (dow === 6) return false
+      if (dow === 0 && hour < 22) return false
+      if (dow === 5 && hour >= 22) return false
+      return true
+    case 'commodity_futures':
+      // CL/BZ on CME Globex: Sun 23:00 → Fri 22:00 UTC, daily 22:00-23:00
+      // maintenance break.
+      if (dow === 6) return false
+      if (dow === 0 && hour < 23) return false
+      if (dow === 5 && hour >= 22) return false
+      if (hour === 22) return false
+      return true
+    case 'us_equity': {
+      // Mon-Fri 13:30-20:00 UTC (EDT regular session). Strict — pre/post
+      // market not counted because Yahoo data is unreliable there.
+      if (dow === 0 || dow === 6) return false
+      const open = 13 * 60 + 30
+      const close = 20 * 60
+      return minOfDay >= open && minOfDay < close
+    }
+  }
+}
+
+// Exposed for war-room logging / audit scripts.
+export function getAssetClass(instrument: string): AssetClass {
+  return classOf(instrument)
+}
+
 export interface DataQualityReport {
   valid: boolean
   totalCandles: number

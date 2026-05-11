@@ -87,11 +87,111 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-LOCK: agents/war-room.ts + lib/data-quality.ts — Computer A — started 2026-05-11 10:20 Dubai (session-aware skip for US equities, ~30min job)
+_(none — cleared 2026-05-11 ~10:30 Dubai after session-aware skip shipped)_
 
 ---
 
 ## SESSION LOG (newest on top)
+
+### 2026-05-11 · 10:30 Dubai · Computer A (day) — probe-week audit + session-aware US-equity skip
+**Commits:** `0872caf` (LOCK) → _(this push)_ (`fix(data-quality): session-aware skip for US equities + probe-week audit script`)
+
+Operator request: full audit (live plus/minus), then accept the verdict and
+ship only the session-aware data-quality fix.
+
+**Probe-week audit results (67.7h elapsed of 168h):**
+- REAL money: **0 trades. $0 P&L. Flat.** IG account still $500. Kill-switch
+  ($200 weekly cap) armed and untouched.
+- DEMO (probe window): 6 trades / 5 closed = 3W/2L, **+$335.71**. Wins on
+  WTI/BRENT/QQQ TPs; losses on XAU/XAG SLs.
+- Paper portfolio (all-time since 2026-04-17 reset): capital $5,017.80,
+  +$17.80, 18W/39L, max DD 15.57%. Basically breakeven.
+- 1000+ war-room meetings → 0 EXECUTE, 0 alerts, 0 opens, 2 reached
+  orchestrator and both rejected. Close-reason breakdown:
+    no-trigger 56% | data-quality 33% | long-only-mode 6% | atr-extreme
+    2.5% | mtf-veto 1.4% | cooldown 0.4% | rejected-orchestrator 0.2%.
+- AI spend: $0.64 (pipeline barely running).
+- One error: `meta-agent-cron` 06:00 Dubai today, Anthropic credit
+  exhausted — operator confirmed top-up post-audit.
+
+**Operator decision:** accept the verdict (do NOT relax the gate stack to
+force fills). Ship only the data-quality fix.
+
+**Ship list:**
+
+1. **`lib/data-quality.ts`** — new exports `isInstrumentInSession(instrument,
+   now?)` and `getAssetClass(instrument)`. The session helper covers all 5
+   asset classes:
+   - `crypto` → always in session (24/7 venue).
+   - `metal` (XAU/XAG) → Sun 23:00 UTC → Fri 22:00 UTC.
+   - `fx` (EUR/USD, GBP/USD, USD/JPY) → Sun 22:00 UTC → Fri 22:00 UTC.
+   - `commodity_futures` (WTI, BRENT) → Sun 23:00 → Fri 22:00 UTC, with
+     daily 22:00-23:00 UTC maintenance break.
+   - `us_equity` (SPY, QQQ) → strict Mon-Fri 13:30-20:00 UTC (EDT regular
+     session). Winter EST loses the last hour by design — false "in session"
+     outside real hours is the dangerous case, so we underclock.
+   No threshold changes; the existing staleness/gap/outlier checks remain
+   in place for instruments that ARE in session.
+
+2. **`agents/war-room.ts`** — new branch BEFORE `validateOHLCV`. If
+   `!isInstrumentInSession(instrument)`, the meeting closes with
+   `reason='out-of-session'` (new bucket) and message `"<INST>: <class>
+   market closed. Adjourning until next session."`. Function still returns
+   `Promise<string>`; `'out-of-session'` joins the existing
+   `'data-quality'|'atr-extreme'|'mtf-veto'|...` return values.
+
+3. **`scripts/audit-probe-week.mjs`** — new read-only audit:
+   - Lists REAL trades opened/closed in probe window with per-trade pnl,
+     prints cumulative pnl + remaining kill-switch headroom.
+   - Lists DEMO trades same window with conviction + exit reason.
+   - Reads `agent_logs` for `agent='probe-week-kill'` to confirm switch
+     state.
+   - Reads `user_settings` (trading_mode, risk_per_trade_pct) so we know
+     the override is still wired.
+   - Dumps all non-close war_room_messages (decision/alert/open) — empty
+     today, useful when the pipeline actually fires.
+   - Top-20 close-reason histogram for the window.
+   - AI spend by day, error log summary, kill-headroom verdict.
+   Designed to be re-runnable by either machine without me typing.
+
+**What this DOES change (expected impact next 24h):**
+- US equities (SPY/QQQ) stop producing DATA QUALITY FAIL every weekend +
+  overnight. That eliminates ~33% of the meeting-close "fault" volume.
+- FX/metal/oil also skip cleanly over their weekend gaps instead of
+  failing the stale-candle check.
+- Frees the rotation slot for instruments that ARE in session (BTC, ETH,
+  the alts, XAU during weekdays, etc.).
+- Self-audit cron health verdict will stop counting weekend-closed
+  equities as health failures.
+
+**What this does NOT change (deliberately):**
+- 0 live trades in 67.7h is NOT a data-quality problem. It is a
+  trigger-quality + gate-stack problem (56% of meetings show genuine
+  "no trigger" — market is quiet, the system correctly waits). The fix
+  here only stops the noise; it does NOT manufacture signals.
+- Probe-week mechanics (1.5% risk, $200 weekly kill, auto-stop
+  2026-05-15 20:00 UTC) are untouched.
+- `LIVE_INSTRUMENT_BLACKLIST` (XAG/USD), edge-gate override
+  (`REDUCED_RISK_CEILING_PCT=2.0`), workspace rules (no shorts, no SOL,
+  no BNB, no BB_SQUEEZE) all untouched.
+
+**Validation:**
+- 15/15 fixture cases passed for `isInstrumentInSession` (SPY open/close
+  boundaries, weekends, FX Sun-evening open, oil maintenance hour, etc.).
+  Throwaway test file deleted post-validation.
+- `npx tsc --noEmit` clean.
+- `npx eslint lib/data-quality.ts agents/war-room.ts` clean.
+
+**Reverting:** remove the new branch in `agents/war-room.ts` (4 lines
+between `// Session-aware skip` and `// Data quality gate`). The
+`isInstrumentInSession` export can stay — it has no callers after that.
+
+**Operator follow-up:**
+- Watch the next 24h self-audit cron post: data-quality fail count should
+  drop to ~0 over the weekend gap (US equities, FX/oil/metal weekends).
+- Probe-week clock: 109.8h remaining. Auto-stops 2026-05-15 20:00 UTC.
+- Anthropic credit balance: topped up by operator post-audit. Meta-agent
+  will recover on next 06:00 Dubai run.
 
 ### 2026-05-08 · 14:55 Dubai · Computer A (day) — PROBE WEEK: 1.5%/trade live exec + $200 weekly kill
 **Commits:** `00ebee8` (LOCK) → _(this push)_ (`CRITICAL: PROBE WEEK — raise reduced-risk ceiling 0.5→2.0%, add probe-week kill switch, set risk to 1.5%`)

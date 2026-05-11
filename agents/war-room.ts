@@ -10,7 +10,7 @@ import { AGENT_PROMPTS, AGENT_TOKEN_LIMITS, AGENT_TIER, STRUCTURED_OUTPUT_FOOTER
 import { runPostMeetingBrief } from '@/agents/meta-agent'
 import { buildMacroContext, formatMacroContext, type MacroSnapshot } from '@/lib/macro-context'
 import { generateForecast, formatForecast } from '@/lib/forecast'
-import { validateOHLCV } from '@/lib/data-quality'
+import { validateOHLCV, isInstrumentInSession, getAssetClass } from '@/lib/data-quality'
 import { getExchangeForInstrument } from '@/lib/exchanges'
 import { checkSessionGate } from '@/lib/session-filter'
 import { checkCorrelationDedup } from '@/lib/correlation-dedup'
@@ -282,6 +282,20 @@ async function runMeeting(
     timestamp: new Date(c.timestamp).getTime(),
     open: +c.open, high: +c.high, low: +c.low, close: +c.close, volume: +c.volume,
   }))
+
+  // Session-aware skip (2026-05-11): US equities outside 13:30-20:00 UTC
+  // Mon-Fri were eating 33% of meeting capacity with weekend stale-data
+  // fails. Adjourn cleanly under a separate bucket so health reports
+  // don't count normal weekend closure as a fault.
+  if (!isInstrumentInSession(instrument)) {
+    const cls = getAssetClass(instrument)
+    await speak(db, meetingId, instrument, conv, {
+      agent: 'orchestrator', role: 'close',
+      message: `${instrument}: ${cls} market closed. Adjourning until next session.`,
+      data: { reason: 'out-of-session', assetClass: cls },
+    })
+    return 'out-of-session'
+  }
 
   // Data quality gate
   const dq = validateOHLCV(ohlcv, instrument)

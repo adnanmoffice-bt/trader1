@@ -1,10 +1,20 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Telegram inbound reader (separate from lib/telegram.ts which is outbound).
 //
-// We use the Telegram Bot API. The bot must be:
-//   (a) added to the source group/channel (already done per operator 2026-05-13),
-//   (b) Privacy Mode disabled via @BotFather (so it can see all group messages,
-//       not just commands).
+// We use the Telegram Bot API. The reader bot must be:
+//   (a) added to the source group/channel (per operator 2026-05-13 +
+//       2026-05-13b @Signalii26bot),
+//   (b) Privacy Mode disabled via @BotFather (so it can see all group
+//       messages, not just commands).
+//
+// 2026-05-13b — operator added a dedicated reader bot (@Signalii26bot)
+// distinct from the outbound notifier bot. We now read
+// TELEGRAM_SIGNALS_BOT_TOKEN preferentially, falling back to
+// TELEGRAM_BOT_TOKEN for backward compatibility with the initial Phase 1
+// deploy where the operator was using a single bot for both directions.
+//
+// IMPORTANT: keep the two bots separate going forward. Mixing inbound +
+// outbound on one bot means a single token rotation kills both paths.
 //
 // getUpdates is a polling endpoint that returns updates queued for the bot
 // since the last `offset`. We persist the last update_id we processed in
@@ -12,7 +22,7 @@
 // double-execute a signal.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const TOKEN = process.env.TELEGRAM_BOT_TOKEN
+const TOKEN = process.env.TELEGRAM_SIGNALS_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN
 const BASE = TOKEN ? `https://api.telegram.org/bot${TOKEN}` : null
 
 export interface TelegramMessageBare {

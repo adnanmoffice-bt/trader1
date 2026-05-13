@@ -93,6 +93,77 @@ _(none — cleared 2026-05-13 ~15:30 Dubai after Telegram ingestor Phase 1 shipp
 
 ## SESSION LOG (newest on top)
 
+### 2026-05-13 · 16:05 Dubai · Computer A (day) — dedicated reader bot + historical import script
+**Commits:** _(this push)_ (`feat(external-signals): TELEGRAM_SIGNALS_BOT_TOKEN env + Telegram Desktop export importer`)
+
+Operator added a separate reader bot **@Signalii26bot** and pasted the
+token in chat. I flagged the leak and instructed operator to rotate via
+@BotFather before deploying.
+
+**SECURITY note**: token `8888491753:AAH...` was disclosed in chat. The
+chat log is retained in agent transcripts. Operator MUST rotate this
+token via @BotFather → /mybots → @Signalii26bot → API Token → Revoke
+current token → Generate new, then paste the NEW token into Vercel env
+as `TELEGRAM_SIGNALS_BOT_TOKEN` (NOT `.env.example`, which is tracked).
+
+Two patches in this push:
+
+1. **`lib/telegram-ingest.ts` + `app/api/cron/telegram-ingestor/route.ts`**
+   now read `TELEGRAM_SIGNALS_BOT_TOKEN` preferentially with fallback to
+   the existing `TELEGRAM_BOT_TOKEN`. Backward-compatible — current
+   Phase 1 deploy keeps working. The new env var lets the operator
+   decouple inbound (signals reader) from outbound (notifier) so a
+   token rotation on one bot doesn't kill both paths.
+   - `.env.example` updated to document the new var (no value).
+
+2. **`scripts/import-telegram-export.mjs` (NEW)** — one-shot importer
+   for Telegram Desktop "Export chat history" JSON files. This solves
+   the Bot API's hard limitation that bots cannot read messages
+   posted BEFORE they joined the group. Operator runs:
+   ```
+   node scripts/import-telegram-export.mjs path/to/result.json [--dry] [--since=YYYY-MM-DD] [--limit=N]
+   ```
+   What it does:
+   - Reads Telegram's machine-readable JSON export.
+   - Flattens the `text` field (which can be a string OR a mixed array
+     of strings + entity objects like {type:'mention',text:'@x'}).
+   - Parses each message with the SAME parser used by the live cron
+     (replicated inline so no TS transpile is required).
+   - Batch-inserts 500 rows at a time via PostgREST with
+     `Prefer: resolution=ignore-duplicates` so re-runs are idempotent.
+   - Forces `execution_status='disabled'` on every historical row.
+     Even if `TELEGRAM_SIGNALS_EXECUTOR_ENABLED=true`, imported rows
+     never fire orders. Defence in depth — Phase 3 executor will
+     ALSO check `message_date` freshness.
+   - Writes one summary row to `agent_logs` (`agent='telegram-import'`).
+   - `--dry` runs the parser, reports counts, no DB writes.
+   - Idempotent on UNIQUE `(source, external_message_id)` so a partial
+     run can be safely resumed.
+
+**Telegram Bot API limitation explained to operator:** bots cannot
+retrieve historical messages from before they joined. The only paths
+are the new export importer (Path A), MTProto user-account client
+(Path B, big lift), or paste-into-chat (Path C). Operator was given
+all three; recommendation was Path A.
+
+**What operator needs to do next:**
+1. Rotate the @Signalii26bot token via @BotFather.
+2. Add to Vercel env (Production):
+   - `TELEGRAM_SIGNALS_BOT_TOKEN=<NEW token from BotFather>`
+   - (`TELEGRAM_SIGNALS_GROUP_ID=-3910126970` already noted in prior
+     entry — confirm it's there)
+3. Apply the Phase 1 SQL migration if not already done
+   (`supabase/migrations/2026-05-13-external-signals.sql`).
+4. (Optional, for history) In Telegram Desktop → open the group →
+   ⋮ → Export chat history → Machine-readable JSON, uncheck media →
+   save `result.json` somewhere local → run the importer.
+
+**Validation:**
+- `npx tsc --noEmit` clean.
+- `npx eslint lib/telegram-ingest.ts app/api/cron/telegram-ingestor/route.ts` clean.
+- Parser inside the import script is a verbatim port of the live one;
+  diff-checking would catch drift if either is modified in future.
+
 ### 2026-05-13 · 15:30 Dubai · Computer A (day) — Telegram external-signal ingestor (Phase 1, log + parse only)
 **Commits:** `c519447` (LOCK) → _(this push)_ (`feat(external-signals): Telegram ingestor + parser scaffold + db migration`)
 

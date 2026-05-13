@@ -17,9 +17,13 @@
  * verifies the parsed shape matches reality.
  *
  * Environment variables consumed:
- *   TELEGRAM_BOT_TOKEN          (existing) — the same bot that sends
- *                               outbound notifications; must be a MEMBER of
- *                               the signals group with Privacy Mode OFF.
+ *   TELEGRAM_SIGNALS_BOT_TOKEN  (new 2026-05-13b) — token for the dedicated
+ *                               READER bot (e.g. @Signalii26bot). Must be a
+ *                               MEMBER of the signals group with Privacy
+ *                               Mode OFF. Preferred over TELEGRAM_BOT_TOKEN.
+ *   TELEGRAM_BOT_TOKEN          (existing fallback) — outbound notifier bot;
+ *                               only used by the ingestor if
+ *                               TELEGRAM_SIGNALS_BOT_TOKEN is unset.
  *   TELEGRAM_SIGNALS_GROUP_ID   (new)      — e.g. '-3910126970'. Bot will
  *                               filter updates to this chat only; other
  *                               chats the bot is in are ignored.
@@ -49,8 +53,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  if (!process.env.TELEGRAM_BOT_TOKEN) {
-    return NextResponse.json({ error: 'TELEGRAM_BOT_TOKEN missing' }, { status: 500 })
+  if (!process.env.TELEGRAM_SIGNALS_BOT_TOKEN && !process.env.TELEGRAM_BOT_TOKEN) {
+    return NextResponse.json({ error: 'TELEGRAM_SIGNALS_BOT_TOKEN (or TELEGRAM_BOT_TOKEN) missing' }, { status: 500 })
   }
   if (!GROUP_ID_RAW) {
     return NextResponse.json({ error: 'TELEGRAM_SIGNALS_GROUP_ID missing' }, { status: 500 })

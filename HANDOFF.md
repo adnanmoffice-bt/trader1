@@ -87,7 +87,7 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-_(none — cleared 2026-05-13 ~17:00 Dubai after XAU-only allowlist + Telegram webhook shipped; webhook handler 200-only, executor still flag-gated, no real orders until operator flips ENABLED+DRY_RUN and runs setup-telegram-webhook.mjs)_
+_(none — cleared 2026-05-13 ~17:00 Dubai after XAU-only allowlist + Telegram webhook shipped. ARMED FOR REAL MONEY 2026-05-13 ~16:56 Dubai: webhook live at trader1-nu.vercel.app, ingestor cron removed, executor_enabled=true, dry_run=false, require_forward=true, XAU/USD only, Signal Feed source only. Next Signal Feed forward fires a real IG order in ~1s.)_
 
 ---
 

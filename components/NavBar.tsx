@@ -19,6 +19,7 @@ const MORE_SECTIONS: NavSection[] = [
   {
     title: 'Trading',
     items: [
+      { href: '/live-trades', label: 'Live Trades', icon: '●' },
       { href: '/signals',     label: 'Signals',     icon: '◈' },
       { href: '/journal',     label: 'Journal',     icon: '☰' },
       { href: '/simulation',  label: 'Simulation',  icon: '▹' },

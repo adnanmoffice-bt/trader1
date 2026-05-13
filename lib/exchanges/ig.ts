@@ -398,6 +398,73 @@ export class IGExchange implements IExchange {
     }
   }
 
+  // ── Atomic open with SL/TP — added 2026-05-13 for external-signal executor ──
+  //
+  // Opens a NEW position (BUY or SELL) with stopLevel and limitLevel attached
+  // in the same POST. Eliminates the naked-position race window that exists
+  // between marketBuy + setStopLoss when the IG layer ack arrives before our
+  // SL amendment lands.
+  //
+  // sizeContracts is IG's "size" field — contracts of the underlying, NOT
+  // notional USD. The caller is responsible for converting USD risk into
+  // contracts using the instrument's contract-value table. For Spot Gold
+  // ($1/contract = $1/pip on 0.01 oz exposure), size = USD_risk / SL_distance.
+  //
+  // Throws on any deal rejection so the caller writes a clean failure row.
+  async openMarketPosition(opts: {
+    symbol: string
+    side: 'BUY' | 'SELL'
+    sizeContracts: number
+    stopLevel?: number
+    limitLevel?: number
+  }): Promise<ExchangeOrder | null> {
+    const { symbol, side, sizeContracts, stopLevel, limitLevel } = opts
+    const epic = this.mapSymbol(symbol)
+
+    interface DealRes { dealReference: string }
+    interface ConfirmRes {
+      dealId: string
+      dealStatus: 'ACCEPTED' | 'REJECTED'
+      reason?: string
+      reasonCode?: string
+      level: number
+      size: number
+      direction: 'BUY' | 'SELL'
+      epic: string
+      stopLevel?: number
+      limitLevel?: number
+    }
+
+    const payload: Record<string, unknown> = {
+      epic,
+      expiry: '-',
+      direction: side,
+      size: Number(sizeContracts.toFixed(2)),
+      orderType: 'MARKET',
+      guaranteedStop: false,
+      forceOpen: true,
+      currencyCode: 'USD',
+    }
+    if (stopLevel != null && Number.isFinite(stopLevel)) payload.stopLevel = Number(stopLevel)
+    if (limitLevel != null && Number.isFinite(limitLevel)) payload.limitLevel = Number(limitLevel)
+
+    const deal = (await this.request('POST', '/positions/otc', payload, '2')) as DealRes
+    const confirm = (await this.request('GET', `/confirms/${deal.dealReference}`, undefined, '1')) as ConfirmRes
+    if (confirm.dealStatus !== 'ACCEPTED') {
+      throw new Error(`IG ${side} order rejected: ${confirm.reasonCode ?? ''} ${confirm.reason ?? 'unknown'}`)
+    }
+
+    return {
+      orderId: confirm.dealId,
+      symbol,
+      side: confirm.direction,
+      type: 'MARKET',
+      executedQty: confirm.size,
+      avgPrice: confirm.level,
+      status: 'FILLED',
+    }
+  }
+
   async marketSell(symbol: string, quantity: number): Promise<ExchangeOrder | null> {
     const dealId = await this.resolveDealId(symbol)
     if (!dealId) {

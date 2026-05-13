@@ -87,11 +87,114 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-LOCK: lib/exchanges/ig.ts + app/api/cron/telegram-executor + lib/telegram-ingest.ts — Computer A — started 2026-05-13 16:15 Dubai (Phase 2 parser + Phase 3 executor for Signal Feed channel format, IG short-open path, atomic SL/TP)
+_(none — cleared 2026-05-13 ~16:45 Dubai after Phase 2 parser + Phase 3 executor shipped; executor still flag-gated and dry-run-gated, no real orders until operator flips both)_
 
 ---
 
 ## SESSION LOG (newest on top)
+
+### 2026-05-13 · 16:45 Dubai · Computer A (day) — Signal Feed parser v1 + IG short-open + Phase 3 executor (dry-run gated)
+**Commits:** _(this push)_ (`feat(external-signals): Signal Feed channel parser, IG atomic open w/ SL+TP, Phase 3 executor cron`)
+
+Operator pasted a real Signal Feed channel screenshot (XAUUSD SELL at 13:51 Dubai, Entry 4699–4698, TP1 4692, TP2 4686, TP3 4683, TP4 4680, SL 4706.5, "0.10 lots per $1000"). Two follow-up instructions:
+
+1. _"wait for signals when they come like this, from signal feed channel, its automatic forward, count only from there"_
+2. _"execute trade as soon as they come"_
+
+Translation: only the forwarded Signal Feed messages count; ignore manual chat in the group; fire the order at signal arrival.
+
+This session ships everything that closes that loop, but with the executor still off by env flag and a dry-run mode on top of that for the first 24h of live operation. The operator flips two env vars when ready.
+
+**What landed:**
+
+1. **`lib/telegram-ingest.ts` — parser v1 "signal-feed"** (`PARSER_VERSION = 'v1-signal-feed-2026-05-13'`):
+   - Multi-line tolerant; en/em-dashes normalised to ASCII hyphen.
+   - Entry range parsing: "Entry: 4699 – 4698" → `entry_low`, `entry_high`, plus a single `entry` chosen by direction (LONG → low end, SHORT → high end).
+   - Four TPs (`tp1`–`tp4`) — executor uses TP1 (closest, most likely to hit). TP2–4 preserved for future scale-out logic.
+   - Stop loss anchored on `SL:` / `stop`; the trailing pip annotation ("-80") is correctly ignored.
+   - Lot sizing hint: "0.10 lots per $1000" → `lots_per_1000 = 0.1`.
+   - Direction-consistency sanity check: a SHORT whose SL ≤ entry or TP1 ≥ entry now returns `null` instead of firing a backwards order. Same for LONG inverted.
+   - Forward info captured (`forward_origin` and `forward_from_chat` both accepted) and propagated into `external_signals.metadata.forward`.
+   - 5/5 fixtures green against the real screenshot text + invariants.
+
+2. **`app/api/cron/telegram-ingestor/route.ts` — forward-source filter**:
+   - New env `TELEGRAM_SIGNALS_REQUIRE_FORWARD=true` → skip any message that isn't a forward.
+   - New env `TELEGRAM_SIGNALS_FORWARD_FROM=Signal Feed` → allowlist by numeric chat id OR `@username` OR exact title. Comma-separated for multiple sources.
+   - Counters added: `skippedNonForward`, `skippedWrongSource` in agent_logs.
+
+3. **`lib/exchanges/ig.ts` — atomic open with SL+TP**: new `openMarketPosition({symbol, side, sizeContracts, stopLevel?, limitLevel?})`. Single POST to `/positions/otc` with `direction: 'SELL'` (or BUY), `forceOpen: true`, plus `stopLevel`/`limitLevel`. Eliminates the naked-position race window that exists between `marketBuy` and `setStopLoss`. This is the method the executor uses for both LONG and SHORT external signals.
+
+4. **`app/api/cron/telegram-executor/route.ts` — Phase 3 cron (NEW)**:
+   - Runs **every minute** (`*/1 * * * *` in vercel.json).
+   - Reads up to 25 `external_signals` rows with `execution_status='pending'`, newest first.
+   - Per row:
+     1. Re-checks `TELEGRAM_SIGNALS_EXECUTOR_ENABLED` at exec time (belt-and-suspenders).
+     2. **Freshness floor**: `TELEGRAM_SIGNALS_MAX_AGE_MIN` (default 5 min). Older → `skipped:stale`.
+     3. **Instrument floor**: must be in `IG_INSTRUMENTS` (XAU/XAG/WTI/BRENT/EUR/USD/GBP/USD/USD/JPY/SPY/QQQ). Anything else → `skipped:unknown-instrument`.
+     4. Direction-consistency re-check (defence in depth).
+     5. Sizing: `lots_per_1000 / 1000 × IG_balance`, floored at `0.5` contracts (IG's minimum on most majors).
+     6. **DRY_RUN** mode (`TELEGRAM_SIGNALS_EXECUTOR_DRY_RUN=true`): writes the row as `skipped:dry-run` with the would-be order in `exec_error`. Does NOT POST to IG.
+     7. Otherwise calls `IGExchange.openMarketPosition()` (atomic SL+TP), inserts a `trades` row (with the external_signal_id in `notes`), and updates `external_signals.execution_status='executed'` + `executed_trade_id`.
+   - Failure modes write `execution_status='failed'` with `exec_error` snippet so the row never re-fires on cron retry. One-shot guarantee.
+
+5. **`scripts/import-telegram-export.mjs`** — historical-import parser bumped to match `v1-signal-feed-2026-05-13-import`. Historical rows still force `execution_status='disabled'` regardless of env flags.
+
+**Per-row safety stack (unchanged operator overrides + new physical floors):**
+- ✅ Probe-week kill switch: bypassed for this path (operator decision 2026-05-13).
+- ✅ Daily-loss limit: bypassed for this path.
+- ✅ Blacklist (shorts, SOL/BNB, BB_SQUEEZE): bypassed for this path. XAUUSD SELL would have been blocked — relaxed per operator.
+- ❌ Stale-signal floor (>5min): NOT relaxed. Physical constraint.
+- ❌ Instrument-not-mapped: NOT relaxed. Operator chose "skip unknowns".
+- ❌ Inverted SL/TP: NOT relaxed. Parser-level fail-safe.
+- ❌ One-shot per row: NOT relaxed. Row is locked before exit.
+- ❌ Atomic SL+TP: NOT relaxed. No naked position window.
+
+**What operator must do BEFORE the executor fires real orders:**
+
+1. **Rotate `@Signalii26bot` token** via @BotFather (the token in chat is burnt). _(carried from prior session)_
+2. **Apply SQL migration** `supabase/migrations/2026-05-13-external-signals.sql` in Supabase. _(carried from prior session)_
+3. **Set Vercel env vars** (production):
+   - `TELEGRAM_SIGNALS_BOT_TOKEN` = (new rotated token)
+   - `TELEGRAM_SIGNALS_GROUP_ID` = `-3910126970`
+   - `TELEGRAM_SIGNALS_REQUIRE_FORWARD` = `true`
+   - `TELEGRAM_SIGNALS_FORWARD_FROM` = `Signal Feed`  ← exact channel title
+   - `TELEGRAM_SIGNALS_EXECUTOR_ENABLED` = `false` (still!)
+   - `TELEGRAM_SIGNALS_EXECUTOR_DRY_RUN` = `true`
+   - `TELEGRAM_SIGNALS_MAX_AGE_MIN` = `5`
+4. **Verify ingestion** in `external_signals` after the next 2-min cron:
+   ```sql
+   SELECT message_date, instrument, direction, entry_price, stop_loss, take_profit,
+          metadata->'forward'->>'from_chat_title' AS forwarded_from,
+          execution_status, parser_version
+     FROM external_signals
+    ORDER BY created_at DESC LIMIT 10;
+   ```
+   Expected: rows where `forwarded_from = 'Signal Feed'`, `execution_status='disabled'`, fields parsed.
+5. **Flip executor to enabled + dry-run** (still no real orders):
+   - `TELEGRAM_SIGNALS_EXECUTOR_ENABLED=true`
+   - `TELEGRAM_SIGNALS_EXECUTOR_DRY_RUN=true`
+6. **Watch one signal cycle in dry-run** — check `agent_logs.agent='telegram-executor-cron'` for the would-be order line.
+7. **GO LIVE** (real money): flip `TELEGRAM_SIGNALS_EXECUTOR_DRY_RUN=false`. From that moment, every forwarded Signal Feed message that parses cleanly fires an IG order within ≤60s.
+
+**Safety notes / known limits:**
+- IG sizing math is conservative: 0.5 contract minimum on $500 balance ≈ $50/pip on XAU. SL distance ~8 pips → ~$400 risk on a $500 balance. **That's 80% of the account on one trade.** This is consistent with the operator's "relax all safeties" call but documented loudly here. After 24h of live operation, we should refine the per-epic contract→USD mapping rather than relying on the 0.5 floor.
+- The executor doesn't currently scale into TP2/TP3/TP4. TP1 only; full position closes at TP1 or SL. Scale-out can land in a follow-up.
+- `notes` column on `trades` carries the external_signal_id as JSON (no schema migration). Reconcilable from `external_signals.executed_trade_id` either way.
+
+Files added:
+- `app/api/cron/telegram-executor/route.ts` (new cron)
+
+Files edited:
+- `lib/telegram-ingest.ts` (parser v1)
+- `app/api/cron/telegram-ingestor/route.ts` (forward filter)
+- `lib/exchanges/ig.ts` (atomic open-with-SL/TP)
+- `lib/exchanges/index.ts` (export `IG_INSTRUMENTS`)
+- `vercel.json` (executor cron */1 * * * *)
+- `.env.example` (new env vars + comments)
+- `scripts/import-telegram-export.mjs` (parser v1 mirror)
+- `CONTEXT.md` (Hard Truth #41)
+
+---
 
 ### 2026-05-13 · 16:05 Dubai · Computer A (day) — dedicated reader bot + historical import script
 **Commits:** _(this push)_ (`feat(external-signals): TELEGRAM_SIGNALS_BOT_TOKEN env + Telegram Desktop export importer`)

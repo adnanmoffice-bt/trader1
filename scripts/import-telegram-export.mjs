@@ -91,7 +91,7 @@ const INSTRUMENT_ALIASES = {
   SPY: 'SPY', SP500: 'SPY', SPX: 'SPY',
   QQQ: 'QQQ', NDX: 'QQQ', NAS100: 'QQQ',
 }
-const PARSER_VERSION = 'v0-generic-2026-05-13-import'
+const PARSER_VERSION = 'v1-signal-feed-2026-05-13-import'
 function normaliseInstrument(rawTok) {
   const k = String(rawTok).toUpperCase().replace(/[\s$_-]/g, '')
   return INSTRUMENT_ALIASES[k] ?? null
@@ -102,27 +102,62 @@ function num(s) {
   const v = parseFloat(cleaned)
   return Number.isFinite(v) ? v : null
 }
+function numAfter(text, labelRegex) {
+  const m = text.match(labelRegex)
+  if (!m) return null
+  return num(m[1])
+}
+// Mirror of lib/telegram-ingest.ts parseStructuredSignal — Signal Feed
+// channel format. Keep these two in sync (no shared compile step here).
 function parseStructuredSignal(text) {
   if (!text) return null
-  const t = String(text).toLowerCase()
+  const normalised = String(text).replace(/[–—−]/g, '-').replace(/\u00A0/g, ' ')
+  const t = normalised.toLowerCase()
   let direction = null
   if (/\b(long|buy|bull)\b/.test(t) || /🟢|🟩|✅/.test(text)) direction = 'long'
   else if (/\b(short|sell|bear)\b/.test(t) || /🔴|🟥|❌/.test(text)) direction = 'short'
   if (!direction) return null
   let instrument = null
-  const tokens = String(text).split(/[\s,;:()[\]{}!?"'`]+/g)
-  for (const tokRaw of tokens) {
+  for (const tokRaw of normalised.split(/[\s,;:()[\]{}!?"'`]+/g)) {
     const tok = tokRaw.replace(/^[#$@]+/, '').replace(/[#$@]+$/, '')
     if (!tok) continue
     const norm = normaliseInstrument(tok)
     if (norm) { instrument = norm; break }
   }
   if (!instrument) return null
-  const entry = num((t.match(/(?:entry|enter|@|price)[^\d-]*([\d,.]+)/) ?? [])[1])
-                ?? num((t.match(/(?:long|short|buy|sell)\s+\S+\s+(?:at\s+|@\s*)?([\d,.]+)/) ?? [])[1])
-  const stop_loss = num((t.match(/(?:sl|stop[\s-]*loss|stop)[^\d-]*([\d,.]+)/) ?? [])[1])
-  const take_profit = num((t.match(/(?:tp1?|target|take[\s-]*profit)[^\d-]*([\d,.]+)/) ?? [])[1])
-  return { instrument, direction, entry, stop_loss, take_profit }
+  let entry_low = null, entry_high = null, entry = null
+  const rangeMatch = t.match(/(?:entry|enter|@|price)[^\d-]*([\d,.]+)\s*-\s*([\d,.]+)/)
+  if (rangeMatch) {
+    const a = num(rangeMatch[1]), b = num(rangeMatch[2])
+    if (a != null && b != null) {
+      entry_low = Math.min(a, b); entry_high = Math.max(a, b)
+      entry = direction === 'long' ? entry_low : entry_high
+    }
+  }
+  if (entry == null) {
+    entry = numAfter(t, /(?:entry|enter|@|price)[^\d-]*([\d,.]+)/)
+         ?? numAfter(t, /(?:long|short|buy|sell)\s+\S+\s+(?:at\s+|@\s*)?([\d,.]+)/)
+  }
+  const stop_loss = numAfter(t, /(?:^|\s)(?:sl|stop[\s-]*loss|stop)[^\d-]*([\d,.]+)/m)
+  const tp1 = numAfter(t, /(?:^|\s)(?:tp1?|target1?|take[\s-]*profit)[^\d-]*([\d,.]+)/m)
+  const tp2 = numAfter(t, /\btp2\b[^\d-]*([\d,.]+)/)
+  const tp3 = numAfter(t, /\btp3\b[^\d-]*([\d,.]+)/)
+  const tp4 = numAfter(t, /\btp4\b[^\d-]*([\d,.]+)/)
+  const lotsMatch = t.match(/([\d.]+)\s*lots?\s*per\s*\$?\s*(\d[\d,]*)/)
+  let lots_per_1000 = null
+  if (lotsMatch) {
+    const lots = num(lotsMatch[1]), per = num(lotsMatch[2])
+    if (lots != null && per != null && per > 0) lots_per_1000 = (lots / per) * 1000
+  }
+  if (entry != null && stop_loss != null) {
+    if (direction === 'long' && stop_loss >= entry) return null
+    if (direction === 'short' && stop_loss <= entry) return null
+  }
+  if (entry != null && tp1 != null) {
+    if (direction === 'long' && tp1 <= entry) return null
+    if (direction === 'short' && tp1 >= entry) return null
+  }
+  return { instrument, direction, entry, entry_low, entry_high, stop_loss, take_profit: tp1, tp2, tp3, tp4, lots_per_1000 }
 }
 
 // ── Telegram export message → text extractor ───────────────────────────────

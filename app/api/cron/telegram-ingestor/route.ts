@@ -30,6 +30,17 @@
  *   TELEGRAM_SIGNALS_EXECUTOR_ENABLED (new) — defaults to 'false'. Set
  *                               to 'true' ONLY after operator verifies
  *                               the parser output matches real messages.
+ *   TELEGRAM_SIGNALS_REQUIRE_FORWARD (new 2026-05-13b) — when 'true', skip
+ *                               messages that are NOT forwards. The Signal
+ *                               Feed channel auto-forwards into the group;
+ *                               anything typed manually by humans (chat) is
+ *                               ignored. Default 'false'.
+ *   TELEGRAM_SIGNALS_FORWARD_FROM (new 2026-05-13b) — optional. When set,
+ *                               only forwards from this specific channel
+ *                               are kept. Accepts: numeric chat id
+ *                               ('-1001234'), '@username', or exact chat
+ *                               title ('Signal Feed'). Comma-separated for
+ *                               multiple sources.
  *   CRON_SECRET                 (existing) — bearer auth.
  */
 import { NextRequest, NextResponse } from 'next/server'
@@ -46,6 +57,29 @@ export const maxDuration = 30
 const GROUP_ID_RAW = process.env.TELEGRAM_SIGNALS_GROUP_ID
 const EXECUTOR_ENABLED =
   (process.env.TELEGRAM_SIGNALS_EXECUTOR_ENABLED ?? '').toLowerCase() === 'true'
+const REQUIRE_FORWARD =
+  (process.env.TELEGRAM_SIGNALS_REQUIRE_FORWARD ?? '').toLowerCase() === 'true'
+
+// Source allowlist — accepts numeric ids, '@usernames', or exact titles.
+// Empty array = accept any forward (only constrained by REQUIRE_FORWARD).
+const FORWARD_FROM_ALLOWLIST: string[] = (process.env.TELEGRAM_SIGNALS_FORWARD_FROM ?? '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean)
+
+function forwardMatchesAllowlist(forward: { from_chat_id: number | null; from_chat_username: string | null; from_chat_title: string | null }): boolean {
+  if (FORWARD_FROM_ALLOWLIST.length === 0) return true
+  for (const entry of FORWARD_FROM_ALLOWLIST) {
+    // Numeric chat id
+    if (/^-?\d+$/.test(entry) && forward.from_chat_id != null && String(forward.from_chat_id) === entry) return true
+    // @username (case-insensitive, with or without @)
+    const usernameWanted = entry.replace(/^@/, '').toLowerCase()
+    if (forward.from_chat_username && forward.from_chat_username.toLowerCase() === usernameWanted) return true
+    // Exact title (case-insensitive)
+    if (forward.from_chat_title && forward.from_chat_title.toLowerCase() === entry.toLowerCase()) return true
+  }
+  return false
+}
 
 export async function GET(req: NextRequest) {
   const auth = req.headers.get('authorization')
@@ -97,9 +131,24 @@ export async function GET(req: NextRequest) {
   let parsed = 0
   let unparseable = 0
   let duplicates = 0
+  let skippedNonForward = 0
+  let skippedWrongSource = 0
   let lastMsgIdSeen = Number(cursor?.last_message_id ?? 0)
 
   for (const m of fetched.newUpdates) {
+    // Forward-source filtering — done BEFORE parse so we don't burn rows on
+    // hand-typed chatter in the group.
+    if (REQUIRE_FORWARD && !m.forward) {
+      skippedNonForward++
+      lastMsgIdSeen = Math.max(lastMsgIdSeen, m.message_id)
+      continue
+    }
+    if (m.forward && !forwardMatchesAllowlist(m.forward)) {
+      skippedWrongSource++
+      lastMsgIdSeen = Math.max(lastMsgIdSeen, m.message_id)
+      continue
+    }
+
     const parsedSig = parseStructuredSignal(m.text)
     const parse_status = parsedSig ? 'parsed' : 'unparseable'
     if (parsedSig) parsed++
@@ -111,7 +160,11 @@ export async function GET(req: NextRequest) {
       message_date: m.date_iso,
       sender: m.sender,
       raw_text: m.text,
-      metadata: { update_id: m.update_id, chat_id: m.chat_id },
+      metadata: {
+        update_id: m.update_id,
+        chat_id: m.chat_id,
+        forward: m.forward ?? null,
+      },
       parse_status,
       parsed: parsedSig as unknown as Record<string, unknown> | null,
       parser_version: PARSER_VERSION,
@@ -164,6 +217,10 @@ export async function GET(req: NextRequest) {
     parsed,
     unparseable,
     duplicates,
+    skippedNonForward,
+    skippedWrongSource,
+    require_forward: REQUIRE_FORWARD,
+    forward_allowlist: FORWARD_FROM_ALLOWLIST,
     executor_enabled: EXECUTOR_ENABLED,
     duration_ms: Date.now() - t0,
   }
@@ -171,7 +228,7 @@ export async function GET(req: NextRequest) {
   await db.from('agent_logs').insert({
     agent: 'telegram-ingestor-cron',
     level: 'ok',
-    message: `ingested ${inserted} (${parsed} parsed, ${unparseable} unparseable, ${duplicates} dupes) executor=${EXECUTOR_ENABLED}`,
+    message: `ingested ${inserted} (${parsed} parsed, ${unparseable} unparseable, ${duplicates} dupes, ${skippedNonForward} non-fwd, ${skippedWrongSource} wrong-src) executor=${EXECUTOR_ENABLED}`,
     metadata: summary,
   }).then(() => {})
 

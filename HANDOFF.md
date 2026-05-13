@@ -87,7 +87,7 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-_(none — cleared 2026-05-13 ~16:45 Dubai after Phase 2 parser + Phase 3 executor shipped; executor still flag-gated and dry-run-gated, no real orders until operator flips both)_
+LOCK: app/api/telegram/webhook + lib/telegram-executor.ts + app/api/cron/telegram-* — Computer A — started 2026-05-13 16:25 Dubai (XAU-only allowlist + Telegram webhook for sub-second execution + cron tightened)
 
 ---
 

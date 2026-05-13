@@ -3,7 +3,7 @@
   "crons": [
     { "path": "/api/cron/market-data",       "schedule": "*/2 * * * *" },
     { "path": "/api/cron/signals",           "schedule": "*/15 * * * *" },
-    { "path": "/api/cron/positions",         "schedule": "*/2 * * * *" },
+    { "path": "/api/cron/positions",         "schedule": "*/1 * * * *" },
     { "path": "/api/cron/demo",              "schedule": "*/15 * * * *" },
     { "path": "/api/cron/meta-agent",        "schedule": "0 2 * * *" },
     { "path": "/api/cron/meta-weekly",       "schedule": "0 4 * * 0" },
@@ -14,7 +14,7 @@
     { "path": "/api/cron/self-audit",        "schedule": "0 */6 * * *" },
     { "path": "/api/cron/performance",       "schedule": "30 18 * * *" },
     { "path": "/api/cron/analytics",         "schedule": "45 18 * * *" },
-    { "path": "/api/cron/telegram-ingestor", "schedule": "*/2 * * * *" },
+    { "path": "/api/cron/telegram-ingestor", "schedule": "*/1 * * * *" },
     { "path": "/api/cron/telegram-executor", "schedule": "*/1 * * * *" }
   ]
 }

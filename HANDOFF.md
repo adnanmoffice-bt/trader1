@@ -87,11 +87,88 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-LOCK: app/api/telegram/webhook + lib/telegram-executor.ts + app/api/cron/telegram-* — Computer A — started 2026-05-13 16:25 Dubai (XAU-only allowlist + Telegram webhook for sub-second execution + cron tightened)
+_(none — cleared 2026-05-13 ~17:00 Dubai after XAU-only allowlist + Telegram webhook shipped; webhook handler 200-only, executor still flag-gated, no real orders until operator flips ENABLED+DRY_RUN and runs setup-telegram-webhook.mjs)_
 
 ---
 
 ## SESSION LOG (newest on top)
+
+### 2026-05-13 · 17:00 Dubai · Computer A (day) — XAU-only allowlist + Telegram webhook (push) + tighter polling
+**Commits:** _(this push)_ (`feat(external-signals): XAU-only allowlist, Telegram webhook for ~1s execution, race-safe webhook+cron coexistence`)
+
+Operator clarified scope: _"we are just trading XAUUSD here ... signals are only that, you must be precise, and quick and updated second on second as its moving like meta trader 5, same"_.
+
+Two consequences:
+- Restrict the executor to XAU/USD only. Anything else (EUR/USD, GBP/USD, oil etc.) gets `skip_reason='not-in-allowlist'`.
+- Cut latency from "up to 3 min on cron polls" to "~1 second" via a Telegram webhook push.
+
+**What landed:**
+
+1. **`lib/telegram-executor.ts` (NEW)** — shared execution core, extracted from the cron route. Exports:
+   - `claimSignalRow(db, id)` — atomically flips `execution_status` `'pending'` → `'executing'`, returns row to whichever caller won the race.
+   - `executeClaimedRow(db, row, t0)` — fires the IG order with all safety floors.
+   - `tryExecuteSignalById(db, id)` — convenience claim + execute; returns `status='race-lost'` if another caller already claimed.
+   - `TELEGRAM_EXECUTOR_DEFAULTS.ALLOWLIST` reads `TELEGRAM_SIGNALS_ALLOWED_INSTRUMENTS` (default: `XAU/USD`).
+
+2. **`app/api/telegram/webhook/route.ts` (NEW)** — push endpoint Telegram POSTs to within ~100ms of a channel message landing:
+   - Verifies `X-Telegram-Bot-Api-Secret-Token` header against `TELEGRAM_WEBHOOK_SECRET` (rejects with 403 otherwise).
+   - Decodes `message` / `channel_post` / `edited_*` shapes.
+   - Applies the forward-source filter (Signal Feed only).
+   - Parses, inserts into `external_signals` (idempotent on unique key — handles webhook + cron racing for the same message).
+   - If executor enabled, calls `tryExecuteSignalById()` synchronously.
+   - Returns 200 always (Telegram retry storm is worse than a missed row; the cron catches it on next minute anyway).
+   - Latency budget: ~500ms warm path (Telegram → us → DB insert → IG `/positions/otc`), ~900ms cold (with IG re-auth).
+   - **GET /api/telegram/webhook** returns a small status JSON for operator curl check.
+
+3. **`app/api/cron/telegram-executor/route.ts`** — refactored to use the shared module. Same behaviour, less duplication. Each row is claimed atomically; if webhook beat the cron, the cron records `status='race-lost'` and moves on. No double-fires.
+
+4. **`scripts/setup-telegram-webhook.mjs` (NEW)** — operator helper:
+   - `node scripts/setup-telegram-webhook.mjs set https://your-vercel-domain.vercel.app` → registers webhook
+   - `node scripts/setup-telegram-webhook.mjs info` → checks current state
+   - `node scripts/setup-telegram-webhook.mjs delete` → falls back to cron polling
+
+5. **`vercel.json`** — `/api/cron/positions` bumped `*/2 * * * *` → `*/1 * * * *` (tighter open-position P&L for dashboard); `/api/cron/telegram-ingestor` bumped `*/2` → `*/1` (still useful as safety net for the first hour after webhook deploy, in case anything's misconfigured).
+
+6. **`.env.example`** — new vars documented:
+   - `TELEGRAM_SIGNALS_ALLOWED_INSTRUMENTS=XAU/USD`
+   - `TELEGRAM_WEBHOOK_SECRET=` (operator generates a 32+ char random string)
+
+**Architecture notes for future me:**
+
+- **Webhook vs polling — pick ONE**: Telegram Bot API conflict rule says once a webhook is set, `getUpdates()` returns "Conflict: terminated by other getUpdates request". So when operator runs `setup-telegram-webhook.mjs set ...`, they MUST also remove the `telegram-ingestor` cron line from `vercel.json` (or the cron just spams errors). Both can coexist briefly only because the webhook is set last and Telegram falls back gracefully.
+
+- **Race-safety**: webhook + cron CANNOT double-fire a single signal. `claimSignalRow()` uses PostgreSQL's row-level locking via `UPDATE … WHERE execution_status='pending'` — exactly one of the two callers gets the row back from `.select()`. The loser observes `status='race-lost'` and exits cleanly.
+
+- **Tick-by-tick like MT5**: Vercel cron minimum is 1 minute. True tick streaming (IG Lightstreamer feed) requires a long-running process on Railway/Fly/VPS. Not in this commit. For the dashboard, the frontend can poll the `/api/wallet` and `/api/positions` endpoints every 5-10 seconds to feel real-time. Open work item below for that.
+
+**Operator path to go live with webhook (sub-second execution):**
+
+1. Apply prior session's checklist (rotate bot token, run SQL migration, set the standard env vars).
+2. Generate `TELEGRAM_WEBHOOK_SECRET` (any 32+ char random string) — set it in Vercel + locally in `.env.local`.
+3. Deploy (push commits to main; Vercel auto-deploys).
+4. Locally: `node scripts/setup-telegram-webhook.mjs set https://<your-vercel-domain>` — registers the webhook with Telegram.
+5. Verify: `curl https://<your-vercel-domain>/api/telegram/webhook` should return JSON with `executor_enabled: false` and `instruments: ["XAU/USD"]`.
+6. **REMOVE the `telegram-ingestor` cron line** from `vercel.json` and redeploy — otherwise the cron's getUpdates calls will fight Telegram's webhook and you'll see Conflict errors in `agent_logs`.
+7. Enable: set `TELEGRAM_SIGNALS_EXECUTOR_ENABLED=true` + `TELEGRAM_SIGNALS_EXECUTOR_DRY_RUN=true`. Wait for one Signal Feed channel post. Check `agent_logs WHERE agent='telegram-webhook'` — you should see one row within ~1s of the channel post with `dry_run=true` and the would-be order details.
+8. Go live: flip `TELEGRAM_SIGNALS_EXECUTOR_DRY_RUN=false`. Next signal fires a real IG XAU order in ~1 second.
+
+**Safety net if webhook breaks**:
+- Delete the webhook (`node scripts/setup-telegram-webhook.mjs delete`) and re-add the `telegram-ingestor` cron line in `vercel.json`. Polling resumes within 1 minute.
+- The cron-based executor is unchanged and keeps draining `external_signals` either way.
+
+Files added:
+- `lib/telegram-executor.ts` (shared executor core)
+- `app/api/telegram/webhook/route.ts` (push endpoint)
+- `scripts/setup-telegram-webhook.mjs` (operator helper)
+
+Files edited:
+- `app/api/cron/telegram-executor/route.ts` (uses shared module)
+- `vercel.json` (positions + ingestor crons tightened)
+- `.env.example` (new vars)
+- `CONTEXT.md` (Hard Truth #40 + #42)
+- `HANDOFF.md`
+
+---
 
 ### 2026-05-13 · 16:45 Dubai · Computer A (day) — Signal Feed parser v1 + IG short-open + Phase 3 executor (dry-run gated)
 **Commits:** _(this push)_ (`feat(external-signals): Signal Feed channel parser, IG atomic open w/ SL+TP, Phase 3 executor cron`)

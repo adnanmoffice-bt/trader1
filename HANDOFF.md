@@ -87,7 +87,7 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-_(none — cleared 2026-05-13 ~15:30 Dubai after Telegram ingestor Phase 1 shipped)_
+LOCK: lib/exchanges/ig.ts + app/api/cron/telegram-executor + lib/telegram-ingest.ts — Computer A — started 2026-05-13 16:15 Dubai (Phase 2 parser + Phase 3 executor for Signal Feed channel format, IG short-open path, atomic SL/TP)
 
 ---
 

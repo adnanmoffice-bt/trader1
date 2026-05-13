@@ -87,7 +87,7 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-_(none — cleared 2026-05-11 ~10:30 Dubai after session-aware skip shipped)_
+LOCK: app/api/cron/* + supabase/schema.sql — Computer A — started 2026-05-13 14:50 Dubai (Telegram external-signal ingestor + executor, kill switch + blacklist relaxed for this path PER OPERATOR DECISION)
 
 ---
 

@@ -87,11 +87,166 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 LOCK: agents/war-room.ts — Computer A — started 2026-04-24 09:50 UTC
 and clear it before you end the session. -->
 
-LOCK: app/api/cron/* + supabase/schema.sql — Computer A — started 2026-05-13 14:50 Dubai (Telegram external-signal ingestor + executor, kill switch + blacklist relaxed for this path PER OPERATOR DECISION)
+_(none — cleared 2026-05-13 ~15:30 Dubai after Telegram ingestor Phase 1 shipped)_
 
 ---
 
 ## SESSION LOG (newest on top)
+
+### 2026-05-13 · 15:30 Dubai · Computer A (day) — Telegram external-signal ingestor (Phase 1, log + parse only)
+**Commits:** `c519447` (LOCK) → _(this push)_ (`feat(external-signals): Telegram ingestor + parser scaffold + db migration`)
+
+Operator request (literal): "signals are coming to this group, you should
+scrape it https://web.telegram.org/k/#-3910126970 and use it for trading,
+live". I pushed back hard on the safety implications and ran a 7-question
+elicitation. The recorded operator choices, all on 2026-05-13:
+
+- **Auth path:** Bot API (operator has already added the existing
+  `TELEGRAM_BOT_TOKEN` bot to the group with Privacy Mode disabled).
+- **Source trust:** verified — operator has tracked >30 signals over
+  >30 days, net profitable spot-long crypto.
+- **Pace:** **skip demo**, go straight to live exec.
+- **Workspace rules:** **all four blacklist items (shorts, SOL/USD, BNB/USD,
+  BB_SQUEEZE) bypassed for this path.**
+- **Kill switch + 5% daily loss:** **both relaxed for this path** (operator
+  accepts full $500 IG loss risk).
+- **Execution scope:** skip instruments not in our IG epic map (one floor I
+  refused to cross — no Binance fallback, the spot wallet is essentially
+  empty and the Auto-Subscribe trap is still active).
+- **Path isolation:** ONLY the external-signal path bypasses the relaxed
+  safeties. War-room internal path remains fully gated.
+
+This is the first time in APEX history the workspace blacklist + kill
+switch have been opened for any path. The override is path-local and
+documented in CONTEXT.md Hard Truth #40 with the operator's accountable
+decision date so future agents reading the audit trail see who turned
+which lever and when.
+
+**Phase 1 ships in this commit (safe regardless of the relaxations because
+NOTHING TRADES yet):**
+
+1. **`supabase/migrations/2026-05-13-external-signals.sql`** — new table
+   `external_signals` (id, source, external_message_id UNIQUE, raw_text,
+   parsed jsonb, parse_status, instrument, direction, entry_price,
+   stop_loss, take_profit, execution_status, executed_trade_id FK to
+   trades, skip_reason, exec_error, metadata, timestamps). Plus a
+   companion `external_signal_cursors` table tracking `last_update_id`
+   per source so re-runs and Vercel restarts never replay messages.
+   RLS service-role only — no end-user reads. Fully idempotent
+   (`IF NOT EXISTS` everywhere, `DROP POLICY` before `CREATE POLICY`).
+
+2. **`lib/telegram-ingest.ts`** — inbound reader (separate from
+   `lib/telegram.ts` which stays outbound-only). Exports:
+   - `fetchTelegramUpdates({sinceUpdateId, chatIdFilter, maxPages})` —
+     hits `https://api.telegram.org/bot{TOKEN}/getUpdates`, paginates up
+     to 5 pages × 100 = 500 messages per cron tick, filters to
+     `chatIdFilter`, returns clean `TelegramMessageBare[]` plus the
+     advanced cursor for upsert. Network/HTTP/JSON failures returned as
+     structured `{ok:false, error}` — never throws.
+   - `parseStructuredSignal(text)` — best-effort regex parser. Handles
+     BUY/LONG/SHORT/SELL keywords plus 🟢/🟩/✅/🔴/🟥/❌ emoji.
+     Normalises tickers via an alias map covering BTC[USD/T], ETH,
+     XAU/GOLD, XAG/SILVER, WTI/CL/USOIL, BRENT/UKOIL/BCO, EURUSD,
+     GBPUSD, USDJPY, SPY/SP500/SPX, QQQ/NDX/NAS100. Extracts entry,
+     SL, TP via flexible regex. Returns `null` for non-signal chatter.
+   - `PARSER_VERSION = 'v0-generic-2026-05-13'` — stamped into each
+     `external_signals.parser_version` so future parser upgrades can be
+     audited row-by-row.
+
+3. **`app/api/cron/telegram-ingestor/route.ts`** — new cron, every 2min.
+   Reads cursor, fetches new updates, inserts each into
+   `external_signals`. Unique-key conflicts (replay protection) are
+   counted as `duplicates` and don't kill the loop. **EXECUTION IS
+   DISABLED**: `TELEGRAM_SIGNALS_EXECUTOR_ENABLED` env defaults to
+   `false`, and every inserted row gets `execution_status='disabled'`.
+   When the operator flips the env flag to `true`, new rows will land
+   as `execution_status='pending'` instead, ready for the Phase 3
+   executor (not built yet). Logs one heartbeat row to `agent_logs`
+   per tick with fetched/inserted/parsed/unparseable/duplicates
+   counters. Auth: `Bearer ${CRON_SECRET}`.
+
+4. **`vercel.json`** — added `{ "path": "/api/cron/telegram-ingestor",
+   "schedule": "*/2 * * * *" }`. Same cadence as market-data and
+   positions; Vercel Pro plan covers it.
+
+5. **`.env.example`** — documented two new vars:
+   - `TELEGRAM_SIGNALS_GROUP_ID=-3910126970` (operator must paste into
+     Vercel env).
+   - `TELEGRAM_SIGNALS_EXECUTOR_ENABLED=false` (stays false until
+     Phase 3 and parser are validated).
+
+6. **CONTEXT.md** — added Hard Truth #40 documenting the per-path
+   override, the operator's accountable decision date, the floors that
+   are still enforced (IG epic map only), and the revert path.
+
+**Parser validation:** 7/7 fixture cases passed locally:
+- Simple "BUY BTC/USD @ 80000 SL 79000 TP 82000"
+- "LONG ETH 2300 Stop: 2250 Target: 2400"
+- "🟢 #BTCUSDT Entry: 80000 Stop loss: 79000 TP1: 82000"
+- "SHORT XAUUSD 4700 sl 4730 tp 4640"
+- "sell EURUSD entry 1.1750 SL 1.1800 TP 1.1650"
+- Plus two negative cases (chatter, no-instrument) that correctly
+  return null.
+
+Two bugs caught during validation and fixed: (a) BTC/USD and ETH/USD
+identity keys were missing from the alias map (so 'BTC/USD' tokens
+were dropped); (b) `\b` word boundaries don't match around emoji
+codepoints, so direction detection needed a parallel emoji regex on
+the original-case text. Throwaway test deleted after passing.
+
+**Validation:**
+- `npx tsc --noEmit` clean.
+- `npx eslint lib/telegram-ingest.ts app/api/cron/telegram-ingestor/route.ts` clean.
+- LOCK on `app/api/cron/*` + `supabase/schema.sql` cleared.
+
+**Operator action required (before Phase 1 starts producing rows):**
+1. Apply migration in Supabase SQL Editor — paste
+   `supabase/migrations/2026-05-13-external-signals.sql` and Run.
+   Idempotent so re-runs are safe.
+2. Add `TELEGRAM_SIGNALS_GROUP_ID=-3910126970` to Vercel env
+   (Settings → Environment Variables → Production). Leave
+   `TELEGRAM_SIGNALS_EXECUTOR_ENABLED` unset (defaults to false) —
+   ingest only for the first 24-48h.
+3. After Vercel picks up this push, the cron fires within 2min.
+   Verify in Supabase: `SELECT created_at, sender, raw_text, parse_status
+   FROM external_signals ORDER BY created_at DESC LIMIT 20`.
+4. After 24-48h or 10-20 real signals (whichever comes first), tell
+   me. I will: (a) audit which messages parsed cleanly vs landed in
+   the unparseable bucket, (b) tighten the parser regex for the
+   formats this specific group actually uses, (c) build the Phase 3
+   executor that flips `execution_status='pending'` rows into IG
+   orders + `trades` rows.
+
+**Phase 3 design preview (NOT shipped today):**
+- Separate cron (`/api/cron/telegram-executor`, e.g. every 1min)
+  drains `external_signals WHERE execution_status='pending'`.
+- For each row:
+  - If `instrument` not in `IG_INSTRUMENTS` → mark `skipped` with
+    `skip_reason='unknown-instrument'`.
+  - Else: position-size via `riskBasedPositionSize()` against the IG
+    account balance (NOT user_settings.risk_per_trade_pct — external
+    signals carry their own SL distance, so sizing is exit-distance
+    × risk_pct). 1.5% of $500 = $7.50 per trade.
+  - Open via `getExchangeForInstrument(instrument).marketBuy(...)`,
+    set SL/TP via `setStopLoss`/`setTakeProfit`.
+  - Insert row into `trades` table with link back to
+    `external_signals.id` in a new optional column (DB change in
+    Phase 3 migration).
+  - Update `external_signals.execution_status='executed'` and
+    `executed_trade_id`.
+- Failures land in `execution_status='failed'` with `exec_error`.
+
+**What this does NOT do (deliberately):**
+- No execution today. Even with the env flag set to `true`, the Phase
+  3 executor cron does not yet exist — so the rows just accumulate.
+  Operator MUST review parse quality before I ship the executor.
+- No change to `agents/war-room.ts`, `lib/safety.ts`, `lib/risk-controls.ts`.
+  Internal-signal safety stack is bit-identical to the post-2026-05-11
+  ship.
+- No change to existing `signals` table or `trades` table schema.
+- No re-enable of shorts/SOL/BNB/BB_SQUEEZE on the war-room path. The
+  workspace rule still applies there; only external-signal
+  consumption is exempt.
 
 ### 2026-05-11 · 10:30 Dubai · Computer A (day) — probe-week audit + session-aware US-equity skip
 **Commits:** `0872caf` (LOCK) → _(this push)_ (`fix(data-quality): session-aware skip for US equities + probe-week audit script`)

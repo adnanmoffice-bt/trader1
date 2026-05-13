@@ -133,6 +133,27 @@ RLS: enabled na svim tablama. Realtime: large allow-list.
 36. **TP kalibracija v3 (2026-04-30)** — `agents/war-room.ts` SL/TP block. Iz `tpMult=4.5, tp2Mult=6.0` (R:R 2.25 / 3.0) prešli na `tpMult=3.0, tp2Mult=5.0` (R:R 1.5 / 2.5). Razlog: svaki +2.25R move prošao kroz +1.5R — pa svi historic winneri ostaju winneri ali losers koji su tagnuli +1.5R prije reverse-a sad postaju winneri. R:R 1.5 = MIN_RR floor pa hardRiskCheck i dalje prolazi. Backtest gate auto-revalidira jer prima tpMult kao argument. **OPEN WORK**: partial-fill (50% TP1 + 50% TP2) + break-even-stop logic in positions cron — TP2 vec je u `signals.take_profit_2` da bi positions cron mogao to konzumirati u budućnosti.
 37. **MTF confluence + macro-HIGH strictness (2026-04-30)** — `lib/indicators.ts` `multiTimeframeConfluence(candles1h)` agregira 1H candle stream u 4H i 1D buckets, vraća `longConfluenceCount` (0/1/2). War-room blokira single-trigger 1H LONG kad je MTF count = 0 (oba HTF bearish). Macro `riskLevel === 'HIGH'` sad zahtijeva 3+ triggera u confluence-u (EXTREME već zaustavlja cijeli war-room iznad).
 38. **External-intelligence gates (2026-04-30, sve fail-open)** — `lib/news-impact.ts` (Claude scoring last-60min RSS feeds, veto na score <= -40, ~$0.005 po pozivu, decision-time), `lib/cme-gaps.ts` (BTC=F vs spot, +/-5 conviction nudge, BTC LONG only, pre-debate), `lib/onchain.ts` (stub interface — kad se priveže CryptoQuant/Glassnode free tier, hard veto na $50M+ net inflow u 24h). Sve veto putanje koriste isti `speak(decision/close) → waBlocked → runPostMeetingBrief → return 'blocked-X'` pattern.
+40. **External Telegram signals path (2026-05-13, OPERATOR-AUTHORISED RULE OVERRIDE).** New ingestor cron `/api/cron/telegram-ingestor` (every 2min) reads messages from Telegram channel `-3910126970` via Bot API, parses structured signals, writes them to a new `external_signals` table. Phase 1 ships **ingest + parse only** — `TELEGRAM_SIGNALS_EXECUTOR_ENABLED` defaults to `false`, rows are inserted with `execution_status='disabled'`. Phase 3 (live execution on IG) lands in a follow-up commit once operator verifies the parser output against real messages and flips the env flag to `true`.
+
+    **The operator explicitly authorised on 2026-05-13 (chat log preserved in HANDOFF.md SESSION LOG):**
+    - Bypass of the probe-week kill switch ($200 weekly cap) for the external-signals path
+    - Bypass of the daily 5% loss limit for the external-signals path
+    - Bypass of the SOL/USD, BNB/USD, shorts, and BB_SQUEEZE workspace blacklist for external signals (per-rule basis — internal war-room signals STILL respect them all)
+    - Skip-demo, straight-to-live once Phase 3 is enabled
+    - Source trust based on operator's own >30-signal >30-day track record on that channel
+
+    **What is still enforced** (these are physical/operational floors, not relaxable preferences):
+    - Instruments outside `IG_INSTRUMENTS` map (BTC, ETH, XAU, XAG, WTI, BRENT, EUR/USD, GBP/USD, USD/JPY, SPY, QQQ) are SKIPPED with `skip_reason='unknown-instrument'` — no Binance routing.
+    - IG account scoping: orders go to the existing IG adapter, which physically supports only long CFDs (shorts on IG are technically possible but our adapter `marketBuy`/`marketSell` pair only opens longs — re-validate before enabling external short signals).
+    - War-room internal path (`agents/war-room.ts`) safety stack is UNAFFECTED. Probe-week kill, blacklist, edge gate all stay wired for internal signals. The override is path-local.
+
+    **How to revert path-level kill or graduate to live:**
+    - Disable executor: set `TELEGRAM_SIGNALS_EXECUTOR_ENABLED=false` in Vercel env (immediate, no redeploy needed).
+    - Disable cron entirely: remove `/api/cron/telegram-ingestor` line from `vercel.json`.
+    - Manual review: `SELECT * FROM external_signals WHERE execution_status='pending' ORDER BY created_at DESC LIMIT 50` shows what would have/has executed.
+
+    **Why this is documented as a Hard Truth even though no money has been spent yet:** it's the first time in APEX history the workspace blacklist + kill switch have been opened for ANY path. If this loses money, the audit trail must show the operator's accountable decision and the per-path scope. Future agents reading this: if you see real losses on external-signal path, DO NOT touch war-room safeties — they were never the cause.
+
 39. **EDGE GATE — live-exec is BLOCKED until edge is proven (2026-04-30, MOST IMPORTANT).** `lib/safety.ts` `checkLiveTradingAllowed(instrument)`. Wired into `agents/war-room.ts` BEFORE `getPrimaryExchange` in the live-exec branch. Two layers: (a) per-instrument blacklist `LIVE_INSTRUMENT_BLACKLIST = {ADA/USD, DOT/USD, APT/USD}` (these lost > 8R each in 6mo backtest), (b) 30-day rolling expectancy gate on `demo_trades` — blocks ALL live exec if mean R-multiple < EDGE_THRESHOLD_R (-0.05) over a sample of >= 20 trades. **Fails CLOSED** on insufficient data or DB error. Demo trades NEVER affected — they're how we measure edge.
 
     **Why it exists**: 6-month walk-forward backtest (`scripts/backtest-gate-stack.mjs` run 2026-04-30) found NEGATIVE per-trade expectancy across all 24 SL/TP combos tested on the 11-instrument set:

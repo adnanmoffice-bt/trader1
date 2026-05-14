@@ -763,6 +763,10 @@ export interface SelfAuditPayload {
     dataQualityFails: number
     modelErrors: number
     falseLossStreakPauses: number
+    // Added 2026-05-14 after the silent CHECK-constraint outage that
+    // killed ~13h of XAU execution. Any signal stuck pending >10min means
+    // the inbound→IG path is broken end-to-end.
+    stuckPendingExternal: number
   }
   // Rotation activity
   activity: {
@@ -789,7 +793,8 @@ export interface SelfAuditPayload {
 export async function notifySelfAudit(data: SelfAuditPayload, userId?: string) {
   const h = data.health
   const a = data.activity
-  const totalHealthIssues = h.dataQualityFails + h.modelErrors + h.falseLossStreakPauses
+  const totalHealthIssues =
+    h.dataQualityFails + h.modelErrors + h.falseLossStreakPauses + (h.stuckPendingExternal ?? 0)
 
   const verdictTag = data.verdict === 'healthy' ? 'HEALTHY'
                    : data.verdict === 'warning' ? 'WARNING'
@@ -806,6 +811,7 @@ export async function notifySelfAudit(data: SelfAuditPayload, userId?: string) {
   lines.push(`  data-quality fails:      ${h.dataQualityFails}`)
   lines.push(`  AI model errors (404):   ${h.modelErrors}`)
   lines.push(`  false loss-streak pauses: ${h.falseLossStreakPauses}`)
+  lines.push(`  external signals stuck:  ${h.stuckPendingExternal ?? 0}`)
   if (totalHealthIssues === 0) lines.push(`  → all green`)
 
   // Activity block

@@ -62,6 +62,7 @@ Items still to finish. Tick `[x]` when done; delete after a week.
 - [ ] **NEW — operator decision: open CFD account for gold/oil execution?** Recommended IG (UAE-licensed via DFSA, ~$250 min deposit, API via IG Labs). Without it, gold stays demo-only forever and oil never enters rotation. See `docs/GOLD_OIL_VENUE_DECISION.md` §Recommendation.
 - [x] ~~**Triage of 138-trade -$6,421 paper loss**~~ **DONE 04/05.** Operator showed Trade Analytics screen ("opet gubis"). `scripts/audit-recent-losses.mjs` shows the loss is concentrated PRE 2026-04-17 (102 trades, 9.8% WR, -$6,106) when SOL/BNB/BB_SQUEEZE were still in rotation. Post-cutoff: 36 trades, 27.8% WR, -$315; last 14d: 24 trades, 29.2% WR, -$132 (basically breakeven). All four root causes are already disabled (SOL/BNB Apr 17, BB_SQUEEZE workspace rule, XAU live blacklist 04/05 + demo blacklist 04/05). Demo cron `DEMO_INSTRUMENTS` now `['BTC/USD','ETH/USD']` only — XAU was bleeding ~$71/trade in demo too.
 - [ ] **Telegram still imported in `app/api/cron/positions/route.ts` (lines 4, 256).** `TELEGRAM_BOT_TOKEN` not on Vercel prod → silent failures every position close. Operator decision pending: add the token, or remove the import.
+- [x] ~~**CRITICAL — external-signals executor was silently dead 2026-05-13 12:59 → 2026-05-14 08:55**~~ (~13h). DB CHECK on `external_signals.execution_status` did not include `'executing'` → every claim returned 23514 → `claimSignalRow` swallowed the error → looked like "race-lost" forever. Fixed via `2026-05-14-fix-execution-status-check.sql` (applied to prod). Two real XAU signals were missed: 15:32 SELL @4690 (would have hit SL -30 pips) and 16:25 SELL @4708 (would have hit TP1 +130 + TP2 +210). Code hardened so this class of silent failure cannot recur.
 
 - [x] ~~Disable Binance Auto-Subscribe to Simple Earn~~ — confirmed (01/05 09:26 Dubai sweep test: Spot USDT = $500.0164 unchanged from 30/04 12:14 → toggle held overnight).
 - [x] ~~Move 1,100 USDT Funding → Spot~~ — operator chose 500 USDT manually via Binance UI. Funding USDT remaining: $600.
@@ -92,6 +93,53 @@ _(none — cleared 2026-05-13 ~17:00 Dubai after XAU-only allowlist + Telegram w
 ---
 
 ## SESSION LOG (newest on top)
+
+### 2026-05-14 · 09:00 Dubai · Computer A (day) — CRITICAL: external-signal executor was silently dead for 13h
+**Commits:** _(this push)_ (`CRITICAL(external-signals): fix execution_status CHECK to allow 'executing' + log silent claim failures + self-audit watch`)
+
+**Operator question** _("we had signals, have you executed trades")_ surfaced that NO IG orders were placed yesterday despite two valid Signal Feed XAU/USD forwards (15:32 SELL @ 4690, 16:25 SELL @ 4708). The webhook armed at 12:59 yesterday and `agent_logs.telegram-webhook` showed `outcome=race-lost reason=already-claimed` for both signals — and `telegram-executor-cron` repeated the same race-lost line every minute for ~13 hours. Both rows stayed `execution_status='pending'` the whole time.
+
+**Root cause** (verified by direct PATCH against prod DB):
+- `lib/telegram-executor.ts → claimSignalRow()` does `UPDATE external_signals SET execution_status='executing' WHERE id=X AND execution_status='pending'` as the atomic claim primitive.
+- The 2026-05-13 migration `2026-05-13-external-signals.sql` declared `CHECK (execution_status IN ('pending','executed','skipped','failed','disabled'))` — `'executing'` was not in the list.
+- Postgres rejected every claim with `23514` (check_violation). Direct test: `400 {"code":"23514","message":"new row for relation \"external_signals\" violates check constraint \"external_signals_execution_status_check\""}`.
+- The supabase-js client returned `{ data: null, error: {...} }`. The old `claimSignalRow` only destructured `data` and ignored `error`, returning `null` → caller logged "race-lost / already-claimed" and the row stayed pending forever.
+- Two compounding bugs: (1) schema mismatch, (2) silent error swallow. Either alone would have been recoverable; together they killed all execution and made it look like normal "already-claimed" behaviour in logs.
+
+**What landed (single commit):**
+
+1. **`supabase/migrations/2026-05-14-fix-execution-status-check.sql` (NEW)** — drops + recreates the CHECK to include `'executing'`. Idempotent. Already applied to prod via `scripts/apply-fix-execution-status.js` (which also reconciled the two stuck rows to `failed` so the cron stops looping). Verified: new constraint def is `CHECK ((execution_status = ANY (ARRAY['pending','executing','executed','skipped','failed','disabled'])))`.
+
+2. **`lib/telegram-executor.ts → claimSignalRow()`** — now destructures `error` and writes a row to `agent_logs (agent='telegram-executor', level='error')` BEFORE returning null. A future schema drift (or RLS misconfig, or transient DB error) can no longer silently kill execution — it will show up in self-audit within 6h, and on the next webhook hit immediately.
+
+3. **`app/api/cron/self-audit/route.ts` + `lib/whatsapp.ts`** — new health metric `stuckPendingExternal`: counts rows with `execution_status='pending' AND created_at < now()-10min`. Any non-zero forces verdict to `critical` and includes the most recent `telegram-executor` error in the WhatsApp note. The 6h cron now alarms on this class of outage rather than silently coexisting with it.
+
+4. **`scripts/apply-fix-execution-status.js` (NEW)** — operator helper that connects to the prod DB via the Supabase pooler (auto-tries 15 regions; this project's pool lives at `aws-1-ap-northeast-1`), applies the migration, marks any pre-fix stuck rows as `failed`, and prints a sanity check. Re-runnable.
+
+5. **`scripts/debug-claim.mjs`** — end-to-end verifier: inserts a synthetic pending row, performs the same PATCH the executor does, asserts it succeeds, deletes the row. Verified `200 OK` after the fix (was `400 23514` before).
+
+**End-to-end verify done at 08:57 Dubai** — synthetic row claimed cleanly. Constraint def confirmed via `pg_get_constraintdef`. Both stuck signals (`3eada056-…`, `868d9901-…`) marked `failed` with `exec_error='pre-2026-05-14 fix: blocked by execution_status CHECK that did not allow "executing" — manually closed out, prices long since moved'`. `pending` count is now 0.
+
+**What this means for the operator:**
+- The executor is now genuinely armed. Next Signal Feed XAU/USD forward → IG order in ~1s, same as the 2026-05-13 SESSION LOG promised.
+- The 6h self-audit (and the WhatsApp message it ships) will now SHOUT if any external signal sits pending >10min, with the underlying executor error attached. The 13h silent window cannot recur.
+
+**Hard lesson (going into CONTEXT.md):**
+> **NEVER write a CHECK constraint and an enum-like state machine without keeping them in lock-step.** When the application uses a transient state for atomic claiming, that transient state MUST be in the CHECK list, OR the application must use a column that is not constraint-checked (e.g. a separate `claimed_at TIMESTAMPTZ` flag). Even worse: NEVER swallow a Supabase error in a critical-path write. Always destructure both `data` and `error`, and log `error` to `agent_logs` so the next operator can find it without having to PATCH against prod manually.
+
+Files added:
+- `supabase/migrations/2026-05-14-fix-execution-status-check.sql`
+- `scripts/apply-fix-execution-status.js`
+
+Files edited:
+- `lib/telegram-executor.ts` (claimSignalRow now logs DB errors)
+- `app/api/cron/self-audit/route.ts` (stuck-pending check + critical-verdict escalation + most-recent executor error in WA notes)
+- `lib/whatsapp.ts` (`SelfAuditPayload.health.stuckPendingExternal` + render line)
+- `scripts/check-trade-status.mjs` (debugging helper used to triage)
+- `scripts/debug-claim.mjs` (verify helper)
+- `HANDOFF.md`
+
+---
 
 ### 2026-05-13 · 17:00 Dubai · Computer A (day) — XAU-only allowlist + Telegram webhook (push) + tighter polling
 **Commits:** _(this push)_ (`feat(external-signals): XAU-only allowlist, Telegram webhook for ~1s execution, race-safe webhook+cron coexistence`)

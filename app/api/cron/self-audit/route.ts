@@ -121,6 +121,33 @@ export async function GET(req: NextRequest) {
   const demoTradesClosed = demoClosed?.length ?? 0
   const demoPnl = (demoClosed ?? []).reduce((s, t) => s + Number(t.pnl ?? 0), 0)
 
+  // ── 3b. External-signals execution lag (added 2026-05-14) ─────────────────
+  // After the 2026-05-13 outage where the DB CHECK constraint silently
+  // rejected every claim for ~13h (two real XAU/USD signals never reached
+  // IG), we permanently watch for rows stuck in 'pending' beyond the
+  // freshness window. ANY row >10 min old still 'pending' = something is
+  // wrong end-to-end (executor disabled, schema drift, IG outage, etc.).
+  const { data: stuckSignals } = await db
+    .from('external_signals')
+    .select('id, instrument, direction, created_at, raw_text')
+    .eq('execution_status', 'pending')
+    .lt('created_at', new Date(Date.now() - 10 * 60_000).toISOString())
+    .order('created_at', { ascending: false })
+    .limit(10)
+  const stuckPendingExternal = stuckSignals?.length ?? 0
+
+  // Also surface the most recent telegram-executor error so the operator
+  // can see WHY claim is failing without digging through agent_logs.
+  const { data: telExecErr } = await db
+    .from('agent_logs')
+    .select('created_at, message')
+    .eq('agent', 'telegram-executor')
+    .eq('level', 'error')
+    .gte('created_at', since)
+    .order('created_at', { ascending: false })
+    .limit(1)
+  const telExecLastError = telExecErr?.[0]?.message ?? null
+
   // ── 4. Coverage: per-instrument latest candle age ──────────────────────────
   const staleInstruments: Array<{ instrument: string; ageMin: number }> = []
   for (const inst of ALL_INSTRUMENTS) {
@@ -143,10 +170,12 @@ export async function GET(req: NextRequest) {
   staleInstruments.sort((a, b) => b.ageMin - a.ageMin)
 
   // ── 5. Verdict + notes ─────────────────────────────────────────────────────
-  const totalHealthIssues = dataQualityFails + modelErrors + falseLossStreakPauses
+  const totalHealthIssues = dataQualityFails + modelErrors + falseLossStreakPauses + stuckPendingExternal
   let verdict: SelfAuditPayload['verdict'] = 'healthy'
   if (totalHealthIssues > 0 || staleInstruments.length > 4) verdict = 'warning'
   if (modelErrors > 5 || dataQualityFails > 50 || staleInstruments.length > 10) verdict = 'critical'
+  // Stuck external signals = trading is effectively offline → critical.
+  if (stuckPendingExternal > 0) verdict = 'critical'
 
   const notes: string[] = []
   if (totalHealthIssues === 0 && opens.length === 0 && signalsGenerated === 0) {
@@ -164,11 +193,17 @@ export async function GET(req: NextRequest) {
   if (realTradesOpened > 0) {
     notes.push(`Live execution active — ${realTradesOpened} live trade(s) opened in window.`)
   }
+  if (stuckPendingExternal > 0) {
+    const tail = telExecLastError ? ` Last executor error: ${telExecLastError.slice(0, 140)}.` : ''
+    notes.push(
+      `CRITICAL: ${stuckPendingExternal} external signal(s) stuck pending >10min — IG execution path is broken. Check vercel logs + DB CHECK constraints on external_signals.execution_status.${tail}`,
+    )
+  }
 
   // ── Send ──────────────────────────────────────────────────────────────────
   const payload: SelfAuditPayload = {
     windowHours: WINDOW_H,
-    health: { dataQualityFails, modelErrors, falseLossStreakPauses },
+    health: { dataQualityFails, modelErrors, falseLossStreakPauses, stuckPendingExternal },
     activity: {
       closes: closes.length,
       meetingsOpened: opens.length,

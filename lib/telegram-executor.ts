@@ -87,14 +87,41 @@ export function isDryRun(): boolean {
  * UPDATE itself, so two concurrent calls with the same WHERE result in
  * exactly one row updated (the other returns 0 rows). We rely on this
  * Postgres behaviour.
+ *
+ * 2026-05-14 hardening: any UPDATE error (e.g. CHECK constraint violation
+ * on `execution_status`, RLS rejection, network drop) is now written to
+ * `agent_logs` BEFORE returning null. Without this, the 2026-05-13 outage
+ * was completely invisible — the DB rejected every claim with code 23514,
+ * the supabase-js client returned `{ data: null, error: {...} }`, the old
+ * code only destructured `data` and reported every signal as "race-lost".
+ * Two real Signal Feed XAU/USD signals never made it to IG. NEVER AGAIN.
  */
 export async function claimSignalRow(db: Supa, id: string): Promise<ExternalSignalRow | null> {
-  const { data } = await db.from('external_signals')
+  const { data, error } = await db.from('external_signals')
     .update({ execution_status: 'executing' })
     .eq('id', id)
     .eq('execution_status', 'pending')
     .select('id, source, external_message_id, message_date, raw_text, parsed, instrument, direction, entry_price, stop_loss, take_profit')
     .maybeSingle()
+  if (error) {
+    // Surface DB-level rejections (CHECK violations, RLS, etc.) — these are
+    // schema/config bugs that MUST stop trading, not be papered over as
+    // "race-lost". Returning null here keeps the contract (no execution),
+    // but the operator will see this within 6h via self-audit and (at the
+    // latest) on the next webhook hit since we log every attempt.
+    await db.from('agent_logs').insert({
+      agent: 'telegram-executor',
+      level: 'error',
+      message: `claimSignalRow DB error on ${id}: ${error.message}`,
+      metadata: {
+        signal_id: id,
+        code: (error as { code?: string }).code ?? null,
+        details: (error as { details?: string }).details ?? null,
+        hint: (error as { hint?: string }).hint ?? null,
+      },
+    }).then(() => {})
+    return null
+  }
   return (data as ExternalSignalRow | null) ?? null
 }
 
